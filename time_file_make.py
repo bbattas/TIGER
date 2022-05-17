@@ -37,17 +37,19 @@ full_area = False
 # dirName = os.path.split(os.getcwd())[-1]
 
 
-e_name = "*_out.e.*"#[x.rsplit('.',2)[0]+"*" for x in glob.glob("*_out.e.*")]#"*_out.e.*"#glob.glob("*_out.e.*") #first step
-# s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*_out.e-s*")] #after first step#x[:-8]
-s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*_out.e*")]
-
+e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]#"*_out.e.*"#glob.glob("*_out.e.*") #first step
+s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.e-s*")] #after first step#x[:-8]
+#s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.e*")]
+# print(s_names)
 # temp_names = [x for x in glob.glob("*_out.e-s*")]
 # print(temp_names[0])
 # print(temp_names[0].rsplit('.',2))
+e_unq = np.unique(e_name)
+# print(e_unq)
 name_unq = np.unique(s_names)
-# print(name_unq)
+#print(name_unq)
 # print(name_unq[:5])
-# name_unq = np.insert(name_unq, 0, e_name)
+name_unq = np.insert(name_unq, 0, e_unq)
 print("Files being used:")
 print(name_unq[:4]," ...")
 # print(name_unq," ...")
