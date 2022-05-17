@@ -8,75 +8,78 @@ import numpy as np
 from time import time
 import os
 import glob
+import pandas as pd
+import math
 
+# This is the 3d_plane_data but for when there are too many nemesis/-s files to open
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
-z_plane = 19688/2
+z_plane = 0#19688/2
 sequence = True
-n_frames = 20
+n_frames = 10
 particleAreas = False #GO BACK AND MAKE RELEVANT OR REMOVE
 particleCentroids = True
 overwriteCentroids = True
 max_xy = 30000
 test = False
 full_area = False
-TooManyFiles = False
+pic_directory = '../pics'
+
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 
 #EXODUS FILE FOR RENDERING
 #ANY CHARACTER(S) CAN BE PLACED IN PLACE OF THE *, EG. 2D/grain_growth_2D_graintracker_out.e.1921.0000 or 2D/grain_growth_2D_graintracker_out.e-s001
 # filenames = '2D/grain_growth_2D_graintracker_out.e*'
-for file in glob.glob("*.i"):
-    inputName = os.path.splitext(file)[0]
-print("Input File is: " + inputName + ".i")
-filenames = inputName + "_out.e.*"#*
-print("   Output Files: " + filenames)
+
+# for file in glob.glob("*.i"):
+#     inputName = os",n,"/",file_len,": ",file.path.splitext(file)[0]
+# print("Input File is: " + inputName + ".i")
+# filenames = inputName + "_out.e*"#*
+# print("   Output Files: " + filenames)
 dirName = os.path.split(os.getcwd())[-1]
 
 # if the ../pics directory doesnt exist, make it
-if not os.path.isdir('../pics'):
-    os.makedirs('../pics')
+if not os.path.isdir(pic_directory):
+    os.makedirs(pic_directory)
 
 
-if TooManyFiles == True:
-    s_names = [x[:-8] for x in glob.glob("*_out.e-s*")] #after first step
-    e_name = glob.glob("*_out.e.*") #first step
-    print(s_names)
-    print(len(e_name))
-    s_unq = np.unique(s_names)
-    print(s_unq)
-
-#READ EXODUS FILE SERIES WITH MultiExodusReader
-MF = MultiExodusReader(filenames)
-
-#GET A LIST OF SIMULATION TIME POINTS
-times = MF.global_times
-# print(times[:3])
-print(times)
-
+times_files = np.load('times_files.npy')
+times = times_files[:,0].astype(float)
+t_step = times_files[:,2].astype(int)
 
 #GETTING CLOSEST TIME STEP TO DESIRED SIMULATION TIME FOR RENDER --> TYPICALLY 200 FRAMES WITH 20 FPS GIVES A GOOD 10 S LONG VIDEO
 # n_frames = 200
 if sequence == True:
     t_max = times[-1]
-    t_frames =  np.linspace(0,t_max,n_frames)
+    t_frames =  np.linspace(0.0,t_max,n_frames)
     idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
 elif sequence == False:
     t_frames = times
     idx_frames = range(len(times))
 else:
     raise ValueError('sequence has to be True or False, not: ' + str(sequence))
-print(t_frames)
+
+
 # Define pore area array
-pore_array = np.zeros_like(t_frames)
+# pore_area, neck_dist, neck gr1:x,y,area, neck gr2:x,y,area
+pore_array = np.empty((0,8))
+
 
 #LOOP OVER EACH TIME STEP IN idx_frames
 for (i,time_step) in enumerate(idx_frames):
     print( "Rendering frame no. ",i+1)
+
+    #READ EXODUS FILE SERIES WITH MultiExodusReader
+    MF = MultiExodusReader(times_files[time_step,1])
+
+    #GET A LIST OF SIMULATION TIME POINTS
+    # times = np.append(times,MF.global_times[t_step[time_step]])
+    # print("     Time",times)
+
     #GENERATE Fmesh_area = IGURE WINDOW
     fig, ax = plt.subplots()
 
     #GET X,Y,Z AND C (UNIQUE GRAINS VALUES) AT CURRENT TIME STEP
-    x,y,z,c = MF.get_data_at_time(var_to_plot,MF.global_times[time_step])               #Read coordinates and variable value --> Will be parallelized in future
+    x,y,z,c = MF.get_data_at_time(var_to_plot,MF.global_times[t_step[time_step]] )#MF.global_times[time_step]               #Read coordinates and variable value --> Will be parallelized in future
 
     # Trim X,Y,Z, and C values to just the relevant z_plane
     zmax = np.amax(z, axis=1)
@@ -123,7 +126,14 @@ for (i,time_step) in enumerate(idx_frames):
         #
         areas = np.zeros(round(np.amax(c_int))+2)
         #
-        # areas = np.asarray( np.sum(np.where(c_int==(n-1),mesh_area,zeros)) for n in range(round(np.amax(c_int))+2) )
+        # areas = np.asarr
+# plt.scatter(times[idx_frames],pore_array[:,0],label="Internal Pore")
+# plt.scatter(times[idx_frames],pore_array[:,4],label="Neck 1")
+# plt.scatter(times[idx_frames],pore_array[:,7],label="Neck 2")
+# plt.xlabel("Time")
+# plt.ylabel("Areas")
+# plt.legend()
+# plt.show()ay( np.sum(np.where(c_int==(n-1),mesh_area,zeros)) for n in range(round(np.amax(c_int))+2) )
         # print("Areas: ",areas)
         for n in range(len(areas)):
             # print(n)
@@ -142,25 +152,6 @@ for (i,time_step) in enumerate(idx_frames):
         mesh_area = np.where(on_plane, mesh_area/2, mesh_area) #out_mesh_area
         # mesh_area = out_mesh_area
 
-
-        if test == True:
-            # This part was supposed to remove duplicate cell definitions, but
-            # it does that by taking the average of the unique_grains in c_int for the
-            # cell that is defined more than once, so its bad.  Need to instead just remove duplicates
-            # in the area calculations
-            # LIST TO TRIM:
-            # c_int, x, y, mesh_ctr
-            mesh_ctr, ctr_idx = np.unique(mesh_ctr, axis=0, return_inverse=True)
-            def removeUnique(var):
-                # unq, unq_idx = np.unique(full_mesh_ctr, axis=0, return_inverse=True)
-                unq_sum = np.bincount(ctr_idx, weights=var)
-                unq_counts = np.bincount(ctr_idx)
-                return unq_sum / unq_counts#np.bincount(unq_idx, weights=var) / np.bincount(unq_idx)
-
-            c_int = removeUnique(c_int)
-            mesh_area = removeUnique(mesh_area)
-            # x = removeUnique(x)
-            # y = removeUnique(y)
 
 
         zeros = np.zeros_like(c_int)
@@ -228,12 +219,27 @@ for (i,time_step) in enumerate(idx_frames):
             # print(mesh_ctr[:,1] >= slope * (mesh_ctr[:,0] - mid_grains[0,0]) + mid_grains[0,1])
             pore_area = np.sum(np.where((c_int == -1) & (mesh_ctr[:,1] >= slope * (mesh_ctr[:,0] - mid_grains[0,0]) + mid_grains[0,1]),mesh_area,zeros))
 
-            pore_array[i] = pore_area
+
+            neck_area = np.asarray([ np.sum(np.where(condx,areas[1:],zero)),  np.sum(np.where(condy,areas[1:],zero)) ])
+            neck_ctr_dist = math.sqrt( (mid_grains[1,1] - mid_grains[0,1])**2 + (mid_grains[1,0] - mid_grains[0,0])**2 )
+            # pore_array.append(pore_area)
+            x1 = mid_grains[0,0]
+            x2 = mid_grains[1,0]
+            y1 = mid_grains[0,1]
+            y2 = mid_grains[1,1]
+            a1 = neck_area[0]
+            a2 = neck_area[1]
+            pore_array = np.append(pore_array,[[pore_area,neck_ctr_dist,x1,y1,a1,x2,y2,a2]],axis=0)
             # print("areas: ")
             # print(areas)
             # print(np.sum(areas))
             # print(np.sum(mesh_area))
             # print(pore_area)
+
+            # print(areas)
+            # print(mid_grains)
+            # print(neck_area)
+            # print(neck_ctr_dist)
 
 
 
@@ -272,12 +278,24 @@ for (i,time_step) in enumerate(idx_frames):
 
     #STORE FIGURE IN 2D FOLDER, AND THE NAME ENDS WITH THE INDEX OF THE RENDERED FRAME. DPI = 500 AND TRANSPARENT BACKGROUND
     # fig.savefig('pics/2d_render_'+str(i)+'.png',dpi=500,transparent=True )
-    fig.savefig('pics/'+dirName+'_sliced_'+str(i)+'.png',dpi=500,transparent=True )#../
+    fig.savefig(pic_directory+'/'+dirName+'_sliced_'+str(i)+'.png',dpi=500,transparent=True )#../
     #CLOSE FIGURE AFTER YOU ARE DONE WITH IT. OTHERWISE ALL GENERATED FIGURES WILL BE HELD IN MEMORY TILL SCRIPT FINISHES RUNNING
     plt.close(fig)
 
-plt.figure(2)
-plt.plot(t_frames,pore_array)
-plt.xlabel("Time")
-plt.ylabel("Internal Pore Area")
-plt.show()
+
+
+# plt.figure(2)
+# plt.scatter(times[idx_frames],pore_array[:,0],label="Internal Pore")
+# plt.scatter(times[idx_frames],pore_array[:,4],label="Neck 1")
+# plt.scatter(times[idx_frames],pore_array[:,7],label="Neck 2")
+# plt.xlabel("Time")
+# plt.ylabel("Areas")
+# plt.legend()
+# plt.show()
+
+
+df = pd.DataFrame(columns=['time', 'pore_area','distance', 'g1x', 'g1y', 'g1area', 'g2x', 'g2y', 'g2area'],data=np.hstack((times[idx_frames,None], pore_array[:,:])))
+# print(df)
+# # pd.DataFrame(np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
+# #                    columns=['a', 'b', 'c'])
+df.to_csv('../PoreArea.csv',index=False)
