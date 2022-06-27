@@ -140,8 +140,16 @@ for (i,time_step) in enumerate(idx_frames):
     if hullTF == True:
         if (particleVolumes != True) and (particleCentroids != True):
             c_int = np.rint(c)
+            # Calculate max number of OPs
+            if i == 0:
+                op_0 = round(np.amax(c_int))+2
+                csv_header = ["time", "internal_pore", "total_void"]
+                for n in range(1,op_0):
+                    csv_header.append("Grain_"+str(n))
+            # This would only be needed when the number of unique_grains increases over time
+            op_it = op_0 #max(round(np.amax(c_int))+2,op_0)
             # print(" Taking mesh centers")
-            tic = time.perf_counter()
+            # tic = time.perf_counter()
             mesh_ctr = np.asarray([ x[:, 0] + (x[:, 2] - x[:, 0])/2,
                                     y[:, 0] + (y[:, 2] - y[:, 0])/2,
                                     z[:, 0] + (z[:, 4] - z[:, 0])/2]).T
@@ -160,7 +168,7 @@ for (i,time_step) in enumerate(idx_frames):
             centroids = np.asarray([ volumes, volumes, volumes ]).T
             # print(" Calculating volumes")
             # tic = time.perf_counter()
-            for n in range(round(np.amax(c_int))+2):
+            for n in range(op_it):
                 volumes.append(np.sum(np.where(c_int==(n-1),mesh_vol,zeros)))
             # toc = time.perf_counter()
             # print("     ",toc - tic)
@@ -210,10 +218,10 @@ for (i,time_step) in enumerate(idx_frames):
         # print("Total internal pore calculaction: ",toc1 - tic1)
         out_volumes.append([times[i], internal_pore_vol] + volumes)#np.insert(volumes, 0, internal_pore_vol, axis=0)
 
-        if i == 0:
-            csv_header = ["time", "internal_pore", "total_void"]
-            for n in range(1,len(volumes)):
-                csv_header.append("Grain_"+str(n))
+        # if i == 0:
+        #     csv_header = ["time", "internal_pore", "total_void"]
+        #     for n in range(1,len(volumes)):
+        #         csv_header.append("Grain_"+str(n))
         # np.savetxt("volumes.csv", np.asarray(out_volumes), delimiter=",", header=','.join(csv_header), comments='')
 
 
