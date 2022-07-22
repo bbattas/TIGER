@@ -143,7 +143,7 @@ for (i,time_step) in enumerate(idx_frames):
             # Calculate max number of OPs
             if i == 0:
                 op_0 = round(np.amax(c_int))+2
-                csv_header = ["time", "internal_pore", "total_void"]
+                csv_header = ["time", "internal_pore", "total_hull", "vol_density", "total_void"]
                 for n in range(1,op_0):
                     csv_header.append("Grain_"+str(n))
             # This would only be needed when the number of unique_grains increases over time
@@ -175,6 +175,8 @@ for (i,time_step) in enumerate(idx_frames):
                 # volumes[n] = np.sum(np.where(c_int==(n-1),mesh_vol,zeros))
 
         grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
+        # For if using centroids for the convex hull
+        # grain_vol = np.delete(mesh_vol, np.where((c_int<0.0))[0], axis=0)
         void_ctr = np.delete(mesh_ctr, np.where((c_int>=0.0))[0], axis=0)
         void_vol = np.delete(mesh_vol, np.where((c_int>=0.0))[0], axis=0)
 
@@ -214,9 +216,12 @@ for (i,time_step) in enumerate(idx_frames):
             return in_hull
         # tic1 = time.perf_counter()
         internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
-        # toc1 = time.perf_counter()
+        # For if using centroids for the convex hull
+        # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
+        total_hull_vol = sum(volumes[1:]) + internal_pore_vol
+        per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
         # print("Total internal pore calculaction: ",toc1 - tic1)
-        out_volumes.append([times[i], internal_pore_vol] + volumes)#np.insert(volumes, 0, internal_pore_vol, axis=0)
+        out_volumes.append([times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes)#np.insert(volumes, 0, internal_pore_vol, axis=0)
 
         # if i == 0:
         #     csv_header = ["time", "internal_pore", "total_void"]
