@@ -16,6 +16,8 @@ import sys
 
 # n_cpu = 4
 n_cpu = int(sys.argv[1])
+# n_cpu = mp.cpu_count() - 2
+# n_cpu = int(mp.cpu_count() / 2 - 1)
 
 
 
