@@ -6,7 +6,8 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PolyCollection
 import matplotlib
 import numpy as np
-from time import time
+#from time import time
+import time
 import os
 import glob
 import pandas as pd
@@ -44,21 +45,22 @@ print("Building Time Data:")
 file_len = len(name_unq)
 
 
-count = 0
-
-def para_time_build(unq_file_name):
+# FOR ADAPTIVE MESH- 1 cpu for all timesteps per .e-s* file
+def para_time_build(unq_file_name,count):
     # print("                                                       ", end = "\r")
-    print("File x /",file_len,": ",unq_file_name)#, end = "\r"
+    print("File",count, "/",file_len,": ",unq_file_name)#, end = "\r"
+    t0 = time.perf_counter()
     times_files = []#np.empty((0,3))
     MF = 0
     MF = MultiExodusReader(unq_file_name).global_times
-    for i,time in enumerate(MF): #.global_times
-        times_files.append([time,unq_file_name,i])
+    for i,time_val in enumerate(MF): #.global_times
+        times_files.append([time_val,unq_file_name,i])
         # times_files = np.append(times_files,[[time,unq_file_name,i]],axis=0)
-    print("Finished file")
+    print("   Finished file",count,": ",round(time.perf_counter()-t0,2),"s")
     # count = count+1
     return times_files
 
+# MAKE A VERSION THAT RUNS IF len(unq_file_name) == 1 or 0 or whatever for not adaptive mesh
 
 
 #IF IN MAIN PROCESS
@@ -67,8 +69,8 @@ if __name__ == "__main__":
     cpu_pool = mp.Pool(n_cpu)
     print(cpu_pool)
     results = []
-    for file in name_unq:
-        results.append(cpu_pool.apply_async(para_time_build,args = (file, )))#, callback = log_result)
+    for i,file in enumerate(name_unq):
+        results.append(cpu_pool.apply_async(para_time_build,args = (file, i )))#, callback = log_result)
     # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
     # print(ex_files)
 
