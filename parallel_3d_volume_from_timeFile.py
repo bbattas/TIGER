@@ -169,7 +169,7 @@ if __name__ == "__main__":
     out_volumes = np.asarray(results)
     # print(out_volumes)
     out_volumes = out_volumes[out_volumes[:, 0].astype(float).argsort()]
-    print('\n' + "Done Building Time Data")
+    print('\n' + "Done Building Volume Data")
     np.savetxt("volumes.csv", np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
 
     quit()
