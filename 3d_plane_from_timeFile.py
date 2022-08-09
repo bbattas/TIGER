@@ -13,11 +13,11 @@ import math
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
-z_plane = 10000#19688/2
+z_plane = 0#10000#19688/2
 sequence = False
 n_frames = 40
 particleAreas = False #GO BACK AND MAKE RELEVANT OR REMOVE
-particleCentroids = False
+particleCentroids = True
 overwriteCentroids = True
 max_xy = 30000
 test = False
@@ -62,6 +62,7 @@ else:
 # Define pore area array
 # pore_area, neck_dist, neck gr1:x,y,area, neck gr2:x,y,area
 pore_array = np.empty((0,8))
+pore_list = []
 
 
 #LOOP OVER EACH TIME STEP IN idx_frames
@@ -231,7 +232,9 @@ for (i,time_step) in enumerate(idx_frames):
             y2 = mid_grains[1,1]
             a1 = neck_area[0]
             a2 = neck_area[1]
-            pore_array = np.append(pore_array,[[pore_area,neck_ctr_dist,x1,y1,a1,x2,y2,a2]],axis=0)
+            # pore_array = np.append(pore_array,[[pore_area,neck_ctr_dist,x1,y1,a1,x2,y2,a2]],axis=0)
+            pore_list.append([times[i],pore_area,neck_ctr_dist,x1,y1,a1,x2,y2,a2])
+            # print(pore_list)
             # print("areas: ")
             # print(areas)
             # print(np.sum(areas))
@@ -296,8 +299,13 @@ for (i,time_step) in enumerate(idx_frames):
 # plt.show()
 
 
-df = pd.DataFrame(columns=['time', 'pore_area','distance', 'g1x', 'g1y', 'g1area', 'g2x', 'g2y', 'g2area'],data=np.hstack((times[idx_frames,None], pore_array[:,:])))
+# df = pd.DataFrame(columns=['time', 'pore_area','distance', 'g1x', 'g1y', 'g1area', 'g2x', 'g2y', 'g2area'],data=np.hstack((times[idx_frames,None], pore_array[:,:])))
 # print(df)
 # # pd.DataFrame(np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
 # #                    columns=['a', 'b', 'c'])
-df.to_csv('../PoreArea.csv',index=False)
+saveloc = '../' + dirName + 'PoreArea.csv'
+csv_header = ['time', 'pore_area','distance', 'g1x', 'g1y', 'g1area', 'g2x', 'g2y', 'g2area']
+# print(pore_list)
+np.savetxt(saveloc, np.asarray(pore_list), delimiter=',', header=','.join(csv_header), comments='')
+
+# df.to_csv('PoreArea.csv',index=False)
