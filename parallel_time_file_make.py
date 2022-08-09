@@ -15,11 +15,13 @@ import math
 import sys
 
 
+# You need the ulimit -n to be large enough for however many cpus you ran the job
+# multiplied by the number of n_cpu you use for the pool here
+
 # n_cpu = 4
 n_cpu = int(sys.argv[1])
 # n_cpu = mp.cpu_count() - 2
 # n_cpu = int(mp.cpu_count() / 2 - 1)
-
 
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
@@ -48,7 +50,7 @@ file_len = len(name_unq)
 # FOR ADAPTIVE MESH- 1 cpu for all timesteps per .e-s* file
 def para_time_build(unq_file_name,count):
     # print("                                                       ", end = "\r")
-    print("File",count, "/",file_len,": ",unq_file_name)#, end = "\r"
+    print("File",count+1, "/",file_len,": ",unq_file_name)#, end = "\r"
     t0 = time.perf_counter()
     times_files = []#np.empty((0,3))
     MF = 0
@@ -56,6 +58,7 @@ def para_time_build(unq_file_name,count):
     for i,time_val in enumerate(MF): #.global_times
         times_files.append([time_val,unq_file_name,i])
         # times_files = np.append(times_files,[[time,unq_file_name,i]],axis=0)
+    MF = 0
     print("   Finished file",count,": ",round(time.perf_counter()-t0,2),"s")
     # count = count+1
     return times_files
@@ -96,7 +99,7 @@ if __name__ == "__main__":
     # times = times_files[:,0].astype(float)
     # t_step = times_files[:,2].astype(int)
 
-    print(times_files)
+    # print(times_files)
 
     np.save('times_files.npy', times_files)
     quit()
