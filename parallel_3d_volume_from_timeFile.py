@@ -154,6 +154,7 @@ if __name__ == "__main__":
     #CREATE A PROCESS POOL
     cpu_pool = mp.Pool(n_cpu)
     print(cpu_pool)
+    all_time_0 = time.perf_counter()
     results = []
     for i,frame in enumerate(idx_frames):
         results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max )))#, callback = log_result)
@@ -163,6 +164,7 @@ if __name__ == "__main__":
     cpu_pool.close()
     cpu_pool.join()
     print(cpu_pool)
+    print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
     print("Aggregating data...")#Restructuring
     results = [r.get() for r in results]
     # print(results)
