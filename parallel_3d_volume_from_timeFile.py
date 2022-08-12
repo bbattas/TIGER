@@ -19,6 +19,7 @@ import glob
 import pandas as pd
 import math
 import sys
+import tracemalloc
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
 n_cpu = int(sys.argv[1])
@@ -140,6 +141,7 @@ def para_volume_calc(time_step,i,op_max):
     # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
     total_hull_vol = sum(volumes[1:]) + internal_pore_vol
     per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
+    print("Memory:",tracemalloc.get_traced_memory())
     # print([times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes)
     return [times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes
 
@@ -149,8 +151,10 @@ def para_volume_calc(time_step,i,op_max):
 
 #IF IN MAIN PROCESS
 if __name__ == "__main__":
+    tracemalloc.start()
     # Calculate maximum number of OPs and csv header
     op_max, csv_header = t0_opCount_headerBuild(idx_frames)
+    print("Memory:",tracemalloc.get_traced_memory())
     #CREATE A PROCESS POOL
     cpu_pool = mp.Pool(n_cpu)
     print(cpu_pool)
@@ -160,11 +164,14 @@ if __name__ == "__main__":
         results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max )))#, callback = log_result)
     # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
     # print(ex_files)
+    print("Memory:",tracemalloc.get_traced_memory())
     print("closing")
     cpu_pool.close()
     print("closed")
+    print("Memory:",tracemalloc.get_traced_memory())
     cpu_pool.join()
     print("joined")
+    print("Memory:",tracemalloc.get_traced_memory())
     print(cpu_pool)
     print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
     print("Aggregating data...")#Restructuring
