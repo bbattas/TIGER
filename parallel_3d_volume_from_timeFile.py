@@ -160,9 +160,11 @@ if __name__ == "__main__":
         results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max )))#, callback = log_result)
     # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
     # print(ex_files)
-
+    print("closing")
     cpu_pool.close()
+    print("closed")
     cpu_pool.join()
+    print("joined")
     print(cpu_pool)
     print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
     print("Aggregating data...")#Restructuring
