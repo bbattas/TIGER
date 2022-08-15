@@ -155,6 +155,13 @@ if __name__ == "__main__":
     # Calculate maximum number of OPs and csv header
     op_max, csv_header = t0_opCount_headerBuild(idx_frames)
     print("Memory:",tracemalloc.get_traced_memory())
+
+    if len(sys.argv) > 2:
+        if "skip" in sys.argv[2]:
+            print("NOTE: Skipping last file as indicated with 'skip' flag")
+            print(" ")
+            name_unq = name_unq[:-1]
+            
     #CREATE A PROCESS POOL
     cpu_pool = mp.Pool(n_cpu)
     print(cpu_pool)

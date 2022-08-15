@@ -68,6 +68,11 @@ def para_time_build(unq_file_name,count):
 
 #IF IN MAIN PROCESS
 if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        if "skip" in sys.argv[2]:
+            print("NOTE: Skipping last file as indicated with 'skip' flag")
+            print(" ")
+            name_unq = name_unq[:-1]
     #CREATE A PROCESS POOL
     cpu_pool = mp.Pool(n_cpu)
     print(cpu_pool)
