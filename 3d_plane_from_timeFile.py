@@ -71,7 +71,7 @@ for (i,time_step) in enumerate(idx_frames):
 
     #READ EXODUS FILE SERIES WITH MultiExodusReader
     MF = MultiExodusReader(times_files[time_step,1])#.exodus_readers
-    print("File is read")
+    # print("File is read")
     #GET A LIST OF SIMULATION TIME POINTS
     # times = np.append(times,MF.global_times[t_step[time_step]])
     # print("     Time",times)
@@ -83,7 +83,7 @@ for (i,time_step) in enumerate(idx_frames):
     #x,y,z,c = MF.get_data_at_time(var_to_plot,MF.global_times[t_step[time_step]] )#MF.global_times[time_step]               #Read coordinates and variable value --> Will be parallelized in future
     x,y,z,c = MF.get_data_at_time(var_to_plot,times[i])
     #x,y,z,c = MF.get_data_from_file_idx(var_to_plot,times[i],t_step[i])
-    print("data is pulled")
+    # print("data is pulled")
     # Trim X,Y,Z, and C values to just the relevant z_plane
     zmax = np.amax(z, axis=1)
     zmin = np.amin(z, axis=1)
