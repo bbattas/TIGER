@@ -303,7 +303,7 @@ for (i,time_step) in enumerate(idx_frames):
 # print(df)
 # # pd.DataFrame(np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
 # #                    columns=['a', 'b', 'c'])
-saveloc = '../' + dirName + 'PoreArea.csv'
+saveloc = '../' + dirName + '_PoreArea.csv'
 csv_header = ['time', 'pore_area','distance', 'g1x', 'g1y', 'g1area', 'g2x', 'g2y', 'g2area']
 # print(pore_list)
 np.savetxt(saveloc, np.asarray(pore_list), delimiter=',', header=','.join(csv_header), comments='')

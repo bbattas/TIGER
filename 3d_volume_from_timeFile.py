@@ -28,7 +28,9 @@ particleVolumes = False
 particleCentroids = False
 hullTF = True
 plotTF = False
-
+quarter_hull = True
+max_xy = 30000
+max_z = 19688
 pic_directory = '../pics'
 
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
@@ -207,7 +209,8 @@ for (i,time_step) in enumerate(idx_frames):
                 fig = plt.figure()
                 ax = fig.add_subplot(111,projection='3d')
                 for simplex in hull.simplices:
-                    plt.plot(grain_ctr[simplex, 0], grain_ctr[simplex, 1], grain_ctr[simplex,2], 'r-')
+                    # plt.plot(grain_ctr[simplex, 0], grain_ctr[simplex, 1], grain_ctr[simplex,2], 'r-')
+                    plt.plot(xyz_for_hull[simplex, 0], xyz_for_hull[simplex, 1], xyz_for_hull[simplex,2], 'r-')
                 # Now plot the void points
                 ax.scatter3D(void_in_hull[:, 0], void_in_hull[:, 1], void_in_hull[:, 2],s=0.01,alpha=0.5)
                 plt.autoscale()
@@ -215,7 +218,12 @@ for (i,time_step) in enumerate(idx_frames):
             # Output the boolean array of which void_ctr is in the hull for use
             return in_hull
         # tic1 = time.perf_counter()
-        internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
+
+        if quarter_hull == True:
+            temp_ctr = np.append(grain_ctr,[[max_xy,max_xy,0],[max_xy,max_xy,max_z]],axis=0)
+            internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
+        else:
+            internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
         # For if using centroids for the convex hull
         # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
         total_hull_vol = sum(volumes[1:]) + internal_pore_vol

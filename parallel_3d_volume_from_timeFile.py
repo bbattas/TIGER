@@ -22,13 +22,20 @@ import sys
 import tracemalloc
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
+# 1st command line input is the number of cpus
+# 2nd command line input is 'skip' if you want to skip the last unique file
+
 n_cpu = int(sys.argv[1])
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
 sequence = False
 n_frames = 40
 
+quarter_hull = True
+max_xy = 30000
+max_z = 19688
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
+dirName = os.path.split(os.getcwd())[-1]
 
 #EXODUS FILE FOR RENDERING
 #ANY CHARACTER(S) CAN BE PLACED IN PLACE OF THE *, EG. 2D/grain_growth_2D_graintracker_out.e.1921.0000 or 2D/grain_growth_2D_graintracker_out.e-s001
@@ -77,7 +84,8 @@ def pore_in_hull(xyz_for_hull,void_ctr_xyz,tolerance,point_plot_TF):
         fig = plt.figure()
         ax = fig.add_subplot(111,projection='3d')
         for simplex in hull.simplices:
-            plt.plot(grain_ctr[simplex, 0], grain_ctr[simplex, 1], grain_ctr[simplex,2], 'r-')
+            # plt.plot(grain_ctr[simplex, 0], grain_ctr[simplex, 1], grain_ctr[simplex,2], 'r-')
+            plt.plot(xyz_for_hull[simplex, 0], xyz_for_hull[simplex, 1], xyz_for_hull[simplex,2], 'r-')
         # Now plot the void points
         ax.scatter3D(void_in_hull[:, 0], void_in_hull[:, 1], void_in_hull[:, 2],s=0.01,alpha=0.5)
         plt.autoscale()
@@ -136,7 +144,12 @@ def para_volume_calc(time_step,i,op_max):
     void_ctr = np.delete(mesh_ctr, np.where((c_int>=0.0))[0], axis=0)
     void_vol = np.delete(mesh_vol, np.where((c_int>=0.0))[0], axis=0)
 
-    internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
+    # internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
+    if quarter_hull == True:
+        temp_ctr = np.append(grain_ctr,[[max_xy,max_xy,0],[max_xy,max_xy,max_z]],axis=0)
+        internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
+    else:
+        internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
     # For if using centroids for the convex hull
     # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
     total_hull_vol = sum(volumes[1:]) + internal_pore_vol
@@ -161,7 +174,7 @@ if __name__ == "__main__":
             print("NOTE: Skipping last file as indicated with 'skip' flag")
             print(" ")
             name_unq = name_unq[:-1]
-            
+
     #CREATE A PROCESS POOL
     cpu_pool = mp.Pool(n_cpu)
     print(cpu_pool)
@@ -188,15 +201,16 @@ if __name__ == "__main__":
     # print(out_volumes)
     out_volumes = out_volumes[out_volumes[:, 0].astype(float).argsort()]
     print('\n' + "Done Building Volume Data")
-    np.savetxt("volumes.csv", np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
-
+    saveloc = '../' + dirName + '_volumes.csv'
+    np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
+    # "volumes.csv",
     quit()
 
 quit()
 
 
 
-np.savetxt("volumes.csv", np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
+# np.savetxt("volumes.csv", np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
 
 # plt.figure(2)
 # plt.scatter(times[idx_frames],pore_array[:,0],label="Internal Pore")
