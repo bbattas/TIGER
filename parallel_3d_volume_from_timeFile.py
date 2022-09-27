@@ -32,8 +32,8 @@ sequence = False
 n_frames = 40
 
 quarter_hull = True
-max_xy = 30000
-max_z = 19688
+max_xy = 1000
+max_z = 692
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 

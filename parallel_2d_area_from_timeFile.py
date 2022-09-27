@@ -28,11 +28,11 @@ import tracemalloc
 n_cpu = int(sys.argv[1])
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
-sequence = False
-n_frames = 40
+sequence = True
+n_frames = 100
 
 quarter_hull = True
-max_xy = 30000
+max_xy = 1000
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -49,8 +49,10 @@ t_step = times_files[:,2].astype(int)
 # n_frames = 200
 if sequence == True:
     t_max = times[-1]
+    # t_max = max(times)
     t_frames =  np.linspace(0.0,t_max,n_frames)
     idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
+    idx_frames = list( map(int, idx_frames) )
 elif sequence == False:
     t_frames = times
     idx_frames = range(len(times))
@@ -58,8 +60,6 @@ else:
     raise ValueError('sequence has to be True or False, not: ' + str(sequence))
 
 tot_frames = len(idx_frames)
-
-
 
 
 def pore_in_hull(xyz_for_hull,void_ctr_xyz,tolerance,point_plot_TF):
@@ -122,7 +122,7 @@ def para_volume_calc(time_step,i,op_max):
     read_tf = time.perf_counter()
     print("  Finished reading frame",i+1, ":",round(read_tf-read_ti,2),"s")
 
-    x,y,z,c = MF.get_data_at_time(var_to_plot,times[i])
+    x,y,z,c = MF.get_data_at_time(var_to_plot,times[time_step])# MF.get_data_at_time(var_to_plot,times[i])
     c_int = np.rint(c)
 
     mesh_ctr = np.asarray([ x[:, 0] + (x[:, 2] - x[:, 0])/2,
@@ -155,7 +155,7 @@ def para_volume_calc(time_step,i,op_max):
     per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
     print("Memory:",tracemalloc.get_traced_memory())
     # print([times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes)
-    return [times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes
+    return [times[time_step], internal_pore_vol, total_hull_vol, per_tdens] + volumes
 
 
 
