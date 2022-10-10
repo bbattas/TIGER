@@ -31,7 +31,7 @@ phi_hull_threshold = 0.5
 # z_plane = 10000#19688/2
 sequence = False
 n_frames = 40
-
+cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
 max_xy = 300
@@ -59,6 +59,11 @@ elif sequence == False:
     idx_frames = range(len(times))
 else:
     raise ValueError('sequence has to be True or False, not: ' + str(sequence))
+
+if cutoff != 0:
+    print("Cutting End Time to ",cutoff)
+    t_frames = [x for x in t_frames if x <= cutoff]
+    idx_frames = range(len(t_frames))
 
 tot_frames = len(idx_frames)
 
@@ -171,10 +176,10 @@ def para_volume_calc(time_step,i):
 #IF IN MAIN PROCESS
 if __name__ == "__main__":
     tracemalloc.start()
-    results = []
-    for i,frame in enumerate(idx_frames):
-        results.append(para_volume_calc(frame, i ))
-    quit()
+    # results = []
+    # for i,frame in enumerate(idx_frames):
+    #     results.append(para_volume_calc(frame, i ))
+    # quit()
     # Calculate maximum number of OPs and csv header
     op_max, csv_header = t0_opCount_headerBuild(idx_frames)
     print("Memory:",tracemalloc.get_traced_memory())
@@ -191,14 +196,14 @@ if __name__ == "__main__":
     all_time_0 = time.perf_counter()
     results = []
     for i,frame in enumerate(idx_frames):
-        results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max )))#, callback = log_result)
+        results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i )))#, callback = log_result)
     # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
     # print(ex_files)
-    print("Memory:",tracemalloc.get_traced_memory())
-    print("closing")
+    # print("Memory:",tracemalloc.get_traced_memory())
+    # print("closing")
     cpu_pool.close()
-    print("closed")
-    print("Memory:",tracemalloc.get_traced_memory())
+    # print("closed")
+    # print("Memory:",tracemalloc.get_traced_memory())
     cpu_pool.join()
     print("joined")
     print("Memory:",tracemalloc.get_traced_memory())
