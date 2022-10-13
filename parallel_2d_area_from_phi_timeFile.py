@@ -157,7 +157,7 @@ def para_volume_calc(time_step,i):
     if quarter_hull == True:
         temp_ctr = np.append(grain_ctr,[[max_xy,max_xy]],axis=0)
         # internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
-        internal_pore_vol_weighted = np.sum(void_vol_weighted[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=True)])
+        internal_pore_vol_weighted = np.sum(void_vol_weighted[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
     else:
         # internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
         internal_pore_vol_weighted = np.sum(void_vol_weighted[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
