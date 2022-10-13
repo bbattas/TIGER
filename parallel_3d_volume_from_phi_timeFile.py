@@ -34,8 +34,8 @@ n_frames = 40
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
-max_xy = 300
-max_z = 200
+max_xy = 30000#300
+max_z = 19688#200
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -128,7 +128,7 @@ def para_volume_calc(time_step,i):
     read_tf = time.perf_counter()
     print("  Finished reading frame",i+1, ":",round(read_tf-read_ti,2),"s")
 
-    x,y,z,c = MF.get_data_at_time(var_to_plot,times[i])
+    x,y,z,c = MF.get_data_at_time(var_to_plot,times[time_step]) #i instead of time_step didnt work sequence
     c_int = np.rint(c)
 
     mesh_ctr = np.asarray([ x[:, 0] + (x[:, 2] - x[:, 0])/2,
