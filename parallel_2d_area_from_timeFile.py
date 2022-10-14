@@ -31,7 +31,7 @@ else:
     n_cpu = 1
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
-sequence = True
+sequence = False
 n_frames = 100
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
