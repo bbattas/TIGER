@@ -38,7 +38,7 @@ n_frames = 40
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
-max_xy = 30000#300
+max_xy = 1000#300
 
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
@@ -240,7 +240,7 @@ if __name__ == "__main__":
         # current, peak =  tracemalloc.get_traced_memory()
         # print("Memory Final (current, peak):",round(current/1048576,1), round(peak/1048576,1), "MB")
         # saveloc = '../' + dirName + '_areas.csv'
-        np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
+        # np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
     else:
         raise(ValueError("ERROR: n_cpu command line flag error"))
 

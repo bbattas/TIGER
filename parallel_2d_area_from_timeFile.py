@@ -25,12 +25,16 @@ import tracemalloc
 # 1st command line input is the number of cpus
 # 2nd command line input is 'skip' if you want to skip the last unique file
 
-n_cpu = int(sys.argv[1])
+if len(sys.argv) > 1:
+    n_cpu = int(sys.argv[1])
+else:
+    n_cpu = 1
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
 sequence = True
 n_frames = 100
-
+cutoff = 0.0
+# Only for quarter structure hull adding the top right corner points
 quarter_hull = True
 max_xy = 1000
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
@@ -58,6 +62,11 @@ elif sequence == False:
     idx_frames = range(len(times))
 else:
     raise ValueError('sequence has to be True or False, not: ' + str(sequence))
+
+if cutoff != 0:
+    print("Cutting End Time to ",cutoff)
+    t_frames = [x for x in t_frames if x <= cutoff]
+    idx_frames = range(len(t_frames))
 
 tot_frames = len(idx_frames)
 
@@ -153,7 +162,8 @@ def para_volume_calc(time_step,i,op_max):
     # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
     total_hull_vol = sum(volumes[1:]) + internal_pore_vol
     per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
-    print("Memory:",tracemalloc.get_traced_memory())
+    # print("Memory:",tracemalloc.get_traced_memory())
+    print("  Finished calculating frame",i+1, ":",round(time.perf_counter()-read_tf,2),"s")
     # print([times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes)
     return [times[time_step], internal_pore_vol, total_hull_vol, per_tdens] + volumes
 
@@ -166,6 +176,7 @@ if __name__ == "__main__":
     tracemalloc.start()
     # Calculate maximum number of OPs and csv header
     op_max, csv_header = t0_opCount_headerBuild(idx_frames)
+    results = []
 
     if len(sys.argv) > 2:
         if "skip" in sys.argv[2]:
@@ -173,22 +184,35 @@ if __name__ == "__main__":
             print(" ")
             name_unq = name_unq[:-1]
 
-    #CREATE A PROCESS POOL
-    cpu_pool = mp.Pool(n_cpu)
-    print(cpu_pool)
     all_time_0 = time.perf_counter()
-    results = []
-    for i,frame in enumerate(idx_frames):
-        results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max )))#, callback = log_result)
-    # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
-    # print(ex_files)
-    cpu_pool.close()
-    cpu_pool.join()
-    print(cpu_pool)
+    if n_cpu == 1:
+        print("Running in series")
+        for i,frame in enumerate(idx_frames):
+            results.append(para_volume_calc(frame, i, op_max ))
+        # compile and save the data
+        print("Total Time:",round(time.perf_counter()-all_time_0,2),"s")
+        print("Aggregating data...")
 
-    print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
-    print("Aggregating data...")#Restructuring
-    results = [r.get() for r in results]
+    elif n_cpu > 1:
+        print("Running in parallel")
+        #CREATE A PROCESS POOL
+        cpu_pool = mp.Pool(n_cpu)
+        print(cpu_pool)
+        all_time_0 = time.perf_counter()
+
+        for i,frame in enumerate(idx_frames):
+            results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max)))#, callback = log_result)
+        # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
+
+        cpu_pool.close()
+        cpu_pool.join()
+        print(cpu_pool)
+        print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
+        print("Aggregating data...")#Restructuring
+        results = [r.get() for r in results]
+
+    else:
+        raise(ValueError("ERROR: n_cpu command line flag error"))
     # print(results)
     out_volumes = np.asarray(results)
     # print(out_volumes)
@@ -196,6 +220,8 @@ if __name__ == "__main__":
     print('\n' + "Done Building Area Data")
     saveloc = '../' + dirName + '_areas.csv'
     np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
+    current, peak =  tracemalloc.get_traced_memory()
+    print("Memory Final (current, peak):",round(current/1048576,1), round(peak/1048576,1), "MB")
     # "volumes.csv",
     quit()
 
