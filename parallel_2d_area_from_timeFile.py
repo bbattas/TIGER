@@ -31,12 +31,12 @@ else:
     n_cpu = 1
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
-sequence = False
-n_frames = 100
+sequence = True
+n_frames = 300
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
-max_xy = 1000
+max_xy = 2000#1000
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -52,11 +52,15 @@ t_step = times_files[:,2].astype(int)
 #GETTING CLOSEST TIME STEP TO DESIRED SIMULATION TIME FOR RENDER --> TYPICALLY 200 FRAMES WITH 20 FPS GIVES A GOOD 10 S LONG VIDEO
 # n_frames = 200
 if sequence == True:
-    t_max = times[-1]
-    # t_max = max(times)
-    t_frames =  np.linspace(0.0,t_max,n_frames)
-    idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
-    idx_frames = list( map(int, idx_frames) )
+    if n_frames < len(times):
+        t_max = times[-1]
+        # t_max = max(times)
+        t_frames =  np.linspace(0.0,t_max,n_frames)
+        idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
+        idx_frames = list( map(int, idx_frames) )
+    else:
+        t_frames = times
+        idx_frames = range(len(times))
 elif sequence == False:
     t_frames = times
     idx_frames = range(len(times))
