@@ -1,8 +1,15 @@
 from MultiExodusReader import MultiExodusReader
 import multiprocessing as mp
 from CalculationEngine import CalculationEngine
+from CalculationEngine import para_time_build
+
 import json
 import argparse
+import logging
+pt = logging.warning
+verb = logging.info
+# from logging import warning as pt
+# from logging import info as verb
 # from VolumeScripts import *
 
 import matplotlib.pyplot as plt
@@ -46,9 +53,28 @@ dirName = os.path.split(os.getcwd())[-1]
 #EXODUS FILE FOR RENDERING
 #ANY CHARACTER(S) CAN BE PLACED IN PLACE OF THE *, EG. 2D/grain_growth_2D_graintracker_out.e.1921.0000 or 2D/grain_growth_2D_graintracker_out.e-s001
 # filenames = '2D/grain_growth_2D_graintracker_out.e*'
+#IF IN MAIN PROCESS
+# calc = CalculationEngine()
+# print("Into main")
+# pt(calc.cl_args)
+#
+# pt("pt test warning")
+# verb("verbose test info")
+#
+# quit()
 
-calc = CalculationEngine()
-print("wow")
+if __name__ == "__main__":
+    print("in main i guess")
+    calc = CalculationEngine()
+    print("Into main")
+    calc.get_meta(calc.cl_args.new_meta)
+    pt(calc.cl_args)
+
+    pt("pt test warning")
+    verb("verbose test info")
+
+    quit()
+quit()
 print(calc.cl_args.new_meta)
 # if "--new-meta" in sys.argv:
 # parser = argparse.ArgumentParser()
@@ -59,7 +85,7 @@ print(calc.cl_args.new_meta)
 # print(args)
 # print(args.new_meta)
 
-times_files = np.load('times_files.npy')
+times_files = np.load('large_2D_times_files.npy')
 times = times_files[:,0].astype(float)
 t_step = times_files[:,2].astype(int)
 
