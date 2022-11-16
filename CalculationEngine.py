@@ -28,21 +28,16 @@ def para_time_build(count,file_name,len_files):
 class CalculationEngine:
     def __init__(self): #,files
         # if os.path.exists("tiger_meta.json"):
-        print(__name__)
         self.parse_cl_flags()
         self.set_logging(self.cl_args.verbose)
         verb('Command Line Flags: '+str(self.cl_args))
-        # if self.cl_args.cpu > 1:
-        #     verb('Creating pool with ' + str(self.cl_args.cpu) + ' cpus')
-        #     cpu_pool = mp.Pool(self.cl_args.cpu)
-        #     verb(cpu_pool)
-        # self.get_meta(self.cl_args.new_meta,cpu_pool)
 
-        # if self.cl_args.cpu > 1:
-        #     verb('closing pool')
-        #     cpu_pool.close()
-        #     cpu_pool.join()
-        # self.get_file_names_in_cwd()
+        self.get_meta(self.cl_args.new_meta)
+        if self.cl_args.parallel_times == 0:
+            # Exiting to run parallel times_files.npy making script
+            return
+        verb("continuing past the times files")
+
 
     def get_file_names_in_cwd(self):
         # Trim off the trailing CPU numbers on file names
@@ -66,8 +61,17 @@ class CalculationEngine:
         parser.add_argument('--new-meta', action='store_true')
         parser.add_argument('--cpu','-n', default=1,type=int)
         parser.add_argument('--verbose','-v',action='store_true')
-        parser.add_argument('--times',action='store_false')
+        parser.add_argument('--new-times',action='store_true')
+        parser.add_argument('--parallel-times',default=-1,type=int)
         parser.add_argument('--adaptive-mesh',action='store_true')
+        parser.add_argument('--split',default=1,type=int)
+        parser.add_argument('--sequence',action='store_true')
+        parser.add_argument('--frames',default=100,type=int)
+        parser.add_argument('--cutoff',default=0,type=int)
+        parser.add_argument('--quarter-hull',action='store_true')
+        parser.add_argument('--max-x',default=0,type=int)
+        parser.add_argument('--max-y',default=0,type=int)
+        parser.add_argument('--max-z',default=0,type=int)
         self.cl_args = parser.parse_args()
         return self.cl_args
 
@@ -84,10 +88,12 @@ class CalculationEngine:
             verb("Using existing tiger_meta.json")
         elif rewrite_flag or not os.path.exists("tiger_meta.json"):
             if os.path.exists("tiger_meta.json"):
-                verb("Overwriting old metadata with new")
+                verb("Overwriting old tiger_meta.json with new")
             else:
-                verb("Writing new metadata")
+                verb("Writing new tiger_meta.json")
             self.write_meta()
+            if self.cl_args.parallel_times == 0:
+                return
         else:
             pt("Error: tiger_meta.json failure?")
         return
@@ -97,56 +103,24 @@ class CalculationEngine:
         # return self.meta
 
     def write_meta(self):
-        if self.cl_args.times == True and os.path.exists("times_files.npy"):
+        if (self.cl_args.new_times == False or self.cl_args.parallel_times == 1) and os.path.exists("times_files.npy"):
             verb('Using existing times_files.npy to generate tiger_meta.json')
-            times_files = np.load('times_files.npy')
-            self.times = times_files[:,0].astype(float)
-            self.file_names = times_files[:,1].astype(str)
-            self.file_step = times_files[:,2].astype(int)
-            if "*.e-s*" in self.file_names:
-                verb('Adaptive Mesh = True')
-                self.cl_args.adaptive_mesh = True
-
-        elif self.cl_args.times == False:
+        else:#if self.cl_args.new_times == True:
             verb('Generating new times_files.npy')
             self.file_names = self.get_file_names_in_cwd()
-            len_files = len(self.file_names)
-            if "*.e-s*" in self.file_names:
-                verb('Adaptive Mesh = True')
-                self.cl_args.adaptive_mesh = True
-            else:
-                verb('Adaptive Mesh = False')
+            self.len_files = len(self.file_names)
             # Parallel Time File Make
             if self.cl_args.cpu > 1:
-                verb('Parallelizing with ' + str(self.cl_args.cpu) + ' cpus')
-                cpu_pool = mp.Pool(self.cl_args.cpu)
-                verb(cpu_pool)
-                pool_t0 = time.perf_counter()
-                results = []
-                for i,file in enumerate(self.file_names):
-                    results.append(cpu_pool.apply_async(para_time_build,args = (i, file, len_files )))
-                cpu_pool.close()
-                cpu_pool.join()
-                verb("Total Pool Time: "+str(round(time.perf_counter()-pool_t0))+"s")
-                verb("Aggregating data...")#Restructuring
-                verb(results[0])
-                # verb(results[0].get())
-                outs = [r.get() for r in results]
-                print(outs)
-                time_file_list = []
-                for row1 in results:
-                    for row2 in row1:
-                        time_file_list.append(row2)
-                times_files = np.asarray(time_file_list)
-                times_files = times_files[times_files[:, 0].astype(float).argsort()]
-                verb('Done Building Time Data')
+                verb('Exiting CalculationEngine to run parallel times_files.npy generation')
+                self.cl_args.parallel_times = 0
+                return
             # Serial Time File Make
             else:
                 verb('Serialized')
                 pool_t0 = time.perf_counter()
                 results = []
                 for i,file in enumerate(self.file_names):
-                    results.append(para_time_build(i, file, len_files ))
+                    results.append(para_time_build(i, file, self.len_files ))
                 verb("Total Serial Time: "+str(round(time.perf_counter()-pool_t0))+"s")
                 verb("Aggregating data...")#Restructuring
                 time_file_list = []
@@ -155,5 +129,17 @@ class CalculationEngine:
                         time_file_list.append(row2)
                 times_files = np.asarray(time_file_list)
                 times_files = times_files[times_files[:, 0].astype(float).argsort()]
+                np.save('times_files.npy', times_files)
                 verb('Done Building Time Data')
+        # Actually read the times_files.npy and pull info from it
+        verb('Reading times_files.npy')
+        times_files = np.load('times_files.npy')
+        self.times = times_files[:,0].astype(float)
+        self.file_names = times_files[:,1].astype(str)
+        self.file_step = times_files[:,2].astype(int)
+        if "*.e-s*" in self.file_names:
+            verb('Adaptive Mesh = True')
+            self.cl_args.adaptive_mesh = True
+
+
         return

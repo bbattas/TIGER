@@ -64,14 +64,38 @@ dirName = os.path.split(os.getcwd())[-1]
 # quit()
 
 if __name__ == "__main__":
-    print("in main i guess")
+    print("__main__ Start")
     calc = CalculationEngine()
-    print("Into main")
-    calc.get_meta(calc.cl_args.new_meta)
-    pt(calc.cl_args)
+    # If it exited to run the parallel_times
+    if calc.cl_args.parallel_times == 0:
+        verb('Parallelizing with ' + str(calc.cl_args.cpu) + ' cpus')
+        cpu_pool = mp.Pool(calc.cl_args.cpu)
+        verb(cpu_pool)
+        pool_t0 = time.perf_counter()
+        results = []
+        for i,file in enumerate(calc.file_names):
+            results.append(cpu_pool.apply_async(para_time_build,args = (i, file, calc.len_files )))
+        cpu_pool.close()
+        cpu_pool.join()
+        verb("Total Pool Time: "+str(round(time.perf_counter()-pool_t0))+"s")
+        verb("Aggregating data...")#Restructuring
+        verb(results[0])
+        # verb(results[0].get())
+        results = [r.get() for r in results]
+        time_file_list = []
+        for row1 in results:
+            for row2 in row1:
+                time_file_list.append(row2)
+        times_files = np.asarray(time_file_list)
+        times_files = times_files[times_files[:, 0].astype(float).argsort()]
+        np.save('times_files.npy', times_files)
+        verb('Done Building Time Data')
+        sys.argv.append('--parallel-times=1')
+        verb('Re-entering CalculationEngine')
+        calc = CalculationEngine()
 
-    pt("pt test warning")
-    verb("verbose test info")
+
+    pt("END OF THE MAIN")
 
     quit()
 quit()
