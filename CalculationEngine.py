@@ -64,6 +64,7 @@ class CalculationEngine:
         parser.add_argument('--new-times',action='store_true')
         parser.add_argument('--parallel-times',default=-1,type=int)
         parser.add_argument('--adaptive-mesh',action='store_true')
+        parser.add_argument('--dim',default=0,type=int)
         parser.add_argument('--split',default=1,type=int)
         parser.add_argument('--sequence',action='store_true')
         parser.add_argument('--frames',default=100,type=int)
@@ -140,6 +141,9 @@ class CalculationEngine:
         if "*.e-s*" in self.file_names:
             verb('Adaptive Mesh = True')
             self.cl_args.adaptive_mesh = True
+        self.meta = {}
 
+        return
 
+    def t0_properties(self):
         return
