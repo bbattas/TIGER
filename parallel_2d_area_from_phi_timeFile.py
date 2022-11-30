@@ -21,7 +21,7 @@ import math
 import sys
 import tracemalloc
 
-# This is the 2D conversion of parallel_3d_volume_from_timeFile
+# This is the 3d_plane_data but for when there are too many nemesis/-s files to open
 # 1st command line input is the number of cpus
 # 2nd command line input is 'skip' if you want to skip the last unique file
 
@@ -29,14 +29,17 @@ if len(sys.argv) > 1:
     n_cpu = int(sys.argv[1])
 else:
     n_cpu = 1
-var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
+# n_cpu = int(sys.argv[1])
+var_to_plot = 'phi' # OPs cant be plotted, needs to be elements not nodes
+phi_hull_threshold = 0.5
 # z_plane = 10000#19688/2
 sequence = True
 n_frames = 300
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
-max_xy = 2000#1000
+max_xy = 1000#300
+
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -54,10 +57,8 @@ t_step = times_files[:,2].astype(int)
 if sequence == True:
     if n_frames < len(times):
         t_max = times[-1]
-        # t_max = max(times)
         t_frames =  np.linspace(0.0,t_max,n_frames)
         idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
-        idx_frames = list( map(int, idx_frames) )
     else:
         t_frames = times
         idx_frames = range(len(times))
@@ -75,6 +76,8 @@ if cutoff != 0:
 tot_frames = len(idx_frames)
 
 
+
+
 def pore_in_hull(xyz_for_hull,void_ctr_xyz,tolerance,point_plot_TF):
     # print(" Taking convex hull")
     # tic = time.perf_counter()
@@ -89,87 +92,90 @@ def pore_in_hull(xyz_for_hull,void_ctr_xyz,tolerance,point_plot_TF):
     # toc = time.perf_counter()
     # print("     ",toc - tic)
 
-    # The void centers that are in the hull
-    void_in_hull = void_ctr_xyz[in_hull]
     # Plot a scatterplot of the void mesh centers in the hull
     if point_plot_TF == True:
+        # The void centers that are in the hull
+        void_in_hull = void_ctr_xyz[in_hull]
         fig = plt.figure()
         ax = fig.add_subplot(111)
         for simplex in hull.simplices:
             # plt.plot(grain_ctr[simplex, 0], grain_ctr[simplex, 1], grain_ctr[simplex,2], 'r-')
             plt.plot(xyz_for_hull[simplex, 0], xyz_for_hull[simplex, 1], 'r-')
         # Now plot the void points
-        ax.scatter(void_in_hull[:, 0], void_in_hull[:, 1],s=0.01,alpha=0.5)
-        ax.set_aspect('equal')
+        ax.scatter(void_in_hull[:, 0], void_in_hull[:, 1],s=0.05,alpha=0.5,color='blue')
         # plt.autoscale()
+        ax.axis('equal')
         plt.show()
     # Output the boolean array of which void_ctr is in the hull for use
     return in_hull
 
 
 
-
+# Dont actually need this if im using phi, since itll only measure phi or not phi
 def t0_opCount_headerBuild(idx_frames):
     print("Calculating initial frame...")
     read_ti = time.perf_counter()
     MF = MultiExodusReader(times_files[idx_frames[0],1])#.exodus_readers
     read_tf = time.perf_counter()
     print("  Finished reading initial frame:",round(read_tf-read_ti,2),"s")
-
-    x,y,z,c = MF.get_data_at_time(var_to_plot,times[0])
-
+    # Use unique grains for the total number of ops in the t=0
+    x,y,z,c = MF.get_data_at_time('unique_grains',times[0])#'unique_grains'0
     c_int = np.rint(c)
 
     op_0 = round(np.amax(c_int))+2
-    csv_header = ["time", "internal_pore", "total_hull", "vol_density", "total_void"]
-    for n in range(1,op_0):
-        csv_header.append("Grain_"+str(n))
+    csv_header = ["time", "internal_pore", "total_hull", "vol_density", "total_void", "total_grain"]
+    # for n in range(1,op_0):
+    #     csv_header.append("Grain_"+str(n))
     return op_0, csv_header
 
 
 
-def para_volume_calc(time_step,i,op_max):
+def para_volume_calc(time_step,i):
     print("Calculating frame",i+1, "/",tot_frames)
     read_ti = time.perf_counter()
     MF = MultiExodusReader(times_files[time_step,1])#.exodus_readers
     read_tf = time.perf_counter()
     print("  Finished reading frame",i+1, ":",round(read_tf-read_ti,2),"s")
 
-    x,y,z,c = MF.get_data_at_time(var_to_plot,times[time_step])# MF.get_data_at_time(var_to_plot,times[i])
-    c_int = np.rint(c)
+    x,y,z,c = MF.get_data_at_time(var_to_plot,times[time_step]) #was i the right way for sequence? or was it time_step
+    # c_int = np.rint(c)
 
     mesh_ctr = np.asarray([ x[:, 0] + (x[:, 2] - x[:, 0])/2,
                             y[:, 0] + (y[:, 2] - y[:, 0])/2 ]).T
 
     mesh_vol = np.asarray((x[:, 2] - x[:, 0])*(y[:, 2] - y[:, 0]))
 
-    zeros = np.zeros_like(c_int)
+    zeros = np.zeros_like(c)#_int)
     volumes = []# np.zeros(round(np.amax(c_int))+2)
-    centroids = np.asarray([ volumes, volumes ]).T
 
-    for n in range(op_max):
-        volumes.append(np.sum(np.where(c_int==(n-1),mesh_vol,zeros)))
+    # weighted OP volumes, instead of np.where thresholding use volume*OP
+    volumes.append(np.sum(mesh_vol * c))
+    volumes.append(np.sum(mesh_vol * (1-c)))
 
-    grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
+    grain_ctr = np.delete(mesh_ctr, np.where((c>=phi_hull_threshold))[0], axis=0)
     # For if using centroids for the convex hull
     # grain_vol = np.delete(mesh_vol, np.where((c_int<0.0))[0], axis=0)
-    void_ctr = np.delete(mesh_ctr, np.where((c_int>=0.0))[0], axis=0)
-    void_vol = np.delete(mesh_vol, np.where((c_int>=0.0))[0], axis=0)
-
-    # internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
+    void_ctr = np.delete(mesh_ctr, np.where((c<phi_hull_threshold))[0], axis=0)
+    # void_vol = np.delete(mesh_vol, np.where((c>=phi_hull_threshold))[0], axis=0)
+    void_vol_weighted = np.delete(mesh_vol*c, np.where((c<phi_hull_threshold))[0], axis=0)
     if quarter_hull == True:
         temp_ctr = np.append(grain_ctr,[[max_xy,max_xy]],axis=0)
-        internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
+        # internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
+        internal_pore_vol_weighted = np.sum(void_vol_weighted[pore_in_hull(temp_ctr,void_ctr,1e-12,point_plot_TF=False)])
     else:
-        internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
+        # internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
+        internal_pore_vol_weighted = np.sum(void_vol_weighted[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
     # For if using centroids for the convex hull
     # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
-    total_hull_vol = sum(volumes[1:]) + internal_pore_vol
-    per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
-    # print("Memory:",tracemalloc.get_traced_memory())
+    # total_hull_vol = sum(volumes[1:]) + internal_pore_vol
+    # per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
+    total_hull_vol_weighted = volumes[1] + internal_pore_vol_weighted
+    per_tdens = (total_hull_vol_weighted - internal_pore_vol_weighted) / total_hull_vol_weighted
     print("  Finished calculating frame",i+1, ":",round(time.perf_counter()-read_tf,2),"s")
+    # print("Memory:",tracemalloc.get_traced_memory())
     # print([times[i], internal_pore_vol, total_hull_vol, per_tdens] + volumes)
-    return [times[time_step], internal_pore_vol, total_hull_vol, per_tdens] + volumes
+    # csv_header = ["time", "internal_pore", "total_hull", "vol_density", "total_void", "total_grain"]
+    return [times[i], internal_pore_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
 
 
 
@@ -178,8 +184,13 @@ def para_volume_calc(time_step,i,op_max):
 #IF IN MAIN PROCESS
 if __name__ == "__main__":
     tracemalloc.start()
+    # results = []
+    # for i,frame in enumerate(idx_frames):
+    #     results.append(para_volume_calc(frame, i ))
+    # quit()
     # Calculate maximum number of OPs and csv header
-    op_max, csv_header = t0_opCount_headerBuild(idx_frames)
+    # op_max, csv_header = t0_opCount_headerBuild(idx_frames)
+    csv_header = ["time", "internal_pore", "total_hull", "vol_density", "total_void", "total_grain"]
     results = []
 
     if len(sys.argv) > 2:
@@ -188,15 +199,26 @@ if __name__ == "__main__":
             print(" ")
             name_unq = name_unq[:-1]
 
-    all_time_0 = time.perf_counter()
-    if n_cpu == 1:
+    # Series if n_cpu is 1 or blank
+    if n_cpu == 1 or len(sys.argv) == 1:
         print("Running in series")
+        all_time_0 = time.perf_counter()
         for i,frame in enumerate(idx_frames):
-            results.append(para_volume_calc(frame, i, op_max ))
+            results.append(para_volume_calc(frame, i ))
         # compile and save the data
         print("Total Time:",round(time.perf_counter()-all_time_0,2),"s")
-        print("Aggregating data...")
+        print("Aggregating data...")#Restructuring
+        # # print(results)
+        # out_volumes = np.asarray(results)
+        # # print(out_volumes)
+        # out_volumes = out_volumes[out_volumes[:, 0].astype(float).argsort()]
+        # print('\n' + "Done Building Volume Data")
+        # current, peak =  tracemalloc.get_traced_memory()
+        # print("Memory Final (current, peak):",round(current/1048576,1), round(peak/1048576,1), "MB")
+        # saveloc = '../' + dirName + '_areas.csv'
+        # np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
 
+    # Parallel for n_cpu > 1
     elif n_cpu > 1:
         print("Running in parallel")
         #CREATE A PROCESS POOL
@@ -205,7 +227,7 @@ if __name__ == "__main__":
         all_time_0 = time.perf_counter()
 
         for i,frame in enumerate(idx_frames):
-            results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max)))#, callback = log_result)
+            results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i )))#, callback = log_result)
         # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
 
         cpu_pool.close()
@@ -214,18 +236,26 @@ if __name__ == "__main__":
         print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
         print("Aggregating data...")#Restructuring
         results = [r.get() for r in results]
-
+        # # print(results)
+        # out_volumes = np.asarray(results)
+        # # print(out_volumes)
+        # out_volumes = out_volumes[out_volumes[:, 0].astype(float).argsort()]
+        # print('\n' + "Done Building Volume Data")
+        # current, peak =  tracemalloc.get_traced_memory()
+        # print("Memory Final (current, peak):",round(current/1048576,1), round(peak/1048576,1), "MB")
+        # saveloc = '../' + dirName + '_areas.csv'
+        # np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
     else:
         raise(ValueError("ERROR: n_cpu command line flag error"))
-    # print(results)
+
     out_volumes = np.asarray(results)
     # print(out_volumes)
     out_volumes = out_volumes[out_volumes[:, 0].astype(float).argsort()]
     print('\n' + "Done Building Area Data")
-    saveloc = '../' + dirName + '_areas.csv'
-    np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
     current, peak =  tracemalloc.get_traced_memory()
     print("Memory Final (current, peak):",round(current/1048576,1), round(peak/1048576,1), "MB")
+    saveloc = '../' + dirName + '_areas.csv'
+    np.savetxt(saveloc, np.asarray(out_volumes), delimiter=',', header=','.join(csv_header), comments='')
     # "volumes.csv",
     quit()
 

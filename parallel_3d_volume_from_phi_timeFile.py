@@ -29,13 +29,13 @@ n_cpu = int(sys.argv[1])
 var_to_plot = 'phi' # OPs cant be plotted, needs to be elements not nodes
 phi_hull_threshold = 0.5
 # z_plane = 10000#19688/2
-sequence = False
-n_frames = 40
-
+sequence = True
+n_frames = 300
+cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
-max_xy = 300
-max_z = 200
+max_xy = 2000#30000#300
+max_z = 1384#19688#200
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -51,14 +51,23 @@ t_step = times_files[:,2].astype(int)
 #GETTING CLOSEST TIME STEP TO DESIRED SIMULATION TIME FOR RENDER --> TYPICALLY 200 FRAMES WITH 20 FPS GIVES A GOOD 10 S LONG VIDEO
 # n_frames = 200
 if sequence == True:
-    t_max = times[-1]
-    t_frames =  np.linspace(0.0,t_max,n_frames)
-    idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
+    if n_frames < len(times):
+        t_max = times[-1]
+        t_frames =  np.linspace(0.0,t_max,n_frames)
+        idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
+    else:
+        t_frames = times
+        idx_frames = range(len(times))
 elif sequence == False:
     t_frames = times
     idx_frames = range(len(times))
 else:
     raise ValueError('sequence has to be True or False, not: ' + str(sequence))
+
+if cutoff != 0:
+    print("Cutting End Time to ",cutoff)
+    t_frames = [x for x in t_frames if x <= cutoff]
+    idx_frames = range(len(t_frames))
 
 tot_frames = len(idx_frames)
 
@@ -123,7 +132,7 @@ def para_volume_calc(time_step,i):
     read_tf = time.perf_counter()
     print("  Finished reading frame",i+1, ":",round(read_tf-read_ti,2),"s")
 
-    x,y,z,c = MF.get_data_at_time(var_to_plot,times[i])
+    x,y,z,c = MF.get_data_at_time(var_to_plot,times[time_step]) #i instead of time_step didnt work sequence
     c_int = np.rint(c)
 
     mesh_ctr = np.asarray([ x[:, 0] + (x[:, 2] - x[:, 0])/2,
@@ -171,10 +180,10 @@ def para_volume_calc(time_step,i):
 #IF IN MAIN PROCESS
 if __name__ == "__main__":
     tracemalloc.start()
-    results = []
-    for i,frame in enumerate(idx_frames):
-        results.append(para_volume_calc(frame, i ))
-    quit()
+    # results = []
+    # for i,frame in enumerate(idx_frames):
+    #     results.append(para_volume_calc(frame, i ))
+    # quit()
     # Calculate maximum number of OPs and csv header
     op_max, csv_header = t0_opCount_headerBuild(idx_frames)
     print("Memory:",tracemalloc.get_traced_memory())
@@ -191,14 +200,14 @@ if __name__ == "__main__":
     all_time_0 = time.perf_counter()
     results = []
     for i,frame in enumerate(idx_frames):
-        results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i, op_max )))#, callback = log_result)
+        results.append(cpu_pool.apply_async(para_volume_calc,args = (frame, i )))#, callback = log_result)
     # ex_files = [cpu_pool.map(para_time_build,args=(file,)) for file in name_unq  ]
     # print(ex_files)
-    print("Memory:",tracemalloc.get_traced_memory())
-    print("closing")
+    # print("Memory:",tracemalloc.get_traced_memory())
+    # print("closing")
     cpu_pool.close()
-    print("closed")
-    print("Memory:",tracemalloc.get_traced_memory())
+    # print("closed")
+    # print("Memory:",tracemalloc.get_traced_memory())
     cpu_pool.join()
     print("joined")
     print("Memory:",tracemalloc.get_traced_memory())

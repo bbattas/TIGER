@@ -173,7 +173,7 @@ def para_volume_calc(time_step,i,op_max):
     read_tf = time.perf_counter()
     print("  Finished reading frame",i+1, ":",round(read_tf-read_ti,2),"s")
 
-    x,y,z,c = MF.get_data_at_time(var_to_plot,times[i])
+    x,y,z,c = MF.get_data_at_time(var_to_plot,times[time_step])
     c_int = np.rint(c)
 
     mesh_ctr = np.asarray([ x[:, 0] + (x[:, 2] - x[:, 0])/2,
