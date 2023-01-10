@@ -38,9 +38,9 @@ print("Sectioning the ConvexHull calculation into",split_num,"parts to reduce me
 sequence = False
 n_frames = 40
 
-quarter_hull = False
-max_xy = 30000#1000
-max_z = 19688#692
+# quarter_hull = False
+# max_xy = 30000#1000
+# max_z = 19688#692
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -184,10 +184,15 @@ def para_volume_calc(time_step,i,op_max):
 
     zeros = np.zeros_like(c_int)
     volumes = []# np.zeros(round(np.amax(c_int))+2)
-    centroids = np.asarray([ volumes, volumes, volumes ]).T
-
+    # centroids = np.asarray([ volumes, volumes, volumes ]).T
+    grain_centroids = []
     for n in range(op_max):
         volumes.append(np.sum(np.where(c_int==(n-1),mesh_vol,zeros)))
+        if volumes[n] > 0.0 and n > 0:
+            grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
+                                     np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
+                                     np.sum(np.where(c_int==(n-1),mesh_ctr[:,2] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-2),mesh_vol,zeros))])
+
 
     grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
     # For if using centroids for the convex hull
@@ -196,11 +201,11 @@ def para_volume_calc(time_step,i,op_max):
     void_vol = np.delete(mesh_vol, np.where((c_int>=0.0))[0], axis=0)
 
     # internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,1e-12,point_plot_TF=False)])
-    if quarter_hull == True:
-        temp_ctr = np.append(grain_ctr,[[max_xy,max_xy,0],[max_xy,max_xy,max_z]],axis=0)
-        internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,i,1e-12,point_plot_TF=False)])
-    else:
-        internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,i,1e-12,point_plot_TF=False)])
+    # if quarter_hull == True:
+    temp_ctr = np.append(grain_centroids,[[0,0,0]],axis=0)
+    internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr,i,1e-12,point_plot_TF=False)])
+    # else:
+    # internal_pore_vol = np.sum(void_vol[pore_in_hull(grain_ctr,void_ctr,i,1e-12,point_plot_TF=False)])
     # For if using centroids for the convex hull
     # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
     total_hull_vol = sum(volumes[1:]) + internal_pore_vol
