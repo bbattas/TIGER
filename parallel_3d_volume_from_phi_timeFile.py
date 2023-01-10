@@ -34,8 +34,8 @@ n_frames = 300
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points
 quarter_hull = True
-max_xy = 2000#30000#300
-max_z = 1384#19688#200
+max_xy = 9000#2000#30000#300
+max_z = 5800#1384#19688#200
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 

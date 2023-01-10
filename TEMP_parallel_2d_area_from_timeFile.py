@@ -31,12 +31,12 @@ else:
     n_cpu = 1
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
-sequence = True
+sequence = False
 n_frames = 300
 cutoff = 0.0
 # Only for quarter structure hull adding the top right corner points and the centroid
 quarter_hull = True
-max_xy = 30000#1000
+max_xy = 9000#1000#9000#9000#1000#9000#1000
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -158,7 +158,10 @@ def para_volume_calc(time_step,i,op_max):
                 grain_centroids[n][0] = max_xy
             elif grain_centroids[n][1] > grain_centroids[n][0]:
                 grain_centroids[n][1] = max_xy
-    # print(grain_centroids)
+
+    if len(grain_centroids) < 2:
+        # print(grain_centroids)
+        return -1
     # print(grain_centroids[0])
     # print(grain_centroids[0][1])
     grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
@@ -225,7 +228,7 @@ if __name__ == "__main__":
         print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
         print("Aggregating data...")#Restructuring
         results = [r.get() for r in results]
-
+        results = [r for r in results if r != -1]
     else:
         raise(ValueError("ERROR: n_cpu command line flag error"))
     # print(results)

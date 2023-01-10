@@ -28,12 +28,12 @@ import tracemalloc
 n_cpu = int(sys.argv[1])
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
-sequence = True
+sequence = False
 n_frames = 300
 
 quarter_hull = True
-max_xy = 30000#1000#2000#1000
-max_z = 19688#692#1384#692
+max_xy = 1000#9000#1000#2000#1000
+max_z = 692#5800#692#1384#692
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -144,7 +144,7 @@ def para_volume_calc(time_step,i,op_max):
         if volumes[n] > 0.0 and n > 0:
             grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
                                      np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
-                                     np.sum(np.where(c_int==(n-1),mesh_ctr[:,2] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-2),mesh_vol,zeros))])
+                                     np.sum(np.where(c_int==(n-1),mesh_ctr[:,2] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros))])
     if quarter_hull == True:
         for n in range(len(grain_centroids)):
             if grain_centroids[n][0] > grain_centroids[n][1]:
@@ -159,6 +159,10 @@ def para_volume_calc(time_step,i,op_max):
                 grain_centroids[n][2] = 0
             else:
                 print("Centroid Z Error")
+
+    if len(grain_centroids) < 2:
+        # print(grain_centroids)
+        return -1
 
     grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
     # For if using centroids for the convex hull
@@ -218,6 +222,7 @@ if __name__ == "__main__":
     print("Total Pool Time:",round(time.perf_counter()-all_time_0,2),"s")
     print("Aggregating data...")#Restructuring
     results = [r.get() for r in results]
+    results = [r for r in results if r != -1]
     # print(results)
     out_volumes = np.asarray(results)
     # print(out_volumes)
