@@ -1,7 +1,7 @@
 from MultiExodusReader import MultiExodusReader
 import multiprocessing as mp
-from CalculationEngine import CalculationEngine
-from CalculationEngine import para_time_build
+from CalculationsV2 import CalculationsV2
+# from CalculationEngine import para_time_build
 
 import json
 import argparse
@@ -35,20 +35,20 @@ import tracemalloc
 # 1st command line input is the number of cpus
 # 2nd command line input is 'skip' if you want to skip the last unique file
 
-# if len(sys.argv) > 1:
-#     n_cpu = int(sys.argv[1])
-# else:
-n_cpu = 1
-var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
-# z_plane = 10000#19688/2
-sequence = True
-n_frames = 300
-cutoff = 0.0
-# Only for quarter structure hull adding the top right corner points and the centroid
-quarter_hull = True
-max_xy = 30000#1000
-#ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
-dirName = os.path.split(os.getcwd())[-1]
+# # if len(sys.argv) > 1:
+# #     n_cpu = int(sys.argv[1])
+# # else:
+# n_cpu = 1
+# var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
+# # z_plane = 10000#19688/2
+# sequence = True
+# n_frames = 300
+# cutoff = 0.0
+# # Only for quarter structure hull adding the top right corner points and the centroid
+# quarter_hull = True
+# max_xy = 30000#1000
+# #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
+# dirName = os.path.split(os.getcwd())[-1]
 
 #EXODUS FILE FOR RENDERING
 #ANY CHARACTER(S) CAN BE PLACED IN PLACE OF THE *, EG. 2D/grain_growth_2D_graintracker_out.e.1921.0000 or 2D/grain_growth_2D_graintracker_out.e-s001
@@ -62,6 +62,40 @@ dirName = os.path.split(os.getcwd())[-1]
 # verb("verbose test info")
 #
 # quit()
+
+if __name__ == "__main__":
+    print("__main__ Start")
+    calc = CalculationsV2()
+    # print(calc.__dict__)
+    print("Testing some shit:")
+    # dict = {}
+    # dict['cl_args'] = vars(calc.cl_args)
+    # dict['params'] = {
+    #     'adaptive_mesh':calc.adaptive_mesh,
+    #     'test' : 7
+    # }
+    # dict['file_names'] = list(calc.file_names)
+    # # dict['testvalue'] = list(calc.file_names)
+    # print(calc.file_names)
+    # print(dict)
+    # with open('tiger_meta.json', 'w') as fp:
+    #     json.dump(dict, fp, indent=4)
+
+    # pt("END OF THE MAIN")
+    # with open('tiger_meta.json','r') as json_file:
+    #     data = json.load(json_file)
+    # print(data)
+    # print(" ")
+    # print(data['cl_args'])
+
+
+    quit()
+quit()
+
+
+
+
+
 
 if __name__ == "__main__":
     print("__main__ Start")
