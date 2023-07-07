@@ -68,6 +68,24 @@ if __name__ == "__main__":
     calc = CalculationsV2()
     # print(calc.__dict__)
     print("Testing some shit:")
+    calc_it = calc.get_frames()
+    print(calc.file_names)
+    frames = [0]
+    MF = MultiExodusReader(calc.file_names[0])
+    print("read it all")
+    # REMEMBERR IF NO MESH ADAPTIVITY CAN JUST OPEN THEM ALL!!!!
+    for idx in frames:
+        pt('Frame '+str(idx)+'/'+str(len(frames)))
+        # MF = MultiExodusReader(calc.files[idx])
+        x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx])
+        print('Got the data at the time')
+        print(c)
+        print(x)
+        print(len(c))
+        print(' ')
+        print(c[0])
+
+
     # dict = {}
     # dict['cl_args'] = vars(calc.cl_args)
     # dict['params'] = {
@@ -81,7 +99,7 @@ if __name__ == "__main__":
     # with open('tiger_meta.json', 'w') as fp:
     #     json.dump(dict, fp, indent=4)
 
-    # pt("END OF THE MAIN")
+    pt("END OF THE MAIN")
     # with open('tiger_meta.json','r') as json_file:
     #     data = json.load(json_file)
     # print(data)

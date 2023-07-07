@@ -12,14 +12,14 @@ import pandas as pd
 import math
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
-var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
-z_plane = 0#10000#19688/2
+var_to_plot = 'phi' # OPs cant be plotted, needs to be elements not nodes
+z_plane = 150#10000#19688/2
 sequence = False
 n_frames = 40
 particleAreas = False #GO BACK AND MAKE RELEVANT OR REMOVE
 particleCentroids = True
 overwriteCentroids = True
-max_xy = 1000
+max_xy = 300
 test = False
 full_area = False
 pic_directory = '../pics'
