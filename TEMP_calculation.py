@@ -65,25 +65,102 @@ import tracemalloc
 
 if __name__ == "__main__":
     print("__main__ Start")
+    # xlist = []
+    # x1 = np.asarray([0, 1, 2, 3, 4, 5, 6, 7])
+    # x2 = np.asarray([10, 11, 12, 13, 14, 15, 16, 17])
+
+    # xlist.append(x1)
+    # xlist.append(x2)
+    # x = np.vstack(xlist)
+    # print(x)
+    # print(" ")
+    # mask = [0,3,7,4]
+    # temp = []
+    # test1 = x[:,0]
+    # for n in mask:
+    #     temp.append(x[:,n])
+    #     test1 = test1 + x[:,n]
+    # check = np.hstack(temp)
+
+    # print(check)
+    # print(test1)
+    # test21 = [np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4) in zip(x[:,0], x[:,3], x[:,7], x[:,4])]
+    # print(test21)
+    # test2 = np.asarray([np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4) in zip(x[:,0], x[:,3], x[:,7], x[:,4])])
+
+    # print(test2)
+
+
+
+
+
+
     calc = CalculationsV2()
     # print(calc.__dict__)
     print("Testing some shit:")
+
     calc_it = calc.get_frames()
     print(calc.file_names)
     frames = [0]
+    read_ti = time.perf_counter()
     MF = MultiExodusReader(calc.file_names[0])
-    print("read it all")
+    # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
+    read_tf = time.perf_counter()
+    print("  Finished reading files:",round(read_tf-read_ti,2),"s")
+
     # REMEMBERR IF NO MESH ADAPTIVITY CAN JUST OPEN THEM ALL!!!!
     for idx in frames:
         pt('Frame '+str(idx)+'/'+str(len(frames)))
         # MF = MultiExodusReader(calc.files[idx])
-        x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx])
+        x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx],True)
         print('Got the data at the time')
-        print(c)
-        print(x)
-        print(len(c))
-        print(' ')
-        print(c[0])
+        nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
+        calc.plot_slice(idx,nx,ny,nz,nc)
+
+
+        # print(nx)
+        # print(ny)
+        # print(nz)
+        # print(nc)
+        # pc = np.average(nc, axis=1)
+        # print(pc)
+
+        # # plott
+        # fig, ax = plt.subplots()
+        # coords = np.asarray([ np.asarray([x_val,y_val]).T for (x_val,y_val) in zip(ny,nz) ])
+        # # coords, vols = calc.mesh_center_quadElements(y,z)
+        # print(coords)
+        # #USE POLYCOLLECTION TO DRAW ALL POLYGONS DEFINED BY THE COORDINATES
+        # p = PolyCollection(coords, cmap=matplotlib.cm.coolwarm, alpha=1)#,edgecolor='k'      #Edge color can be set if you want to show mesh
+
+        # #COLOR THE POLYGONS WITH OUR VARIABLE
+        # ## Map plot variable range to color range
+        # c_min = np.amin(c)
+        # c_max = np.amax(c)
+        # colors = pc#(c - c_min)/(c_max-c_min)
+        # #
+        # p.set_array(np.array(colors) )
+
+        # #ADD THE POLYGON COLLECTION TO AXIS --> THIS IS WHAT ACTUALLY PLOTS THE POLYGONS ON OUR WINDOW
+        # ax.add_collection(p)
+
+        # #FIGURE FORMATTING
+
+        # #SET X AND Y LIMITS FOR FIGURE --> CAN USE x,y ARRAYS BUT MANUALLY SETTING IS EASIER
+        # # ax.set_xlim([0,300])
+        # # ax.set_ylim([0,300])
+        # ax.set_xlim([np.amin(ny),np.amax(ny)])
+        # ax.set_ylim([np.amin(nz),np.amax(nz)])
+        # #SET ASPECT RATIO TO EQUAL TO ENSURE IMAGE HAS SAME ASPECT RATIO AS ACTUAL MESH
+        # ax.set_aspect('equal')
+
+        # #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION
+        # fig.colorbar(p,label="phi")
+        # plt.show()
+
+
+
+
 
 
     # dict = {}

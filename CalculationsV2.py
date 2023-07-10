@@ -8,6 +8,10 @@ import multiprocessing as mp
 import time
 from MultiExodusReader import MultiExodusReader
 import subprocess
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.collections import PolyCollection
+
 
 # # Needs to have access to '~/projects/TIGER/parallel_time_file_make.py'
 # can debug it in another script by running print(calc.__dict__)
@@ -24,6 +28,7 @@ class CalculationsV2:
         self.parse_cl_flags()
         self.set_logging()
         db('Command Line Flags: '+str(self.cl_args))
+        self.checkForInput()
         self.times_files()
         self.get_meta(self.cl_args.new_meta)
 
@@ -89,8 +94,21 @@ class CalculationsV2:
         db('Debug Logging Enabled: will output more messages in CalculationsV2 internal shit')
         db('    this is verbose plus even more, get ready for the screen to fill up...')
         verb('Verbose Logging Enabled')
+        logging.getLogger('matplotlib.font_manager').disabled = True
         return
 
+    # Check current directory for .i
+    def checkForInput(self):
+        if glob.glob("*.i"):
+            for file in glob.glob("*.i"):
+                self.outNameBase = file.rsplit('.',1)[0]
+                db('  Input File found, is: ' + self.outNameBase + '.i')
+            return self.outNameBase
+        else:
+            cwd = os.getcwd()
+            self.outNameBase = cwd.rsplit('/',1)[1]
+            db('  No Input File, using directory name: '+ self.outNameBase)
+            return self.outNameBase
 
     # Clean this up with better and and or so i have less of the same def multiple places
     def define_params(self,json_TF):
@@ -139,7 +157,7 @@ class CalculationsV2:
             self.soft_seq = self.cl_args.soft_seq
         # Var to plot
         if self.cl_args.var == None and json_TF == True:
-            self.frames = self.meta['params']['var_to_plot']
+            self.var_to_plot = self.meta['params']['var_to_plot']
         elif not self.cl_args.var == None:
             db('  Overwriting var_to_plot with flagged '+str(self.cl_args.var))
             self.var_to_plot = self.cl_args.var
@@ -246,18 +264,176 @@ class CalculationsV2:
             idx_frames = [ np.where(self.times-t_frames[i] == min(self.times-t_frames[i],key=abs) )[0][0] for i in range(self.frames) ]
         return idx_frames,t_frames
 
-            # if sequence == True:
-            #     if n_frames < len(times):
-            #         t_max = times[-1]
-            #         t_frames =  np.linspace(0.0,t_max,n_frames)
-            #         idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(n_frames) ]
-            #     else:
-            #         t_frames = times
-            #         idx_frames = range(len(times))
-            # elif sequence == False:
-            #     t_frames = times
-            #     idx_frames = range(len(times))
 
+    # Calculate the mesh centers as [rows of [x y z] ] coordinates and mesh volume
+    def mesh_center_quadElements(self,*args):
+        db('Calculating the mesh centers for QUAD4(?) elements in 2D or 3D')
+        db('Using the input x,y,z coordinates')
+        # Refreshing the mesh_ctr value to empty before calculating for current time
+        self.mesh_ctr = None
+        self.mesh_vol = None
+        # 2D
+        if len(args) == 2 or args[2].nonzero()[0].size == 0:
+            print('RUNNING 2D')
+            self.mesh_ctr = np.asarray([args[0][:, 0] + (args[0][:, 2] - args[0][:, 0])/2,
+                                        args[1][:, 0] + (args[1][:, 2] - args[1][:, 0])/2 ]).T
+            self.mesh_vol = np.asarray((args[0][:, 2] - args[0][:, 0])*
+                                       (args[1][:, 2] - args[1][:, 0]))
+        # 3D
+        elif len(args) == 3 or not args[2].nonzero()[0].size == 0:
+            db('3D based on inputs')
+            self.mesh_ctr = np.asarray([args[0][:, 0] + (args[0][:, 2] - args[0][:, 0])/2,
+                                        args[1][:, 0] + (args[1][:, 2] - args[1][:, 0])/2,
+                                        args[2][:, 0] + (args[2][:, 4] - args[2][:, 0])/2]).T
+            self.mesh_vol = np.asarray((args[0][:, 2] - args[0][:, 0])*
+                                       (args[1][:, 2] - args[1][:, 0])*
+                                       (args[2][:, 4] - args[2][:, 0]))
+        else:
+            raise ValueError('mesh_center_quadElements needs 2 or 3 dimensions of x,y,z input')
+        return self.mesh_ctr, self.mesh_vol
+
+
+    # reorder the xyzc data based on planar slicing
+    def masking_restructure(self,var,axis):
+        # Which 4 points in the QUAD 8 series to use in what order
+        if 'x' in axis:
+            mask = [0,3,7,4]
+        elif 'y' in axis:
+            mask = [0,4,5,1]
+        elif 'z' in axis:
+            mask = [0,1,2,3]
+        else:
+            raise ValueError('Needs axis to be x y or z!')
+        var_out = np.asarray([np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4)
+                              in zip(var[:,mask[0]], var[:,mask[1]], var[:,mask[2]], var[:,mask[3]])])
+        return var_out
+
+
+    # interpolate the nodal value onto a single plane based on fraction between two exteriors
+    # pass arrays of coordinates here
+    def plane_interpolate_nodal_quad(self,min,max,axis,plane_coord,var):
+        int_frac = (plane_coord - min) / (max - min)
+        if 'x' in axis:
+            return np.asarray([ var[:,0] + int_frac[:]*(var[:,1]-var[:,0]),
+                                var[:,3] + int_frac[:]*(var[:,2]-var[:,3]),
+                                var[:,7] + int_frac[:]*(var[:,6]-var[:,7]),
+                                var[:,4] + int_frac[:]*(var[:,5]-var[:,4]) ]).T
+        elif 'y' in axis:
+            return np.asarray([ var[:,0] + int_frac[:]*(var[:,3]-var[:,0]),
+                                var[:,4] + int_frac[:]*(var[:,7]-var[:,4]),
+                                var[:,5] + int_frac[:]*(var[:,6]-var[:,5]),
+                                var[:,1] + int_frac[:]*(var[:,2]-var[:,1]) ]).T
+        elif 'z' in axis:
+            return np.asarray([ var[:,0] + int_frac[:]*(var[:,4]-var[:,0]),
+                                var[:,1] + int_frac[:]*(var[:,5]-var[:,1]),
+                                var[:,2] + int_frac[:]*(var[:,6]-var[:,2]),
+                                var[:,3] + int_frac[:]*(var[:,7]-var[:,3]) ]).T
+        else:
+            raise ValueError('Axis needs to be x y or z')
+
+
+    # Slice the xyz and c data onto a specific plane, and interpolate c
+    # returns xyzc as 2d quad elements [[0 1 2 3] ... [0 1 2 3]]
+    # Think of x plane (y = x and z = y), y plane (z = x and x = y), z plane (x = x and y = y)
+    def plane_slice(self,x,y,z,c):
+        # substituting variables based on right hand rule for axes
+        if 'x' in self.plane_axis:
+            verb('Doing plane slice calculations along x-axis at value: '+str(self.plane_coord))
+            db('  this means for visualization it will be using y as the x-axis and z as the y-axis')
+            v1 = y
+            v2 = z
+            vs = x
+        elif 'y' in self.plane_axis:
+            verb('Doing plane slice calculations along y-axis at value: '+str(self.plane_coord))
+            db('  this means for visualization it will be using z as the x-axis and x as the y-axis')
+            v1 = z
+            v2 = x
+            vs = y
+        elif 'z' in self.plane_axis:
+            verb('Doing plane slice calculations along y-axis at value: '+str(self.plane_coord))
+            db('  this means for visualization it will be using x as the x-axis and y as the y-axis')
+            v1 = x
+            v2 = y
+            vs = z
+        else:
+            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' plane slice needs axis to be x y or z!')
+            return
+        # Now trim full data down based on min and max
+        # Calculate min/max of each mesh element in slicing direction
+        vs_max = np.amax(vs, axis=1)
+        vs_min = np.amin(vs, axis=1)
+        ind_vs = np.where((self.plane_coord <= vs_max) & (self.plane_coord >= vs_min))
+        v1 = v1[ind_vs][:]
+        v2 = v2[ind_vs][:]
+        vs = vs[ind_vs][:]
+        c = c[ind_vs][:]
+        # Calculate min/max of each mesh element in slicing direction in the sliced data
+        vs_max = np.amax(vs, axis=1)
+        vs_min = np.amin(vs, axis=1)
+        new_c = self.plane_interpolate_nodal_quad(vs_min,vs_max,self.plane_axis,self.plane_coord,c)
+
+        v1 = self.masking_restructure(v1,self.plane_axis)
+        v2 = self.masking_restructure(v2,self.plane_axis)
+        vs = self.plane_coord * np.ones_like(v1)
+        # If i want to make them self.plane_x etc do it here
+        if 'x' in self.plane_axis:
+            return vs, v1, v2, new_c
+        elif 'y' in self.plane_axis:
+            return v2, vs, v1, new_c
+        elif 'z' in self.plane_axis:
+            return v1, v2, vs, new_c
+
+
+    def plot_slice(self,frame,x,y,z,c):
+        verb('Plotting the sliced data')
+        # Make pics subdirectory if it doesnt exist
+        pic_directory = 'pics'
+        if not os.path.isdir(pic_directory):
+            db('Making picture directory: '+pic_directory)
+            os.makedirs(pic_directory)
+        db('Plotting the slice as specified')
+        # Take the average of the 4 corner values for c
+        plotc = np.average(c, axis=1)
+        if 'x' in self.plane_axis:
+            db('Plotting using y as the x-axis and z as the y-axis')
+            plt_x = y
+            plt_y = z
+        elif 'y' in self.plane_axis:
+            db('Plotting using z as the x-axis and x as the y-axis')
+            plt_x = z
+            plt_y = x
+        elif 'z' in self.plane_axis:
+            db('Plotting using x as the x-axis and y as the y-axis')
+            plt_x = x
+            plt_y = y
+        else:
+            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' plot_slice needs axis to be x y or z!')
+            return
+        coords = np.asarray([ np.asarray([x_val,y_val]).T for (x_val,y_val) in zip(plt_x,plt_y) ])
+        fig, ax = plt.subplots()
+        p = PolyCollection(coords, cmap=matplotlib.cm.coolwarm, alpha=1)#,edgecolor='k'
+        p.set_array(np.array(plotc) )
+        ax.add_collection(p)
+        ax.set_xlim([np.amin(plt_x),np.amax(plt_x)])
+        ax.set_ylim([np.amin(plt_y),np.amax(plt_y)])
+        #SET ASPECT RATIO TO EQUAL TO ENSURE IMAGE HAS SAME ASPECT RATIO AS ACTUAL MESH
+        ax.set_aspect('equal')
+        #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION
+        fig.colorbar(p,label=self.var_to_plot)
+        # +self.plane_axis+str(self.plane_coord)
+        fig.savefig(pic_directory+'/'+self.outNameBase+'_sliced_'+self.plane_axis+
+                    str(self.plane_coord)+'_'+str(frame)+'.png',dpi=500,transparent=True )
+        if self.cl_args.debug:
+            plt.show()
+        return
+
+
+    def timerReset(self):
+        return
+
+
+    def timerMessage(self):
+        return
     # # Serial Time File Build
     # def para_time_build(count,file_name,len_files):
     #     verb("File "+str(count+1)+ "/"+str(len_files)+": "+str(file_name))#, end = "\r"
@@ -271,7 +447,5 @@ class CalculationsV2:
     #     verb("   Finished file "+str(count+1)+": "+str(round(time.perf_counter()-t0,2))+"s")
     #     return times_files
 
-    def t0_properties(self):
-        print("doing t0 tesst shit")
-        return 7
+
 
