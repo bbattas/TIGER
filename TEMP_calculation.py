@@ -1,6 +1,6 @@
 from MultiExodusReader import MultiExodusReader
 import multiprocessing as mp
-from CalculationsV2 import CalculationsV2
+from CalculationsV2 import CalculationsV2#, parallelPlot
 # from CalculationEngine import para_time_build
 
 import json
@@ -31,37 +31,17 @@ import math
 import sys
 import tracemalloc
 
-# This is the 2D conversion of parallel_3d_volume_from_timeFile
-# 1st command line input is the number of cpus
-# 2nd command line input is 'skip' if you want to skip the last unique file
 
-# # if len(sys.argv) > 1:
-# #     n_cpu = int(sys.argv[1])
-# # else:
-# n_cpu = 1
-# var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
-# # z_plane = 10000#19688/2
-# sequence = True
-# n_frames = 300
-# cutoff = 0.0
-# # Only for quarter structure hull adding the top right corner points and the centroid
-# quarter_hull = True
-# max_xy = 30000#1000
-# #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
-# dirName = os.path.split(os.getcwd())[-1]
+# plot as specified but in parallel
+# needs calc and MF named as such
+def parallelPlot(i,idx_frame):
+    para_t0 = time.perf_counter()
+    x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+    nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
+    calc.plot_slice(i,nx,ny,nz,nc)
+    verb('  Finished plotting file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+    return
 
-#EXODUS FILE FOR RENDERING
-#ANY CHARACTER(S) CAN BE PLACED IN PLACE OF THE *, EG. 2D/grain_growth_2D_graintracker_out.e.1921.0000 or 2D/grain_growth_2D_graintracker_out.e-s001
-# filenames = '2D/grain_growth_2D_graintracker_out.e*'
-#IF IN MAIN PROCESS
-# calc = CalculationEngine()
-# print("Into main")
-# pt(calc.cl_args)
-#
-# pt("pt test warning")
-# verb("verbose test info")
-#
-# quit()
 
 if __name__ == "__main__":
     print("__main__ Start")
@@ -91,33 +71,48 @@ if __name__ == "__main__":
     # print(test2)
 
 
-
-
-
-
     calc = CalculationsV2()
     # print(calc.__dict__)
     print("Testing some shit:")
 
     calc_it = calc.get_frames()
-    print(calc.file_names)
-    frames = [0]
+    # print(calc_it)
+    # frames = calc.frames
     read_ti = time.perf_counter()
     MF = MultiExodusReader(calc.file_names[0])
     # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
     read_tf = time.perf_counter()
     print("  Finished reading files:",round(read_tf-read_ti,2),"s")
-
+    # quit()
     # REMEMBERR IF NO MESH ADAPTIVITY CAN JUST OPEN THEM ALL!!!!
-    for idx in frames:
-        pt('Frame '+str(idx)+'/'+str(len(frames)))
-        # MF = MultiExodusReader(calc.files[idx])
-        x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx],True)
-        print('Got the data at the time')
-        nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
-        calc.plot_slice(idx,nx,ny,nz,nc)
-
-
+    # for i,idx in enumerate(calc_it[0]):
+    #     pt('Frame '+str(i+1)+'/'+str(len(calc_it[0])))
+    #     # MF = MultiExodusReader(calc.files[idx])
+    #     x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx],True)
+    #     print('Got the data at the time')
+    #     nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
+    #     calc.plot_slice(i,nx,ny,nz,nc)
+    # calc.getMER()
+    # for i,idx in enumerate(calc_it[0]):
+    #     print(i)
+    #     print(idx)
+    #     print('and now run')
+    #     calc.parallelPlot(i,idx)
+    # print('Got this far')
+    cpu_pool = mp.Pool(calc.cpu)
+    pt(cpu_pool)
+    pool_t0 = time.perf_counter()
+    results = []
+    for i,idx in enumerate(calc_it[0]):
+        # results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
+        results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
+    cpu_pool.close()
+    cpu_pool.join()
+    pt("Total Pool Time: "+str(round(time.perf_counter()-pool_t0))+"s")
+    pt("Aggregating data...")#Restructuring
+    # pt(results[0])
+    results = [r.get() for r in results]
+    print(results)
         # print(nx)
         # print(ny)
         # print(nz)
