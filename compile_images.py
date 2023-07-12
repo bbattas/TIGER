@@ -6,6 +6,12 @@ import argparse
 import re
 
 
+'''Uses command line flags to turn specified image.png files
+into either a gif or a video
+
+Returns:
+    out.gif or out.avi
+'''
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gif','-g', action='store_true',
@@ -25,6 +31,16 @@ cl_args = parser.parse_args()
 
 # For sorting to deal with no leading zeros
 def natural_sort_key(s, _nsre=re.compile('([0-9]+)')):
+    '''Sorts the file names naturally to account for lack of leading zeros
+    use this function in listname.sort(key=natural_sort_key)
+
+    Args:
+        s: files/iterator
+        _nsre: _description_. Defaults to re.compile('([0-9]+)').
+
+    Returns:
+        Sorted data
+    '''
     return [int(text) if text.isdigit() else text.lower()
             for text in _nsre.split(s)]
 
