@@ -255,17 +255,17 @@ class CalculationsV2:
             verb('Using existing times_files.npy')
         else:
             verb('Generating new times_files.npy')
-            para_time_file_opt = os.path.expanduser('~/projects/TIGER/parallel_time_file_make.py')
+            para_time_file_opt = os.path.expanduser('~/projects/TIGER/scripts/parallel_time_file_make.py')
             if os.path.exists(para_time_file_opt):
                 db('Found parallel_time_file_make.py')
             else:
                 raise ValueError('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+
                                  ' path not found for parallel_time_file_make.py')
             if self.cl_args.cpu == None:
-                # db('Running parallel_time_file_make.py with 1 CPU')
-                # command = ['python',para_time_file_opt,'1']
-                db('Running time_file_make.py because parallel wasnt working on mac?')
-                command = ['python',para_time_file_opt.rsplit('/',1)[0]+'/time_file_make.py']
+                db('Running parallel_time_file_make.py with 1 CPU')
+                command = ['python',para_time_file_opt,'1']
+                # db('Running time_file_make.py because parallel wasnt working on mac?')
+                # command = ['python',para_time_file_opt.rsplit('/',1)[0]+'/time_file_make.py']
             else:
                 db('Running parallel_time_file_make.py with '+str(self.cl_args.cpu)+' CPUs')
                 command = ['python',para_time_file_opt,str(self.cl_args.cpu)]
