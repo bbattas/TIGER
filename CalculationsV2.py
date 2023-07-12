@@ -262,8 +262,10 @@ class CalculationsV2:
                 raise ValueError('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+
                                  ' path not found for parallel_time_file_make.py')
             if self.cl_args.cpu == None:
-                db('Running parallel_time_file_make.py with 1 CPU')
-                command = ['python',para_time_file_opt,'1']
+                # db('Running parallel_time_file_make.py with 1 CPU')
+                # command = ['python',para_time_file_opt,'1']
+                db('Running time_file_make.py because parallel wasnt working on mac?')
+                command = ['python',para_time_file_opt.rsplit('/',1)[0]+'/time_file_make.py']
             else:
                 db('Running parallel_time_file_make.py with '+str(self.cl_args.cpu)+' CPUs')
                 command = ['python',para_time_file_opt,str(self.cl_args.cpu)]
@@ -425,6 +427,12 @@ class CalculationsV2:
         # Calculate min/max of each mesh element in slicing direction in the sliced data
         vs_max = np.amax(vs, axis=1)
         vs_min = np.amin(vs, axis=1)
+        # flag the specific ones of the shortened set that are ON a plane
+        # c_on_plane = np.where((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
+        c_on_plane = ((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
+        # print(len(c))
+        # print(len(c_on_plane))
+        # print(sum(c_on_plane))
         new_c = self.plane_interpolate_nodal_quad(vs_min,vs_max,self.plane_axis,self.plane_coord,c)
 
         v1 = self.masking_restructure(v1,self.plane_axis)
@@ -432,18 +440,18 @@ class CalculationsV2:
         vs = self.plane_coord * np.ones_like(v1)
         # If i want to make them self.plane_x etc do it here
         if 'x' in self.plane_axis:
-            return vs, v1, v2, new_c
+            return vs, v1, v2, new_c, c_on_plane
         elif 'y' in self.plane_axis:
-            return v2, vs, v1, new_c
+            return v2, vs, v1, new_c, c_on_plane
         elif 'z' in self.plane_axis:
-            return v1, v2, vs, new_c
+            return v1, v2, vs, new_c, c_on_plane
 
     # Using basic xyzc
     # calculate the area*(1-phi) to determine the effective grain area in the plane
-    def c_area_in_slice(self,x,y,z,c):
+    def c_area_in_slice(self,x,y,z,c,c_on_plane=None):
         if len(x[0]) == 8:
             db('starting from full 3D data')
-            x, y, z, c = self.plane_slice(x,y,z,c)
+            x, y, z, c, c_on_plane = self.plane_slice(x,y,z,c)
         elif len(x[0]) == 4:
             db('starting from sliced data')
         else:
@@ -467,9 +475,13 @@ class CalculationsV2:
         else:
             pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' plane measuring c on not specified!')
         mesh_ctr, mesh_vol = self.mesh_center_quadElements(plt_x,plt_y)
+        # instead of removing duplicates, just half the area of the doubled cells,
+        # they should still have the same c value in both dupes
+        mesh_vol = np.where(c_on_plane, mesh_vol/2, mesh_vol)
         area_weighted_c = elem_c*mesh_vol
         tot_area_c = np.sum(area_weighted_c)
-        return tot_area_c
+        tot_area_mesh = np.sum(mesh_vol)
+        return tot_area_c, tot_area_mesh
 
 
 

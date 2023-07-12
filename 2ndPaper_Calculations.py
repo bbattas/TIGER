@@ -28,7 +28,7 @@ import math
 def parallelSlicePlot(i,idx_frame):
     para_t0 = time.perf_counter()
     x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
-    nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
+    nx, ny, nz, nc, c_double = calc.plane_slice(x,y,z,c)
     calc.plot_slice(i,nx,ny,nz,nc)
     verb('  Finished plotting file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
     return
@@ -36,9 +36,9 @@ def parallelSlicePlot(i,idx_frame):
 # Function to let me run calculation shit in parallel
 def do_calculations(i,idx_frame):
     para_t0 = time.perf_counter()
-    gr_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True))
+    gr_area, mesh_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True))
     verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
-    return calc.times[idx_frame], gr_area
+    return calc.times[idx_frame], gr_area, mesh_area
 
 
 
@@ -68,6 +68,8 @@ if __name__ == "__main__":
     # Need definitions before this for some reason
     # Enable cpu pool if parallel enabled
     if calc.parallel:
+        mp.set_start_method('fork')
+        verb('set mp to fork since thats what Ubuntu uses and it works?')
         verb('Starting pool of '+str(calc.cpu)+' CPUs')
         cpu_pool = mp.Pool(calc.cpu)
         verb(cpu_pool)
@@ -79,11 +81,12 @@ if __name__ == "__main__":
         print('Plotting')
         for i,idx in enumerate(calc.idx_frames):
             if calc.parallel:
-                cpu_pool.apply_async(parallelSlicePlot,args = (i, idx ))
+                plots = cpu_pool.apply_async(parallelSlicePlot,args = (i, idx ))
             else:
                 parallelSlicePlot(i,idx)
+        if calc.parallel:
+            plots.wait()
         print('Done Plotting')
-
 
     # run calculations and do math
     if calc.calcs:
@@ -96,6 +99,7 @@ if __name__ == "__main__":
                  para_results.append(do_calculations(i,idx))
 
         if calc.parallel:
+            verb('Compiling results...')
             para_results = [r.get() for r in para_results]
 
         print('Calculations Done')
@@ -110,17 +114,20 @@ if __name__ == "__main__":
 
         # Using Pandas for shit
         saveloc = calc.outNameBase + '_calc_data.csv'
-        csv_header = ['time', 'grain_area']
+        print('Saving Data: ',saveloc)
+        csv_header = ['time', 'grain_area', 'tot_mesh_area']
         df = pd.DataFrame(para_results, columns = csv_header)
         df.sort_values(by="time").reset_index(drop=True, inplace=True)
         df['cr_eff'] = np.sqrt(df.grain_area.div(math.pi))
         df.to_csv(saveloc)
+        print('Saved!')
 
 
     if calc.parallel:
+        verb('Closing pool')
         cpu_pool.close()
         cpu_pool.join()
 
-    verb('__main__ DONE')
+    print('__main__ DONE')
     quit()
 quit()

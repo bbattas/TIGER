@@ -83,7 +83,14 @@ if __name__ == "__main__":
     # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
     read_tf = time.perf_counter()
     print("  Finished reading files:",round(read_tf-read_ti,2),"s")
-    # quit()
+
+    gr_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[1],True))
+    print(gr_area)
+    quit()
+    quit()
+quit()
+quit()
+quit()
     # REMEMBERR IF NO MESH ADAPTIVITY CAN JUST OPEN THEM ALL!!!!
     # for i,idx in enumerate(calc_it[0]):
     #     pt('Frame '+str(i+1)+'/'+str(len(calc_it[0])))
@@ -99,26 +106,29 @@ if __name__ == "__main__":
     #     print('and now run')
     #     calc.parallelPlot(i,idx)
     # print('Got this far')
-    cpu_pool = mp.Pool(calc.cpu)
-    pt(cpu_pool)
-    pool_t0 = time.perf_counter()
-    results = []
-    for i,idx in enumerate(calc_it[0]):
-        # results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
-        results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
-    cpu_pool.close()
-    cpu_pool.join()
-    pt("Total Pool Time: "+str(round(time.perf_counter()-pool_t0))+"s")
-    pt("Aggregating data...")#Restructuring
-    # pt(results[0])
-    results = [r.get() for r in results]
-    print(results)
-        # print(nx)
-        # print(ny)
-        # print(nz)
-        # print(nc)
-        # pc = np.average(nc, axis=1)
-        # print(pc)
+
+
+
+
+
+    # cpu_pool = mp.Pool(calc.cpu)
+    # pt(cpu_pool)
+    # pool_t0 = time.perf_counter()
+    # results = []
+    # for i,idx in enumerate(calc_it[0]):
+    #     # results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
+    #     results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
+    # cpu_pool.close()
+    # cpu_pool.join()
+    # pt("Total Pool Time: "+str(round(time.perf_counter()-pool_t0))+"s")
+    # pt("Aggregating data...")#Restructuring
+    # # pt(results[0])
+    # results = [r.get() for r in results]
+    # print(results)
+
+
+
+
 
         # # plott
         # fig, ax = plt.subplots()
@@ -171,16 +181,10 @@ if __name__ == "__main__":
     # with open('tiger_meta.json', 'w') as fp:
     #     json.dump(dict, fp, indent=4)
 
-    pt("END OF THE MAIN")
-    # with open('tiger_meta.json','r') as json_file:
-    #     data = json.load(json_file)
-    # print(data)
-    # print(" ")
-    # print(data['cl_args'])
+#     pt("END OF THE MAIN")
 
-
-    quit()
-quit()
+#     quit()
+# quit()
 
 
 

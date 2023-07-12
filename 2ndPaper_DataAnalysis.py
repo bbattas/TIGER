@@ -54,6 +54,7 @@ if __name__ == "__main__":
     plt.xlabel('Time (not nondimensional)')
     plt.ylabel('c*/r0')
     # plt.loglog()
+    # plt.ylim([0.2,1.2])
 
     plt.show()
 

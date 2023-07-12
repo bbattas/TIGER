@@ -20,6 +20,10 @@ import sys
 
 # n_cpu = 4
 n_cpu = int(sys.argv[1])
+# might need this to work on mac???
+# mp.freeze_support()
+# mp.set_start_method('spawn')
+
 # n_cpu = mp.cpu_count() - 2
 # n_cpu = int(mp.cpu_count() / 2 - 1)
 
@@ -68,6 +72,9 @@ def para_time_build(unq_file_name,count):
 
 #IF IN MAIN PROCESS
 if __name__ == "__main__":
+    print('In parallel_time_file_make.py __main__')
+    # this was needed to make mac work now
+    mp.set_start_method('fork')
     if len(sys.argv) > 2:
         if "skip" in sys.argv[2]:
             print("NOTE: Skipping last file as indicated with 'skip' flag")
