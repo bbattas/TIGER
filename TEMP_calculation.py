@@ -71,23 +71,82 @@ if __name__ == "__main__":
     # print(test2)
 
 
-    calc = CalculationsV2()
-    # print(calc.__dict__)
-    print("Testing some shit:")
+    x_data = np.asarray([2, 2, 2, 3, 3, 3, 1, 1, 1, 4, 4, 4])
+    y_data = np.asarray([16, 64, 32, 64, 32, 16, 16, 32, 64, 32, 16, 64])
+    z_data = np.asarray([64, 31, 29, 78, 72, 63, 93, 40, 54, 35, 44, 3])
+    # Sort coordinates and reshape in grid
+    idx1 = np.lexsort((y_data, x_data))
+    # print(idx1)
+    idx = np.lexsort((y_data, x_data)).reshape(4, 3)
+    # Plot
+    # print(idx)
+    # print(x_data[idx], y_data[idx], z_data[idx])
+    def tempctr(x,y):
+        xy = np.asarray([x[:],y[:]]).T
+        return xy
 
-    calc_it = calc.get_frames()
-    # print(calc_it)
-    # frames = calc.frames
-    read_ti = time.perf_counter()
-    MF = MultiExodusReader(calc.file_names[0])
-    # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
-    read_tf = time.perf_counter()
-    print("  Finished reading files:",round(read_tf-read_ti,2),"s")
+    ctr = tempctr(x_data,y_data)
+    print(ctr)
+    print(" ")
+    print(ctr[2])
 
-    gr_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[1],True))
-    print(gr_area)
+    def get_c(xy_ctr, c, x, y):
+        ind = (xy_ctr == (x,y)).all(axis=1)
+        row = c[ind]
+        return row
+    print(get_c(ctr,z_data,2,32))
+
+    def xyc_to_array(xy_ctr,c):
+        x_u = np.unique(xy_ctr[:,0])#[:,0]
+        y_u = np.unique(xy_ctr[:,1])#mat[:,1]
+        X,Y = np.meshgrid(x_u, y_u, indexing='xy')#specify indexing!!
+        c_sort = np.array([get_c(xy_ctr,c,x,y) for (x,y) in zip(np.ravel(X), np.ravel(Y))])
+        C = c_sort.reshape(X.shape)
+        print(C)
+        cdx,cdy = np.gradient(C)
+        print(cdx)
+        xdx,xdy= np.gradient(X)
+        print(xdy)
+        ydx,ydy= np.gradient(Y)
+        print(xdy)
+        print('dCdx')
+        print(cdy/xdy)
+        print('dCdy')
+        print(cdx/ydx)
+
+        return X, Y, C
+        print(X)
+        print(Y)
+        print(C)
+        plt.pcolormesh(X,Y,C)
+        # plt.xlim(min(x), max(x))
+        # plt.ylim(min(y), max(y))
+        plt.show()
+    X, Y, C = xyc_to_array(ctr,z_data)
+
+    # dCdxy = np.gradient(C, X, Y, axis=(1,2))
+    # print(dCdxy)
+    # sys.exit()
     quit()
-    quit()
+quit()
+exit()
+    # calc = CalculationsV2()
+    # # print(calc.__dict__)
+    # print("Testing some shit:")
+
+    # calc_it = calc.get_frames()
+    # # print(calc_it)
+    # # frames = calc.frames
+    # read_ti = time.perf_counter()
+    # MF = MultiExodusReader(calc.file_names[0])
+    # # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
+    # read_tf = time.perf_counter()
+    # print("  Finished reading files:",round(read_tf-read_ti,2),"s")
+
+    # gr_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[1],True))
+    # print(gr_area)
+    # quit()
+    # quit()
 quit()
 quit()
 quit()
