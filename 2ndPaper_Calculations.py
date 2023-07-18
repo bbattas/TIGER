@@ -28,7 +28,7 @@ import math
 def parallelSlicePlot(i,idx_frame):
     para_t0 = time.perf_counter()
     x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
-    nx, ny, nz, nc, c_double = calc.plane_slice(x,y,z,c)
+    nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
     calc.plot_slice(i,nx,ny,nz,nc)
     verb('  Finished plotting file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
     return

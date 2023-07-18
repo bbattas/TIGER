@@ -70,83 +70,147 @@ if __name__ == "__main__":
 
     # print(test2)
 
+    # # MESHGRID TESTING
+    # x_data = np.asarray([2, 2, 2, 3, 3, 3, 1, 1, 1, 4, 4, 4])
+    # y_data = np.asarray([16, 64, 32, 64, 32, 16, 16, 32, 64, 32, 16, 64])
+    # z_data = np.asarray([64, 31, 29, 78, 72, 63, 93, 40, 54, 35, 44, 3])
+    # z_vals = np.asarray([2, 2, 2, 3, 3, 3, 1, 1, 1, 4, 4, 4])
+    # # Sort coordinates and reshape in grid
+    # idx1 = np.lexsort((y_data, x_data))
+    # # print(idx1)
+    # idx = np.lexsort((y_data, x_data)).reshape(4, 3)
+    # # Plot
+    # # print(idx)
+    # # print(x_data[idx], y_data[idx], z_data[idx])
+    # def tempctr(x,y):
+    #     xy = np.asarray([x[:],y[:]]).T
+    #     return xy
 
-    x_data = np.asarray([2, 2, 2, 3, 3, 3, 1, 1, 1, 4, 4, 4])
-    y_data = np.asarray([16, 64, 32, 64, 32, 16, 16, 32, 64, 32, 16, 64])
-    z_data = np.asarray([64, 31, 29, 78, 72, 63, 93, 40, 54, 35, 44, 3])
-    # Sort coordinates and reshape in grid
-    idx1 = np.lexsort((y_data, x_data))
-    # print(idx1)
-    idx = np.lexsort((y_data, x_data)).reshape(4, 3)
-    # Plot
-    # print(idx)
-    # print(x_data[idx], y_data[idx], z_data[idx])
-    def tempctr(x,y):
-        xy = np.asarray([x[:],y[:]]).T
-        return xy
+    # def tempctrz(x,y,z):
+    #     xyz = np.asarray([x[:],y[:],z[:]]).T
+    #     return xyz
 
-    ctr = tempctr(x_data,y_data)
-    print(ctr)
-    print(" ")
-    print(ctr[2])
+    # ctr = tempctr(x_data,y_data)
+    # ctrz = tempctrz(x_data,y_data,z_vals)
+    # print(ctr)
+    # print(" ")
+    # print(ctr[2])
 
-    def get_c(xy_ctr, c, x, y):
-        ind = (xy_ctr == (x,y)).all(axis=1)
-        row = c[ind]
-        return row
-    print(get_c(ctr,z_data,2,32))
+    # def get_c(xy_ctr, c, x, y):
+    #     ind = (xy_ctr == (x,y)).all(axis=1)
+    #     row = c[ind]
+    #     return row
+    # def get_c3(xy_ctr, c, x, y, z):
+    #     ind = (xy_ctr == (x,y,z)).all(axis=1)
+    #     row = c[ind]
+    #     return row
+    # print(get_c(ctr,z_data,2,32))
 
-    def xyc_to_array(xy_ctr,c):
-        x_u = np.unique(xy_ctr[:,0])#[:,0]
-        y_u = np.unique(xy_ctr[:,1])#mat[:,1]
-        X,Y = np.meshgrid(x_u, y_u, indexing='xy')#specify indexing!!
-        c_sort = np.array([get_c(xy_ctr,c,x,y) for (x,y) in zip(np.ravel(X), np.ravel(Y))])
-        C = c_sort.reshape(X.shape)
-        print(C)
-        cdx,cdy = np.gradient(C)
-        print(cdx)
-        xdx,xdy= np.gradient(X)
-        print(xdy)
-        ydx,ydy= np.gradient(Y)
-        print(xdy)
-        print('dCdx')
-        print(cdy/xdy)
-        print('dCdy')
-        print(cdx/ydx)
+    # def xyc_to_array(xy_ctr,c):
+    #     x_u = np.unique(xy_ctr[:,0])#[:,0]
+    #     y_u = np.unique(xy_ctr[:,1])#mat[:,1]
+    #     print(x_u)
+    #     print(y_u)
+    #     X,Y = np.meshgrid(x_u, y_u, indexing='xy')#specify indexing!!
+    #     c_sort = np.array([get_c(xy_ctr,c,x,y) for (x,y) in zip(np.ravel(X), np.ravel(Y))])
+    #     C = c_sort.reshape(X.shape)
+    #     print(C)
+    #     cdx,cdy = np.gradient(C)
+    #     print(cdx)
+    #     xdx,xdy= np.gradient(X)
+    #     print(xdy)
+    #     ydx,ydy= np.gradient(Y)
+    #     print(xdy)
+    #     print('dCdx')
+    #     print(cdy/xdy)
+    #     print('dCdy')
+    #     print(cdx/ydx)
+    #     dcdx = cdy/xdy
+    #     dcdy = cdx/ydx
 
-        return X, Y, C
-        print(X)
-        print(Y)
-        print(C)
-        plt.pcolormesh(X,Y,C)
-        # plt.xlim(min(x), max(x))
-        # plt.ylim(min(y), max(y))
-        plt.show()
-    X, Y, C = xyc_to_array(ctr,z_data)
+    #     return X, Y, C, dcdx, dcdy
+    #     print(X)
+    #     print(Y)
+    #     print(C)
+    #     plt.pcolormesh(X,Y,C)
+    #     # plt.xlim(min(x), max(x))
+    #     # plt.ylim(min(y), max(y))
+    #     plt.show()
 
+    # def xyzc_to_array(xy_ctr,c):
+    #     x_u = np.unique(xy_ctr[:,0])#[:,0]
+    #     y_u = np.unique(xy_ctr[:,1])#mat[:,1]
+    #     z_u = np.unique(xy_ctr[:,2])
+    #     print(x_u)
+    #     print(y_u)
+    #     print(z_u)
+    #     X,Y,Z = np.meshgrid(x_u, y_u, z_u, indexing='xy')#specify indexing!!
+    #     c_sort = np.array([get_c3(xy_ctr,c,x,y,z) for (x,y,z) in zip(np.ravel(X), np.ravel(Y), np.ravel(Z))])
+    #     C = c_sort.reshape(X.shape)
+    #     print(C)
+    #     cdx,cdy = np.gradient(C)
+    #     print(cdx)
+    #     xdx,xdy= np.gradient(X)
+    #     print(xdy)
+    #     ydx,ydy= np.gradient(Y)
+    #     print(xdy)
+    #     print('dCdx')
+    #     print(cdy/xdy)
+    #     print('dCdy')
+    #     print(cdx/ydx)
+    #     dcdx = cdy/xdy
+    #     dcdy = cdx/ydx
+
+    #     return X, Y, C, dcdx, dcdy
+    # X, Y, C, dcdx, dcdy = xyzc_to_array(ctrz,z_data)
+    # print(dcdx)
+    # print(dcdx.reshape(z_data.shape))
     # dCdxy = np.gradient(C, X, Y, axis=(1,2))
     # print(dCdxy)
-    # sys.exit()
-    quit()
-quit()
-exit()
-    # calc = CalculationsV2()
+    # quit()
+# quit()
+# exit()
+    calc = CalculationsV2()
     # # print(calc.__dict__)
     # print("Testing some shit:")
 
     # calc_it = calc.get_frames()
     # # print(calc_it)
     # # frames = calc.frames
-    # read_ti = time.perf_counter()
-    # MF = MultiExodusReader(calc.file_names[0])
-    # # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
-    # read_tf = time.perf_counter()
-    # print("  Finished reading files:",round(read_tf-read_ti,2),"s")
+    read_ti = time.perf_counter()
+    MF = MultiExodusReader(calc.file_names[0])
+    # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
+    read_tf = time.perf_counter()
+    print("  Finished reading files:",round(read_tf-read_ti,2),"s")
 
+    # TEST
+    x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[2],True)
+    nx, ny, nz, nc = calc.plane_slice(x,y,z,c,False)#, grads, norm
+    # avg_c = np.average(nc, axis=1)
+    # plt_x, plt_y = calc.plt_xy(nx,ny,nz)
+    # mesh_ctr, mesh_vol = calc.mesh_center_quadElements(plt_x,plt_y)
     # gr_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[1],True))
     # print(gr_area)
+
+    # X, Y, C, dcdx, dcdy = xyc_to_array(mesh_ctr,avg_c)
+    # plt.pcolormesh(X,Y,dcdz.reshape(X.shape),shading='nearest',cmap='coolwarm')
+    # plt.colorbar()
+    # calc.cl_args.debug = True
+    # calc.plot_slice(1,nx,ny,nz,dcdz)
+    # plt.show()
+    # read_ti = time.perf_counter()
+    # dx = calc.element_gradients(nx,ny,nz,nc)
+    # read_tf = time.perf_counter()
+    # print("  Finished doing gradients:",round(read_tf-read_ti,2),"s")
+    calc.threeplane_curvature(x,y,z,c)
+    # print(grads)
+    # calc.plot_slice(0,nx,ny,nz,grads[0])
+    # calc.plot_slice(1,nx,ny,nz,grads[1])
+    # calc.plot_slice(2,nx,ny,nz,grads[2])
+    # calc.plot_slice(3,nx,ny,nz,norm[2])
+
     # quit()
-    # quit()
+    quit()
 quit()
 quit()
 quit()

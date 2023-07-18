@@ -177,6 +177,8 @@ class CalculationsV2:
                 raise ValueError('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' --plane needs to begin with'
                                     +' x, y, or z followed by the coordinate on that axis to slice at.')
             self.plane_coord = int(self.cl_args.plane[1:])
+        # Plane name for if it gets moved
+        self.plane_coord_name = self.plane_coord
         # Frames
         if self.cl_args.seq == None and json_TF == True:
             self.frames = self.meta['params']['frames']
@@ -255,7 +257,7 @@ class CalculationsV2:
             verb('Using existing times_files.npy')
         else:
             verb('Generating new times_files.npy')
-            para_time_file_opt = os.path.expanduser('~/projects/TIGER/scripts/parallel_time_file_make.py')
+            para_time_file_opt = os.path.expanduser('~/projects/TIGER/parallel_time_file_make.py')
             if os.path.exists(para_time_file_opt):
                 db('Found parallel_time_file_make.py')
             else:
@@ -389,36 +391,50 @@ class CalculationsV2:
             raise ValueError('Axis needs to be x y or z')
 
 
+    # Check if plane is on the boundary between elements, if it is preferentially move it
+    # positive direction by tolerance if it can, otherwise move negative by tol
+    def adjust_plane(self,vs_max,vs_min):
+        tol = 1e-6
+        dom_max = max(vs_max)
+        dom_min = min(vs_min)
+        c_on_plane = ((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
+        if np.any(c_on_plane):
+            print('MOVING')
+            db('Plane slicing is on boundary between elements, moving...')
+            if (self.plane_coord + tol) < dom_max:
+                db('Shifting plane + tol')
+                self.plane_coord += tol
+            elif (self.plane_coord - tol) > dom_min:
+                db('Shifting plane - tol')
+                self.plane_coord -= tol
+            else:
+                raise ValueError('Plane coordinate is apparently within tolerance of domain min and max')
+            # Check that it worked
+            c_on_plane = ((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
+            if np.any(c_on_plane):
+                raise ValueError('After shift, plane is still on boundary!')
+            else:
+                return
+        else:
+            db('Plane not on boundary, doesnt need moved')
+            print('NOT MOVING')
+            return
+
+
+
     # Slice the xyz and c data onto a specific plane, and interpolate c
     # returns xyzc as 2d quad elements [[0 1 2 3] ... [0 1 2 3]]
     # Think of x plane (y = x and z = y), y plane (z = x and x = y), z plane (x = x and y = y)
-    def plane_slice(self,x,y,z,c):
+    def plane_slice(self,x,y,z,c,grads=False):
         # substituting variables based on right hand rule for axes
-        if 'x' in self.plane_axis:
-            db('Doing plane slice calculations along x-axis at value: '+str(self.plane_coord))
-            db('  this means for visualization it will be using y as the x-axis and z as the y-axis')
-            v1 = y
-            v2 = z
-            vs = x
-        elif 'y' in self.plane_axis:
-            db('Doing plane slice calculations along y-axis at value: '+str(self.plane_coord))
-            db('  this means for visualization it will be using z as the x-axis and x as the y-axis')
-            v1 = z
-            v2 = x
-            vs = y
-        elif 'z' in self.plane_axis:
-            db('Doing plane slice calculations along y-axis at value: '+str(self.plane_coord))
-            db('  this means for visualization it will be using x as the x-axis and y as the y-axis')
-            v1 = x
-            v2 = y
-            vs = z
-        else:
-            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' plane slice needs axis to be x y or z!')
-            return
+        v1, v2, vs, xyz_ref = self.plt_xyz(x,y,z)
         # Now trim full data down based on min and max
         # Calculate min/max of each mesh element in slicing direction
         vs_max = np.amax(vs, axis=1)
         vs_min = np.amin(vs, axis=1)
+        # If we are on a mesh plane then we need to adjust the plane_coord by a tiny amount
+        # to move off the plane
+        self.adjust_plane(vs_max,vs_min)
         ind_vs = np.where((self.plane_coord <= vs_max) & (self.plane_coord >= vs_min))
         v1 = v1[ind_vs][:]
         v2 = v2[ind_vs][:]
@@ -427,39 +443,37 @@ class CalculationsV2:
         # Calculate min/max of each mesh element in slicing direction in the sliced data
         vs_max = np.amax(vs, axis=1)
         vs_min = np.amin(vs, axis=1)
-        # flag the specific ones of the shortened set that are ON a plane
-        # c_on_plane = np.where((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
-        c_on_plane = ((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
-        # print(len(c))
-        # print(len(c_on_plane))
-        # print(sum(c_on_plane))
+        if grads:
+            dc = self.element_gradients(v1,v2,vs,c,xyz_ref)
+            normdc = self.element_curvature(v1,v2,vs,c,xyz_ref)
+
+
+        # Interpolate c based on where in the plane heightwise
         new_c = self.plane_interpolate_nodal_quad(vs_min,vs_max,self.plane_axis,self.plane_coord,c)
 
         v1 = self.masking_restructure(v1,self.plane_axis)
         v2 = self.masking_restructure(v2,self.plane_axis)
         vs = self.plane_coord * np.ones_like(v1)
         # If i want to make them self.plane_x etc do it here
-        if 'x' in self.plane_axis:
-            return vs, v1, v2, new_c, c_on_plane
-        elif 'y' in self.plane_axis:
-            return v2, vs, v1, new_c, c_on_plane
-        elif 'z' in self.plane_axis:
-            return v1, v2, vs, new_c, c_on_plane
-
-    # Using basic xyzc
-    # calculate the area*(1-phi) to determine the effective grain area in the plane
-    def c_area_in_slice(self,x,y,z,c,c_on_plane=None):
-        if len(x[0]) == 8:
-            db('starting from full 3D data')
-            x, y, z, c, c_on_plane = self.plane_slice(x,y,z,c)
-        elif len(x[0]) == 4:
-            db('starting from sliced data')
+        if grads:
+            db('Outputting the dc/dxyz also from plane_slice')
+            if 'x' in self.plane_axis:
+                return vs, v1, v2, new_c, dc, normdc
+            elif 'y' in self.plane_axis:
+                return v2, vs, v1, new_c, dc, normdc
+            elif 'z' in self.plane_axis:
+                return v1, v2, vs, new_c, dc, normdc
         else:
-            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' data not in QUAD 4 or 8 unit pattern?')
-        elem_c = np.average(c, axis=1)
-        if 'phi' in self.var_to_plot:
-            db('Converting value measured to 1-phi for c area calc')
-            elem_c = 1 - elem_c
+            if 'x' in self.plane_axis:
+                return vs, v1, v2, new_c
+            elif 'y' in self.plane_axis:
+                return v2, vs, v1, new_c
+            elif 'z' in self.plane_axis:
+                return v1, v2, vs, new_c
+
+
+    # convert xyz into the x and y equivalent for whatever plane we are using
+    def plt_xy(self,x,y,z):
         if 'x' in self.plane_axis:
             db('Using y as the x-axis and z as the y-axis')
             plt_x = y
@@ -473,16 +487,200 @@ class CalculationsV2:
             plt_x = x
             plt_y = y
         else:
-            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' plane measuring c on not specified!')
+            raise ValueError('Plane measuring c on not specified!')
+        return plt_x, plt_y
+
+    # convert xyz into the plane slicing relative xyz equivalent for whatever plane we are using
+    def plt_xyz(self,x,y,z,ctr=None):
+        if 'x' in self.plane_axis:
+            db('Using y as the x-axis and z as the y-axis')
+            plt_x = y
+            plt_y = z
+            plt_z = x
+            mask = [1,2,0]
+        elif 'y' in self.plane_axis:
+            db('Using z as the x-axis and x as the y-axis')
+            plt_x = z
+            plt_y = x
+            plt_z = y
+            mask = [2,0,1]
+        elif 'z' in self.plane_axis:
+            db('Using x as the x-axis and y as the y-axis')
+            plt_x = x
+            plt_y = y
+            plt_z = z
+            mask = [0,1,2]
+        else:
+            raise ValueError('Plane measuring c on not specified!')
+        if not ctr is None:
+            var_out = np.asarray([np.asarray([n1, n2, n3]) for (n1,n2,n3)
+                              in zip(ctr[:,mask[0]], ctr[:,mask[1]], ctr[:,mask[2]])])
+            return plt_x, plt_y, plt_z, var_out
+        else:
+            return plt_x, plt_y, plt_z, mask
+
+
+    # Using basic xyzc
+    # calculate the area*(1-phi) to determine the effective grain area in the plane
+    def c_area_in_slice(self,x,y,z,c):
+        if len(x[0]) == 8:
+            db('starting from full 3D data')
+            x, y, z, c = self.plane_slice(x,y,z,c)
+        elif len(x[0]) == 4:
+            db('starting from sliced data')
+        else:
+            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' data not in QUAD 4 or 8 unit pattern?')
+        elem_c = np.average(c, axis=1)
+        if 'phi' in self.var_to_plot:
+            db('Converting value measured to 1-phi for c area calc')
+            elem_c = 1 - elem_c
+        plt_x, plt_y = self.plt_xy(x,y,z)
         mesh_ctr, mesh_vol = self.mesh_center_quadElements(plt_x,plt_y)
         # instead of removing duplicates, just half the area of the doubled cells,
         # they should still have the same c value in both dupes
-        mesh_vol = np.where(c_on_plane, mesh_vol/2, mesh_vol)
+        # mesh_vol = np.where(c_on_plane, mesh_vol/2, mesh_vol)
         area_weighted_c = elem_c*mesh_vol
         tot_area_c = np.sum(area_weighted_c)
         tot_area_mesh = np.sum(mesh_vol)
         return tot_area_c, tot_area_mesh
 
+
+    # calculate the d_var across the direction specified in each element
+    def element_gradient_inDirection(self,var,xyz_ref):
+        d_var = []
+        if type(xyz_ref) is int:
+            xyz_ref = [xyz_ref]
+        for ax in xyz_ref:
+            # Which 4 points in the QUAD 8 series to use in what order
+            # along actual x axis
+            if ax == 0:
+                mask0 = [0,3,7,4]
+                mask1 = [1,2,6,5]
+            # along actual y axis
+            elif ax == 1:
+                mask0 = [0,4,5,1]
+                mask1 = [3,7,6,2]
+            # along actual z axis
+            elif ax == 2:
+                mask0 = [0,1,2,3]
+                mask1 = [4,5,6,7]
+            else:
+                raise ValueError('Needs axis reference to be 0, 1, or 2 !')
+            var_0 = np.asarray([np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4)
+                                in zip(var[:,mask0[0]], var[:,mask0[1]], var[:,mask0[2]], var[:,mask0[3]])])
+            var_1 = np.asarray([np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4)
+                                in zip(var[:,mask1[0]], var[:,mask1[1]], var[:,mask1[2]], var[:,mask1[3]])])
+            avg_0 = np.average(var_0,axis=1)
+            avg_1 = np.average(var_1,axis=1)
+            d_var.append(avg_1-avg_0)
+        return d_var
+
+
+    # calcualtes the dcdx dcdy dcdz in the reference frame provided by xyz_mask
+    # [0,1,2] is normal xyz, see self.plt_xyz() output mask
+    def element_gradients(self,plt_x,plt_y,plt_z,c,xyz_mask):
+        dx = self.element_gradient_inDirection(plt_x,xyz_mask[0])
+        dy = self.element_gradient_inDirection(plt_y,xyz_mask[1])
+        dz = self.element_gradient_inDirection(plt_z,xyz_mask[2])
+        dc = self.element_gradient_inDirection(c,xyz_mask)
+        dcdxyz = np.asarray(dc) / np.asarray(dx + dy + dz)
+        return dcdxyz
+
+    # DIDNT WORK: need more z data to derrive
+    def element_curvature(self,plt_x,plt_y,plt_z,c,xyz_mask):
+        # dc/dx,dc/dy,dc/dz
+        dcdxyz = self.element_gradients(plt_x,plt_y,plt_z,c,xyz_mask)
+        # dc/dx,dc/dy,dc/dz magnitude
+        norm_sq = 0
+        for n in range(len(dcdxyz)):
+            norm_sq += dcdxyz[n]**2
+        norm = np.sqrt(norm_sq)
+        # Curvature starts:
+        # grad c / mag(grad c)
+        dc_dcnorm = dcdxyz / norm
+        # Divergence of dc_dcnorm
+        # dx = self.element_gradient_inDirection(plt_x,xyz_mask[0])
+        # dy = self.element_gradient_inDirection(plt_y,xyz_mask[1])
+        # dz = self.element_gradient_inDirection(plt_z,xyz_mask[2])
+        # dc_dcnorm_x = self.element_gradient_inDirection(dc_dcnorm[0],xyz_mask[0])
+        # dc_dcnorm_y = self.element_gradient_inDirection(dc_dcnorm[1],xyz_mask[1])
+        # dc_dcnorm_z = self.element_gradient_inDirection(dc_dcnorm[2],xyz_mask[2])
+        # curve_vec = np.asarray(dc_dcnorm_x + dc_dcnorm_y + dc_dcnorm_z) / np.asarray(dx + dy + dz)
+        # print(curve_vec)
+        return dc_dcnorm
+
+
+    # output full 8 node elemental data for a planar slice
+    # Keeps nodes in same orientation they come in
+    def trim_data_to_plane(self,x,y,z,c,z_plane):
+        # Calculate min/max of each mesh element in slicing direction
+        z_max = np.amax(z, axis=1)
+        z_min = np.amin(z, axis=1)
+        if np.any(((z_plane == z_max) | (z_plane == z_min))):
+            raise ValueError('trim_data_to_plane needs the plane to not be a mesh boundary plane')
+        ind_z = np.where((z_plane < z_max) & (z_plane > z_min))
+        x = x[ind_z][:]
+        y = y[ind_z][:]
+        z = z[ind_z][:]
+        c = c[ind_z][:]
+        return x, y, z, c
+
+
+    def threeplane_curvature(self,x,y,z,c):
+        verb('Using the center of 3 planes of data to calculate shit')
+        db('If using a surface plane without a mesh plane above and below it, wont work at the moment')
+        mesh_ctr, mesh_vol = self.mesh_center_quadElements(x,y,z)
+        plt_x,plt_y,plt_z,xyz_ref = self.plt_xyz(x,y,z)
+        plt_ctr = np.asarray([np.asarray([n1, n2, n3]) for (n1,n2,n3)
+                              in zip(mesh_ctr[:,xyz_ref[0]], mesh_ctr[:,xyz_ref[1]], mesh_ctr[:,xyz_ref[2]])])
+        print(mesh_ctr)
+        print(plt_ctr)
+        plt_x_u = np.unique(plt_ctr[:,0])
+        plt_y_u = np.unique(plt_ctr[:,1])
+        plt_z_u = np.unique(plt_ctr[:,2])
+        print(plt_x_u)
+        print(plt_y_u)
+        print(plt_z_u)
+        # Calculate min/max of each mesh element in slicing direction
+        z_max = np.amax(plt_z, axis=1)
+        z_min = np.amin(plt_z, axis=1)
+        # Adjust plane if it needs to shift off boundary
+        self.adjust_plane(z_max,z_min)
+        # find the closest (3) unique plt_z value
+        ind_z_u_ctr = np.absolute(plt_z_u-self.plane_coord).argmin()
+        ind_z_planes = [ind_z_u_ctr - 1, ind_z_u_ctr, ind_z_u_ctr + 1]
+        print(ind_z_planes)
+        print(plt_z_u[ind_z_planes])
+        X,Z,Y = np.meshgrid(plt_x_u, plt_z_u[ind_z_planes], plt_y_u,  indexing='xy')
+        print(" ")
+        # tx = np.linspace(0,3,4)
+        # ty = np.linspace(4,7,4)
+        # tz = np.linspace(8,10,3)
+        # X,Z,Y = np.meshgrid(tx,tz,ty)
+        print(X)
+        print(Y)
+        print(Z)
+        print(" ")
+        print(np.gradient(X))
+        print(np.gradient(Y))
+        print(np.gradient(Z))
+        #Got to here need to assign c from the three sets of planes
+
+        ind_z = np.where((self.plane_coord <= z_max) & (self.plane_coord >= z_min))
+        v1 = v1[ind_vs][:]
+        v2 = v2[ind_vs][:]
+        vs = vs[ind_vs][:]
+        c = c[ind_vs][:]
+        # Calculate min/max of each mesh element in slicing direction in the sliced data
+        vs_max = np.amax(vs, axis=1)
+        vs_min = np.amin(vs, axis=1)
+        # Interpolate c based on where in the plane heightwise
+        new_c = self.plane_interpolate_nodal_quad(vs_min,vs_max,self.plane_axis,self.plane_coord,c)
+        v1 = self.masking_restructure(v1,self.plane_axis)
+        v2 = self.masking_restructure(v2,self.plane_axis)
+        vs = self.plane_coord * np.ones_like(v1)
+
+        # X,Y,Z = np.meshgrid(plt_x_u, plt_x_u, z_u, indexing='xy')#specify indexing!!
 
 
 
@@ -508,21 +706,7 @@ class CalculationsV2:
             plotc = np.average(c, axis=1)
         else:
             plotc = c
-        if 'x' in self.plane_axis:
-            db('Plotting using y as the x-axis and z as the y-axis')
-            plt_x = y
-            plt_y = z
-        elif 'y' in self.plane_axis:
-            db('Plotting using z as the x-axis and x as the y-axis')
-            plt_x = z
-            plt_y = x
-        elif 'z' in self.plane_axis:
-            db('Plotting using x as the x-axis and y as the y-axis')
-            plt_x = x
-            plt_y = y
-        else:
-            pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' plot_slice needs axis to be x y or z!')
-            return
+        plt_x, plt_y = self.plt_xy(x,y,z)
         coords = np.asarray([ np.asarray([x_val,y_val]).T for (x_val,y_val) in zip(plt_x,plt_y) ])
         fig, ax = plt.subplots()
         p = PolyCollection(coords, cmap=matplotlib.cm.coolwarm, alpha=1)#,edgecolor='k'
@@ -533,10 +717,10 @@ class CalculationsV2:
         #SET ASPECT RATIO TO EQUAL TO ENSURE IMAGE HAS SAME ASPECT RATIO AS ACTUAL MESH
         ax.set_aspect('equal')
         #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION, [0,1]
-        p.set_clim(0.0, 1.0)
+        # p.set_clim(0.0, 1.0)
         fig.colorbar(p, label=self.var_to_plot)
         fig.savefig(pic_directory+'/'+self.outNameBase+'_sliced_'+self.plane_axis+
-                    str(self.plane_coord)+'_'+str(frame)+'.png',dpi=500,transparent=True )
+                    str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
         if self.cl_args.debug:
             plt.show()
         else:
