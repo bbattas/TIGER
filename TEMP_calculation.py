@@ -202,9 +202,25 @@ if __name__ == "__main__":
     # dx = calc.element_gradients(nx,ny,nz,nc)
     # read_tf = time.perf_counter()
     # print("  Finished doing gradients:",round(read_tf-read_ti,2),"s")
-    calc.threeplane_curvature(x,y,z,c)
-    # print(grads)
-    # calc.plot_slice(0,nx,ny,nz,grads[0])
+    cx, cy, cz, cc, cv = calc.threeplane_curvature(x,y,z,c)
+
+
+    # calc.plot_slice(0,X,Y,Z,C)
+    # calc.plot_slice(1,X[1],Y[1],Z[1],C[1])
+    # calc.plot_slice(2,X[2],Y[2],Z[2],C[2])
+
+    # # PLOTS
+    calc.plot_slice(3,cx,cy,cz,cv)
+    # for n in range(len(C)):
+    #     fig = plt.figure(n)
+    #     plt.pcolormesh(X[n],Y[n],cv[n],shading='nearest',cmap='coolwarm')
+    #     plt.colorbar()
+    #     fig.savefig('pics'+'/'+calc.outNameBase+'_sliced_'+calc.plane_axis+
+    #             str(calc.plane_coord_name)+'_curvature_'+str(n)+'.png',dpi=500,transparent=True )
+
+    # calc.plot_slice(0,nx,ny,nz,nc)
+
+
     # calc.plot_slice(1,nx,ny,nz,grads[1])
     # calc.plot_slice(2,nx,ny,nz,grads[2])
     # calc.plot_slice(3,nx,ny,nz,norm[2])

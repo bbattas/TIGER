@@ -119,7 +119,8 @@ class CalculationsV2:
 
 
     def timerMessage(self):
-        db("Time: "+str(round(time.perf_counter()-self.timer,2))+"s")
+        # db("Time: "+str(round(time.perf_counter()-self.timer,2))+"s")
+        print("Time: "+str(round(time.perf_counter()-self.timer,2))+"s")
         self.timer = time.perf_counter()
         return
 
@@ -399,7 +400,7 @@ class CalculationsV2:
         dom_min = min(vs_min)
         c_on_plane = ((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
         if np.any(c_on_plane):
-            print('MOVING')
+            verb('MOVING Plane')
             db('Plane slicing is on boundary between elements, moving...')
             if (self.plane_coord + tol) < dom_max:
                 db('Shifting plane + tol')
@@ -417,7 +418,7 @@ class CalculationsV2:
                 return
         else:
             db('Plane not on boundary, doesnt need moved')
-            print('NOT MOVING')
+            verb('NOT MOVING Plane')
             return
 
 
@@ -444,6 +445,7 @@ class CalculationsV2:
         vs_max = np.amax(vs, axis=1)
         vs_min = np.amin(vs, axis=1)
         if grads:
+            print('DEPRECIATED')
             dc = self.element_gradients(v1,v2,vs,c,xyz_ref)
             normdc = self.element_curvature(v1,v2,vs,c,xyz_ref)
 
@@ -547,6 +549,7 @@ class CalculationsV2:
 
     # calculate the d_var across the direction specified in each element
     def element_gradient_inDirection(self,var,xyz_ref):
+        print('DEPRECIATED')
         d_var = []
         if type(xyz_ref) is int:
             xyz_ref = [xyz_ref]
@@ -579,6 +582,7 @@ class CalculationsV2:
     # calcualtes the dcdx dcdy dcdz in the reference frame provided by xyz_mask
     # [0,1,2] is normal xyz, see self.plt_xyz() output mask
     def element_gradients(self,plt_x,plt_y,plt_z,c,xyz_mask):
+        print('DEPRECIATED')
         dx = self.element_gradient_inDirection(plt_x,xyz_mask[0])
         dy = self.element_gradient_inDirection(plt_y,xyz_mask[1])
         dz = self.element_gradient_inDirection(plt_z,xyz_mask[2])
@@ -588,6 +592,7 @@ class CalculationsV2:
 
     # DIDNT WORK: need more z data to derrive
     def element_curvature(self,plt_x,plt_y,plt_z,c,xyz_mask):
+        print('DEPRECIATED')
         # dc/dx,dc/dy,dc/dz
         dcdxyz = self.element_gradients(plt_x,plt_y,plt_z,c,xyz_mask)
         # dc/dx,dc/dy,dc/dz magnitude
@@ -626,21 +631,79 @@ class CalculationsV2:
         return x, y, z, c
 
 
-    def threeplane_curvature(self,x,y,z,c):
+    def get_c_index(self,xyz_ctr, c, x, y, z):
+        ind = (xyz_ctr == (x,y,z)).all(axis=1)
+        row = c[ind]
+        return row
+
+    # pass it ctr and find corresponding X Y and teh C for that XY
+    def undo_c_index(self,xy_ctr, C, X, Y):
+        ind = [(X[:,0] == xy_ctr[0]), (Y[0] == xy_ctr[1])]
+        c_val = C[tuple(ind)]
+        return c_val
+
+    # Uses min and max value of each coordinate in each element to return center
+    def mesh_center_dir_independent(self,*args):
+        min = []
+        max = []
+        for ar in args:
+            min.append(np.amin(ar,axis=1))
+            max.append(np.amax(ar,axis=1))
+        if len(args) == 2:
+            db('RUNNING 2D')
+            mesh_ctr = np.asarray([min[0][:] + (max[0][:] - min[0][:])/2,
+                                   min[1][:] + (max[1][:] - min[1][:])/2 ]).T
+        # 3D
+        elif len(args) == 3:
+            db('3D based on inputs')
+            mesh_ctr = np.asarray([min[0][:] + (max[0][:] - min[0][:])/2,
+                                   min[1][:] + (max[1][:] - min[1][:])/2,
+                                   min[2][:] + (max[2][:] - min[2][:])/2 ]).T
+        else:
+            raise ValueError('mesh_center_quadElements needs 2 or 3 dimensions of x,y,z input')
+        return mesh_ctr
+
+
+    def threeplane_dataReduce(self,x,y,z,c,z_planes):
+        if not hasattr(z_planes, '__iter__'):
+            z_planes = [z_planes]
+        x_out = []
+        y_out = []
+        z_out = []
+        c_out = []
+        for i,pl in enumerate(z_planes):
+            x_tmp, y_tmp, z_tmp, c_tmp = self.trim_data_to_plane(x,y,z,c,pl)
+            x_out.append(x_tmp)
+            y_out.append(y_tmp)
+            z_out.append(z_tmp)
+            c_out.append(c_tmp)
+        return np.concatenate(x_out), np.concatenate(y_out), np.concatenate(z_out), np.concatenate(c_out)
+
+
+    def threeplane_norm(self,dx,dy,dz):
+        norm_sq = [0, 0, 0]
+        for n in range(3):
+            norm_sq[n] = dx[n]**2 + dy[n]**2 + dz[n]**2
+        norm = np.sqrt(norm_sq)
+        return norm
+
+
+    # Feed real x y z
+    # All the threeplane uses value = [[plane0],[plane1],[plane2]]
+    # where each plane is the value = [[0 1 2 ... n], [0 1 2 ...n], ... [0 1 2 ... n]] for that plane
+    def threeplane_curvature(self,x,y,z,c,full_out=False):
         verb('Using the center of 3 planes of data to calculate shit')
         db('If using a surface plane without a mesh plane above and below it, wont work at the moment')
+        # Full 3D mesh element centers
         mesh_ctr, mesh_vol = self.mesh_center_quadElements(x,y,z)
+        # convert xyz into plot orientation
         plt_x,plt_y,plt_z,xyz_ref = self.plt_xyz(x,y,z)
         plt_ctr = np.asarray([np.asarray([n1, n2, n3]) for (n1,n2,n3)
                               in zip(mesh_ctr[:,xyz_ref[0]], mesh_ctr[:,xyz_ref[1]], mesh_ctr[:,xyz_ref[2]])])
-        print(mesh_ctr)
-        print(plt_ctr)
+        # Unique Mesh Element Coordinates (CHECKSUM THIS???)
         plt_x_u = np.unique(plt_ctr[:,0])
         plt_y_u = np.unique(plt_ctr[:,1])
         plt_z_u = np.unique(plt_ctr[:,2])
-        print(plt_x_u)
-        print(plt_y_u)
-        print(plt_z_u)
         # Calculate min/max of each mesh element in slicing direction
         z_max = np.amax(plt_z, axis=1)
         z_min = np.amin(plt_z, axis=1)
@@ -649,38 +712,72 @@ class CalculationsV2:
         # find the closest (3) unique plt_z value
         ind_z_u_ctr = np.absolute(plt_z_u-self.plane_coord).argmin()
         ind_z_planes = [ind_z_u_ctr - 1, ind_z_u_ctr, ind_z_u_ctr + 1]
-        print(ind_z_planes)
-        print(plt_z_u[ind_z_planes])
+        # print(ind_z_planes)
+        # print(plt_z_u[ind_z_planes])
+        # Trim down the full 3D data to just that of the planes of interest combined into single arrays
+        cutx,cuty,cutz,cutc = self.threeplane_dataReduce(plt_x,plt_y,plt_z,c,plt_z_u[ind_z_planes])
+        cut_ctr = self.mesh_center_dir_independent(cutx, cuty, cutz)
+        cut_c_avg = np.average(cutc,axis=1)
+        # Make a meshgrid, sectioned by x,y on planes of z
         X,Z,Y = np.meshgrid(plt_x_u, plt_z_u[ind_z_planes], plt_y_u,  indexing='xy')
-        print(" ")
-        # tx = np.linspace(0,3,4)
-        # ty = np.linspace(4,7,4)
-        # tz = np.linspace(8,10,3)
-        # X,Z,Y = np.meshgrid(tx,tz,ty)
-        print(X)
-        print(Y)
-        print(Z)
-        print(" ")
-        print(np.gradient(X))
-        print(np.gradient(Y))
-        print(np.gradient(Z))
-        #Got to here need to assign c from the three sets of planes
+        self.timerReset()
+        # Convert the 3 plane c data to the meshgrid equivalent
+        c_sort = np.array([self.get_c_index(cut_ctr,cut_c_avg,x,y,z) for (x,y,z) in zip(np.ravel(X), np.ravel(Y), np.ravel(Z))])
+        C = c_sort.reshape(X.shape)
+        self.timerMessage()
+        # Calculate Gradients
+        dx = np.gradient(X)[xyz_ref[0]]
+        dy = np.gradient(Y)[xyz_ref[1]]
+        dz = np.gradient(Z)[xyz_ref[2]]
+        dc = np.gradient(C)
+        dcdx = np.asarray(dc[xyz_ref[0]]) / np.asarray(dx)
+        dcdy = np.asarray(dc[xyz_ref[1]]) / np.asarray(dy)
+        dcdz = np.asarray(dc[xyz_ref[2]]) / np.asarray(dz)
+        # Gradient Norms
+        dc_norm = self.threeplane_norm(dcdx,dcdy,dcdz)
+        # Curvature part: grad/grad.norm
+        dcdx_norm = np.asarray(dcdx)/np.asarray(dc_norm[0])
+        dcdy_norm = np.asarray(dcdy)/np.asarray(dc_norm[1])
+        dcdz_norm = np.asarray(dcdz)/np.asarray(dc_norm[2])
+        # Divergence of that!
+        dcdx_normdx = np.asarray(np.gradient(dcdx_norm)[xyz_ref[0]]) / np.asarray(dx)
+        dcdy_normdy = np.asarray(np.gradient(dcdy_norm)[xyz_ref[1]]) / np.asarray(dy)
+        dcdz_normdz = np.asarray(np.gradient(dcdz_norm)[xyz_ref[2]]) / np.asarray(dz)
+        curvature = dcdx_normdx + dcdy_normdy + dcdz_normdz
+        # Output data for just the middle plane
+        out_pltx, out_plty, out_pltz, out_c_full = self.threeplane_dataReduce(
+            plt_x,plt_y,plt_z,c,plt_z_u[ind_z_u_ctr])
+        out_c_avg = np.average(out_c_full,axis=1)
+        # Calculate 2D mesh centers on that data
+        out_ctr = self.mesh_center_dir_independent(out_pltx, out_plty)
+        # Use those ctrs to generate curvature for middle plane in same format as the c_avg would be
+        self.timerReset()
+        c_out = np.array([self.undo_c_index(xy,curvature[1],X[1],Y[1]) for (xy) in out_ctr])
+        self.timerMessage()
+        curve_out = c_out.reshape(out_c_avg.shape)
+        # If full_out == False then slice to a 4 point box on a plane instead of 8pt cube
+        # This might be dated a bit now? better ways maybe?
+        if not full_out:
+            z_max = np.amax(out_pltz, axis=1)
+            z_min = np.amin(out_pltz, axis=1)
+            # Interpolate c based on where in the plane heightwise
+            slice_c = self.plane_interpolate_nodal_quad(z_min,z_max,self.plane_axis,
+                                                        self.plane_coord,out_c_full)
+            out_pltx = self.masking_restructure(out_pltx,self.plane_axis)
+            out_plty = self.masking_restructure(out_plty,self.plane_axis)
+            out_pltz = self.plane_coord * np.ones_like(out_pltx)
+            out_c_full = slice_c
+        holdinglist = [out_pltx, out_plty, out_pltz]
+        outlist = [0,0,0]
+        for i,ref in enumerate(xyz_ref):
+            outlist[ref] = holdinglist[i]
+        return outlist[0], outlist[1], outlist[2], out_c_full, curve_out
 
-        ind_z = np.where((self.plane_coord <= z_max) & (self.plane_coord >= z_min))
-        v1 = v1[ind_vs][:]
-        v2 = v2[ind_vs][:]
-        vs = vs[ind_vs][:]
-        c = c[ind_vs][:]
-        # Calculate min/max of each mesh element in slicing direction in the sliced data
-        vs_max = np.amax(vs, axis=1)
-        vs_min = np.amin(vs, axis=1)
-        # Interpolate c based on where in the plane heightwise
-        new_c = self.plane_interpolate_nodal_quad(vs_min,vs_max,self.plane_axis,self.plane_coord,c)
-        v1 = self.masking_restructure(v1,self.plane_axis)
-        v2 = self.masking_restructure(v2,self.plane_axis)
-        vs = self.plane_coord * np.ones_like(v1)
+    # Based on where gr# goes to 0 (is < e(=0.2))
+    def delta_interface_func(self):
+        # EQ14 in Johnson/Voorhees 2014 (https://doi.org/10.1016/j.actamat.2013.12.012)
+        e = 0.2
 
-        # X,Y,Z = np.meshgrid(plt_x_u, plt_x_u, z_u, indexing='xy')#specify indexing!!
 
 
 
