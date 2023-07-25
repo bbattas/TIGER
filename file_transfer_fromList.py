@@ -16,6 +16,7 @@ import logging
 import multiprocessing as mp
 import time
 import subprocess
+import sys
 
 
 def parseArgs():
@@ -25,11 +26,14 @@ def parseArgs():
         cl_args
     '''
     parser = argparse.ArgumentParser()
-    parser.add_argument('--verbose','-v',action='store_true')
-    parser.add_argument('--inl',action='store_true')
-    parser.add_argument('--source',type=str)
-    parser.add_argument('--dest',type=str)
-    parser.add_argument('--resume',type=str)
+    parser.add_argument('--verbose','-v',action='store_true',help='Verbose output')
+    parser.add_argument('--inl',action='store_true',help='The files are coming from INL')
+    parser.add_argument('--hpg',action='store_true',help='The files are coming from HPG. '+
+                        'Be sure to open a tunnel to rsync first: ssh bbattas@rsync.rc.ufl.edu')
+    parser.add_argument('--source',type=str,help='Full path to rsync_list.json.')
+    parser.add_argument('--dest',type=str,help='Where to copy the files/folders to.  Defaults to CWD')
+    parser.add_argument('--resume',type=str,help='Specify this if the transfer was prevously interrupted to'+
+                        ' continue where it left off last time.')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -76,8 +80,15 @@ if __name__ == "__main__":
             source = source[:-1]
 
     if cl_args.inl == True:
-        verb("Adding ssh command to source")
+        verb("Adding inl ssh command to source")
         source = "battbran@hpclogin:" + source
+        pt("Copying json to local")
+        os.system("rsync" + " -a " + source +"/rsync_list.json " + dest)
+        with open(dest+'/rsync_list.json') as json_file:
+            dict = json.load(json_file)
+    elif cl_args.hpg == True:
+        verb("Adding hpg ssh command to source")
+        source = "bbattas@rsync.rc.ufl.edu:" + source
         pt("Copying json to local")
         os.system("rsync" + " -a " + source +"/rsync_list.json " + dest)
         with open(dest+'/rsync_list.json') as json_file:
@@ -100,7 +111,7 @@ if __name__ == "__main__":
         pt("Starting transfer from: " + cl_args.resume)
         skip = 1
 
-
+    firstCheck = False
     for s,d in zip(dict['files'],dict['dest_tree']):
         # print(s, dest + "/" + d)
         end = dest + "/" + d
@@ -108,9 +119,22 @@ if __name__ == "__main__":
             s = "/" + s.split("/", 2)[2]
         if cl_args.inl == True:
             command = "rsync" + " -av battbran@hpclogin:" + s + " " + end
+        elif cl_args.hpg == True:
+            command = "rsync" + " -av bbattas@rsync.rc.ufl.edu:" + s + " " + end
         else:
             command = "rsync" + " -av " + s + " " + end
         verb(command)
+        if firstCheck == False:
+            pt('First rsync command is: ')
+            pt(command)
+            confirm = input('Would you like to continue? [y]/n: ')
+            if 'n' not in confirm.lower():
+                verb('Running now')
+                firstCheck = True
+            else:
+                pt('\x1b[31;1m'+'WARNING:'+'\x1b[0m'+' Exiting Code')
+                sys.exit()
+
 
         if skip == 1:
             if cl_args.resume in command:

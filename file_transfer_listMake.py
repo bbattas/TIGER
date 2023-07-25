@@ -25,9 +25,9 @@ def parseArgs():
         cl_args
     '''
     parser = argparse.ArgumentParser()
-    parser.add_argument('--verbose','-v',action='store_true')
+    parser.add_argument('--verbose','-v',action='store_true',help='Verbose Output')
     # parser.add_argument('--inl',action='store_true')
-    parser.add_argument('--source',type=str)
+    parser.add_argument('--source',type=str,help='Directory to build the info from, defaults to CWD')
     # parser.add_argument('--dest',type=str)
     # parser.add_argument('--new-meta', action='store_true')
     cl_args = parser.parse_args()
