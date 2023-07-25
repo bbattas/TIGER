@@ -694,6 +694,7 @@ class CalculationsV2:
     def threeplane_curvature(self,x,y,z,c,full_out=False):
         verb('Using the center of 3 planes of data to calculate shit')
         db('If using a surface plane without a mesh plane above and below it, wont work at the moment')
+        self.timerReset()
         # Full 3D mesh element centers
         mesh_ctr, mesh_vol = self.mesh_center_quadElements(x,y,z)
         # convert xyz into plot orientation
@@ -720,29 +721,40 @@ class CalculationsV2:
         cut_c_avg = np.average(cutc,axis=1)
         # Make a meshgrid, sectioned by x,y on planes of z
         X,Z,Y = np.meshgrid(plt_x_u, plt_z_u[ind_z_planes], plt_y_u,  indexing='xy')
-        self.timerReset()
+        # self.timerReset()
         # Convert the 3 plane c data to the meshgrid equivalent
         c_sort = np.array([self.get_c_index(cut_ctr,cut_c_avg,x,y,z) for (x,y,z) in zip(np.ravel(X), np.ravel(Y), np.ravel(Z))])
         C = c_sort.reshape(X.shape)
-        self.timerMessage()
+        # self.timerMessage()
         # Calculate Gradients
-        dx = np.gradient(X)[xyz_ref[0]]
-        dy = np.gradient(Y)[xyz_ref[1]]
-        dz = np.gradient(Z)[xyz_ref[2]]
+        # The reference to xyz_ref in gradients is wrong, theyre all in plt ref here
+        # dx = np.gradient(X)[xyz_ref[0]]
+        # dy = np.gradient(Y)[xyz_ref[1]]
+        # dz = np.gradient(Z)[xyz_ref[2]]
+        dx = np.gradient(X)[1]
+        dy = np.gradient(Y)[2]
+        dz = np.gradient(Z)[0]
         dc = np.gradient(C)
-        dcdx = np.asarray(dc[xyz_ref[0]]) / np.asarray(dx)
-        dcdy = np.asarray(dc[xyz_ref[1]]) / np.asarray(dy)
-        dcdz = np.asarray(dc[xyz_ref[2]]) / np.asarray(dz)
+        # dcdx = np.asarray(dc[xyz_ref[0]]) / np.asarray(dx)
+        # dcdy = np.asarray(dc[xyz_ref[1]]) / np.asarray(dy)
+        # dcdz = np.asarray(dc[xyz_ref[2]]) / np.asarray(dz)
+        dcdx = np.asarray(dc[1]) / np.asarray(dx)
+        dcdy = np.asarray(dc[2]) / np.asarray(dy)
+        dcdz = np.asarray(dc[0]) / np.asarray(dz)
         # Gradient Norms
         dc_norm = self.threeplane_norm(dcdx,dcdy,dcdz)
         # Curvature part: grad/grad.norm
-        dcdx_norm = np.asarray(dcdx)/np.asarray(dc_norm[0])
-        dcdy_norm = np.asarray(dcdy)/np.asarray(dc_norm[1])
-        dcdz_norm = np.asarray(dcdz)/np.asarray(dc_norm[2])
+        # This starts getting weird away from the relevant OP
+        dcdx_norm = np.asarray(dcdx)/np.asarray(dc_norm)#[0]
+        dcdy_norm = np.asarray(dcdy)/np.asarray(dc_norm)#[1]
+        dcdz_norm = np.asarray(dcdz)/np.asarray(dc_norm)#[2]
         # Divergence of that!
-        dcdx_normdx = np.asarray(np.gradient(dcdx_norm)[xyz_ref[0]]) / np.asarray(dx)
-        dcdy_normdy = np.asarray(np.gradient(dcdy_norm)[xyz_ref[1]]) / np.asarray(dy)
-        dcdz_normdz = np.asarray(np.gradient(dcdz_norm)[xyz_ref[2]]) / np.asarray(dz)
+        # dcdx_normdx = np.asarray(np.gradient(dcdx_norm)[xyz_ref[0]]) / np.asarray(dx)
+        # dcdy_normdy = np.asarray(np.gradient(dcdy_norm)[xyz_ref[1]]) / np.asarray(dy)
+        # dcdz_normdz = np.asarray(np.gradient(dcdz_norm)[xyz_ref[2]]) / np.asarray(dz)
+        dcdx_normdx = np.asarray(np.gradient(dcdx_norm)[1]) / np.asarray(dx)
+        dcdy_normdy = np.asarray(np.gradient(dcdy_norm)[2]) / np.asarray(dy)
+        dcdz_normdz = np.asarray(np.gradient(dcdz_norm)[0]) / np.asarray(dz)
         curvature = dcdx_normdx + dcdy_normdy + dcdz_normdz
         # Output data for just the middle plane
         out_pltx, out_plty, out_pltz, out_c_full = self.threeplane_dataReduce(
@@ -751,9 +763,9 @@ class CalculationsV2:
         # Calculate 2D mesh centers on that data
         out_ctr = self.mesh_center_dir_independent(out_pltx, out_plty)
         # Use those ctrs to generate curvature for middle plane in same format as the c_avg would be
-        self.timerReset()
+        # self.timerReset()
         c_out = np.array([self.undo_c_index(xy,curvature[1],X[1],Y[1]) for (xy) in out_ctr])
-        self.timerMessage()
+        # self.timerMessage()
         curve_out = c_out.reshape(out_c_avg.shape)
         # If full_out == False then slice to a 4 point box on a plane instead of 8pt cube
         # This might be dated a bit now? better ways maybe?
@@ -771,12 +783,21 @@ class CalculationsV2:
         outlist = [0,0,0]
         for i,ref in enumerate(xyz_ref):
             outlist[ref] = holdinglist[i]
+        self.timerMessage()
         return outlist[0], outlist[1], outlist[2], out_c_full, curve_out
 
     # Based on where gr# goes to 0 (is < e(=0.2))
-    def delta_interface_func(self):
+    def delta_interface_func(self,c):
         # EQ14 in Johnson/Voorhees 2014 (https://doi.org/10.1016/j.actamat.2013.12.012)
+        # Element form check for c
+        if hasattr(c[0], "__len__"):
+            plotc = np.average(c, axis=1)
+        else:
+            plotc = c
         e = 0.2
+        delta = (1 + np.cos((np.pi * plotc)/e))/(2*e)
+        delta2 = np.where(np.absolute(plotc)<e,(1 + np.cos((np.pi * plotc)/e))/(2*e),0)
+        return delta, delta2
 
 
 
@@ -790,7 +811,7 @@ class CalculationsV2:
     # ╚═╝     ╚══════╝ ╚═════╝    ╚═╝      ╚═╝   ╚═╝╚═╝  ╚═══╝ ╚═════╝
 
 
-    def plot_slice(self,frame,x,y,z,c):
+    def plot_slice(self,frame,x,y,z,c,cb_label=None):
         db('Plotting the sliced data')
         # Make pics subdirectory if it doesnt exist
         pic_directory = 'pics'
@@ -815,7 +836,10 @@ class CalculationsV2:
         ax.set_aspect('equal')
         #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION, [0,1]
         # p.set_clim(0.0, 1.0)
-        fig.colorbar(p, label=self.var_to_plot)
+        if cb_label==None:
+            fig.colorbar(p, label=self.var_to_plot)
+        else:
+            fig.colorbar(p, label=cb_label)
         fig.savefig(pic_directory+'/'+self.outNameBase+'_sliced_'+self.plane_axis+
                     str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
         if self.cl_args.debug:
