@@ -202,28 +202,57 @@ if __name__ == "__main__":
     # dx = calc.element_gradients(nx,ny,nz,nc)
     # read_tf = time.perf_counter()
     # print("  Finished doing gradients:",round(read_tf-read_ti,2),"s")
+    all_grs = ['gr0','gr1']
+    results = []
+    curvatures = []
+    full_outs = []
+    tot_gr_area = 0
+    tot_full_del_cv = 0
 
+    dcv_combined_full = 0
+    for grop in all_grs:
+        x,y,z,c = MF.get_data_at_time(grop,calc.times[2],True)
+        op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
+        sum_del_cv, full_del_cv,cx,cy,cz,cc = calc.MER_curvature_calcs(x,y,z,c,True)
+        if 'phi' not in grop:
+            tot_gr_area += op_area
+            tot_full_del_cv += full_del_cv
+        print([grop, op_area, tot_mesh_area, sum_del_cv])
+        # calc.plot_slice('TEST_LIST_c_'+str(grop),cx,cy,cz,cc,str(grop))
+        # calc.plot_slice('TEST_LIST_dcv_'+str(grop),cx,cy,cz,full_del_cv,str(grop)+'_cv*delta(max1)')
+    tot_del_cv = np.sum(tot_full_del_cv)
+    print(tot_gr_area, tot_del_cv)
+
+    sys.exit()
     # gr0
-    x0,y0,z0,c0 = MF.get_data_at_time('gr0',calc.times[2],True)
-    cx0, cy0, cz0, cc0, cv0 = calc.threeplane_curvature(x0,y0,z0,c0)
-    d10, d20 = calc.delta_interface_func(cc0)
+    # x0,y0,z0,c0 = MF.get_data_at_time('gr0',calc.times[2],True)
+    # cx0, cy0, cz0, cc0, cv0 = calc.threeplane_curvature(x0,y0,z0,c0)
+    # d0 = calc.delta_interface_func(cc0,1)
 
+    # sumcv0, outcv0, outx,outy,outz,outc = calc.MER_curvature_calcs(x0,y0,z0,c0,True)
+    # print(sumcv0)
+    # calc.plot_slice('TEST_c_gr0',cx0,cy0,cz0,cc0,'gr0')
+    # calc.plot_slice('TEST_c_gr0_calc',outx,outy,outz,outc,'gr0')
+    # calc.plot_slice('TEST_cv_gr0',cx0,cy0,cz0,cv0*d0,'gr0_curvature*delta')
+    # calc.plot_slice('TEST_cv_gr0_calc',outx,outy,outz,outcv0,'gr0_curvature*delta')
+    # sys.exit()
     # gr1
     x1,y1,z1,c1 = MF.get_data_at_time('gr1',calc.times[2],True)
     cx1, cy1, cz1, cc1, cv1 = calc.threeplane_curvature(x1,y1,z1,c1)
-    d11, d21 = calc.delta_interface_func(cc1)
+    d1 = calc.delta_interface_func(cc1)
 
     # gr2
     x2,y2,z2,c2 = MF.get_data_at_time('phi',calc.times[2],True)
     cx2, cy2, cz2, cc2, cv2 = calc.threeplane_curvature(x2,y2,z2,c2)
-    d12, d22 = calc.delta_interface_func(cc2)
+    d2 = calc.delta_interface_func(cc2)
 
     # calc.plot_slice(0,X,Y,Z,C)
     # calc.plot_slice(1,X[1],Y[1],Z[1],C[1])
     # calc.plot_slice(2,X[2],Y[2],Z[2],C[2])
-
-    # calc.plot_slice('c_gr0',cx0,cy0,cz0,cc0,'gr0')
-    # sys.exit()
+    # print(min(cv0))
+    # print(max(cv0))
+    # calc.plot_slice('cv_gr0',cx0,cy0,cz0,np.where(cv0>=0.0,-1,cv0),'gr0_curvature')
+    sys.exit()
     # # PLOTS
     temp_gb = np.where(((d20+d21+d22)<=1),(d20+d21+d22),0)
     temp_grs = np.where(((d20+d21)<=1),(d20+d21),0)

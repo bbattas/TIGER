@@ -118,9 +118,12 @@ class CalculationsV2:
         return
 
 
-    def timerMessage(self):
+    def timerMessage(self,message=None):
         # db("Time: "+str(round(time.perf_counter()-self.timer,2))+"s")
-        print("Time: "+str(round(time.perf_counter()-self.timer,2))+"s")
+        if message == None:
+            print("Time: "+str(round(time.perf_counter()-self.timer,2))+"s")
+        else:
+            db(str(message)+" (Time: "+str(round(time.perf_counter()-self.timer,2))+"s)")
         self.timer = time.perf_counter()
         return
 
@@ -396,18 +399,19 @@ class CalculationsV2:
     # positive direction by tolerance if it can, otherwise move negative by tol
     def adjust_plane(self,vs_max,vs_min):
         tol = 1e-6
+        planeval = self.plane_coord
         dom_max = max(vs_max)
         dom_min = min(vs_min)
-        c_on_plane = ((self.plane_coord == vs_max) | (self.plane_coord == vs_min))
+        c_on_plane = ((planeval == vs_max) | (planeval == vs_min))
         if np.any(c_on_plane):
             verb('MOVING Plane')
             db('Plane slicing is on boundary between elements, moving...')
-            if (self.plane_coord + tol) < dom_max:
+            if (planeval + tol) < dom_max:
                 db('Shifting plane + tol')
-                self.plane_coord += tol
-            elif (self.plane_coord - tol) > dom_min:
+                self.plane_coord = planeval + tol
+            elif (planeval - tol) > dom_min:
                 db('Shifting plane - tol')
-                self.plane_coord -= tol
+                self.plane_coord = planeval - tol
             else:
                 raise ValueError('Plane coordinate is apparently within tolerance of domain min and max')
             # Check that it worked
@@ -415,6 +419,7 @@ class CalculationsV2:
             if np.any(c_on_plane):
                 raise ValueError('After shift, plane is still on boundary!')
             else:
+                db('Plane now '+str(self.plane_coord))
                 return
         else:
             db('Plane not on boundary, doesnt need moved')
@@ -448,7 +453,6 @@ class CalculationsV2:
             print('DEPRECIATED')
             dc = self.element_gradients(v1,v2,vs,c,xyz_ref)
             normdc = self.element_curvature(v1,v2,vs,c,xyz_ref)
-
 
         # Interpolate c based on where in the plane heightwise
         new_c = self.plane_interpolate_nodal_quad(vs_min,vs_max,self.plane_axis,self.plane_coord,c)
@@ -524,7 +528,7 @@ class CalculationsV2:
 
     # Using basic xyzc
     # calculate the area*(1-phi) to determine the effective grain area in the plane
-    def c_area_in_slice(self,x,y,z,c):
+    def c_area_in_slice(self,x,y,z,c,varname):
         if len(x[0]) == 8:
             db('starting from full 3D data')
             x, y, z, c = self.plane_slice(x,y,z,c)
@@ -533,11 +537,11 @@ class CalculationsV2:
         else:
             pt('\x1b[31;1m'+'ERROR:'+'\x1b[0m'+' data not in QUAD 4 or 8 unit pattern?')
         elem_c = np.average(c, axis=1)
-        if 'phi' in self.var_to_plot:
+        if 'phi' in varname:
             db('Converting value measured to 1-phi for c area calc')
             elem_c = 1 - elem_c
         plt_x, plt_y = self.plt_xy(x,y,z)
-        mesh_ctr, mesh_vol = self.mesh_center_quadElements(plt_x,plt_y)
+        mesh_vol = self.mesh_vol_dir_independent(plt_x,plt_y)
         # instead of removing duplicates, just half the area of the doubled cells,
         # they should still have the same c value in both dupes
         # mesh_vol = np.where(c_on_plane, mesh_vol/2, mesh_vol)
@@ -663,6 +667,27 @@ class CalculationsV2:
             raise ValueError('mesh_center_quadElements needs 2 or 3 dimensions of x,y,z input')
         return mesh_ctr
 
+    # Uses min and max value of each coordinate in each element to return volume/area
+    def mesh_vol_dir_independent(self,*args):
+        min = []
+        max = []
+        for ar in args:
+            min.append(np.amin(ar,axis=1))
+            max.append(np.amax(ar,axis=1))
+        if len(args) == 2:
+            db('RUNNING 2D')
+            mesh_vol = np.asarray((max[0][:] - min[0][:])*
+                                  (max[1][:] - min[1][:]) )
+        # 3D
+        elif len(args) == 3:
+            db('3D based on inputs')
+            mesh_vol = np.asarray((max[0][:] - min[0][:])*
+                                  (max[1][:] - min[1][:])*
+                                  (max[2][:] - min[2][:]))
+        else:
+            raise ValueError('mesh_vol_dir_independent needs 2 or 3 dimensions of x,y,z input')
+        return mesh_vol
+
 
     def threeplane_dataReduce(self,x,y,z,c,z_planes):
         if not hasattr(z_planes, '__iter__'):
@@ -692,9 +717,9 @@ class CalculationsV2:
     # All the threeplane uses value = [[plane0],[plane1],[plane2]]
     # where each plane is the value = [[0 1 2 ... n], [0 1 2 ...n], ... [0 1 2 ... n]] for that plane
     def threeplane_curvature(self,x,y,z,c,full_out=False):
-        verb('Using the center of 3 planes of data to calculate shit')
+        db('Using the center of 3 planes of data to calculate shit')
         db('If using a surface plane without a mesh plane above and below it, wont work at the moment')
-        self.timerReset()
+        # self.timerReset()
         # Full 3D mesh element centers
         mesh_ctr, mesh_vol = self.mesh_center_quadElements(x,y,z)
         # convert xyz into plot orientation
@@ -783,11 +808,11 @@ class CalculationsV2:
         outlist = [0,0,0]
         for i,ref in enumerate(xyz_ref):
             outlist[ref] = holdinglist[i]
-        self.timerMessage()
+        # self.timerMessage('Curvature Meshgrid Done')
         return outlist[0], outlist[1], outlist[2], out_c_full, curve_out
 
     # Based on where gr# goes to 0 (is < e(=0.2))
-    def delta_interface_func(self,c):
+    def delta_interface_func(self,c,limit=None):
         # EQ14 in Johnson/Voorhees 2014 (https://doi.org/10.1016/j.actamat.2013.12.012)
         # Element form check for c
         if hasattr(c[0], "__len__"):
@@ -795,9 +820,25 @@ class CalculationsV2:
         else:
             plotc = c
         e = 0.2
-        delta = (1 + np.cos((np.pi * plotc)/e))/(2*e)
-        delta2 = np.where(np.absolute(plotc)<e,(1 + np.cos((np.pi * plotc)/e))/(2*e),0)
-        return delta, delta2
+        # delta = (1 + np.cos((np.pi * plotc)/e))/(2*e)
+        delta = np.where(np.absolute(plotc)<e,(1 + np.cos((np.pi * plotc)/e))/(2*e),0)
+        if limit is not None:
+            delta = np.where(delta<=limit,delta,0)
+        return delta
+
+    # Full single OP curvature calculations
+    def MER_curvature_calcs(self,x,y,z,c,xyz_out=False):
+        self.timerReset()
+        cx,cy,cz,cc,cv = self.threeplane_curvature(x,y,z,c)
+        delta_func = self.delta_interface_func(cc,1)
+        delta_cv = delta_func*cv
+        sum_delta_cv = np.sum(delta_cv)
+        self.timerMessage('Full Curvature Calculation')
+        if xyz_out:
+            return sum_delta_cv, delta_cv, cx, cy, cz, cc
+        else:
+            return sum_delta_cv, delta_cv
+
 
 
 
@@ -832,11 +873,14 @@ class CalculationsV2:
         ax.add_collection(p)
         ax.set_xlim([np.amin(plt_x),np.amax(plt_x)])
         ax.set_ylim([np.amin(plt_y),np.amax(plt_y)])
+        # ax.set_ylim([np.amin(plt_x),np.amax(plt_x)])
         #SET ASPECT RATIO TO EQUAL TO ENSURE IMAGE HAS SAME ASPECT RATIO AS ACTUAL MESH
         ax.set_aspect('equal')
         #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION, [0,1]
         # p.set_clim(0.0, 1.0)
+        # p.set_clim(-0.8, 0.0)
         if cb_label==None:
+            p.set_clim(0.0, 1.0)
             fig.colorbar(p, label=self.var_to_plot)
         else:
             fig.colorbar(p, label=cb_label)

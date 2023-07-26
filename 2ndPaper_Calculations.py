@@ -34,11 +34,29 @@ def parallelSlicePlot(i,idx_frame):
     return
 
 # Function to let me run calculation shit in parallel
-def do_calculations(i,idx_frame):
+def do_calculations(i,idx_frame,all_op=False):
     para_t0 = time.perf_counter()
-    gr_area, mesh_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True))
-    verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
-    return calc.times[idx_frame], gr_area, mesh_area
+    if not all_op:
+        x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+        op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,calc.var_to_plot)
+        sum_del_cv, full_del_cv = calc.MER_curvature_calcs(x,y,z,c)
+        verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+        return calc.times[idx_frame], op_area, tot_mesh_area, sum_del_cv
+    else:
+        tot_gr_area = 0
+        tot_full_del_cv = 0
+        all_grs = ['gr0','gr1']
+        for grop in all_grs:
+            x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
+            op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
+            sum_del_cv, full_del_cv = calc.MER_curvature_calcs(x,y,z,c)
+            if 'phi' not in grop:
+                tot_gr_area += op_area
+                tot_full_del_cv += full_del_cv
+        tot_del_cv = np.sum(tot_full_del_cv)
+        print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+        return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_del_cv
+
 
 
 
@@ -94,7 +112,7 @@ if __name__ == "__main__":
         para_results = []
         for i,idx in enumerate(calc.idx_frames):
             if calc.parallel:
-                para_results.append(cpu_pool.apply_async(do_calculations,args = (i, idx )))
+                para_results.append(cpu_pool.apply_async(do_calculations,args = (i, idx, True )))
             else:
                  para_results.append(do_calculations(i,idx))
 
@@ -115,10 +133,11 @@ if __name__ == "__main__":
         # Using Pandas for shit
         saveloc = calc.outNameBase + '_calc_data.csv'
         print('Saving Data: ',saveloc)
-        csv_header = ['time', 'grain_area', 'tot_mesh_area']
+        csv_header = ['time', 'grain_area', 'tot_mesh_area','curvature']
+        # calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_del_cv
         df = pd.DataFrame(para_results, columns = csv_header)
         df.sort_values(by="time").reset_index(drop=True, inplace=True)
-        df['cr_eff'] = np.sqrt(df.grain_area.div(math.pi))
+        # df['cr_eff'] = np.sqrt(df.grain_area.div(math.pi))
         df.to_csv(saveloc)
         print('Saved!')
 
