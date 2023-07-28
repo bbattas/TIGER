@@ -202,26 +202,51 @@ if __name__ == "__main__":
     # dx = calc.element_gradients(nx,ny,nz,nc)
     # read_tf = time.perf_counter()
     # print("  Finished doing gradients:",round(read_tf-read_ti,2),"s")
-    all_grs = ['gr0','gr1']
     results = []
-    curvatures = []
-    full_outs = []
-    tot_gr_area = 0
-    tot_full_del_cv = 0
 
-    dcv_combined_full = 0
-    for grop in all_grs:
-        x,y,z,c = MF.get_data_at_time(grop,calc.times[2],True)
-        op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
-        sum_del_cv, full_del_cv,cx,cy,cz,cc = calc.MER_curvature_calcs(x,y,z,c,True)
-        if 'phi' not in grop:
-            tot_gr_area += op_area
-            tot_full_del_cv += full_del_cv
-        print([grop, op_area, tot_mesh_area, sum_del_cv])
-        # calc.plot_slice('TEST_LIST_c_'+str(grop),cx,cy,cz,cc,str(grop))
-        # calc.plot_slice('TEST_LIST_dcv_'+str(grop),cx,cy,cz,full_del_cv,str(grop)+'_cv*delta(max1)')
-    tot_del_cv = np.sum(tot_full_del_cv)
-    print(tot_gr_area, tot_del_cv)
+    def do_calculations(i,idx_frame,all_op=False):
+        para_t0 = time.perf_counter()
+        if not all_op:
+            x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+            op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,calc.var_to_plot)
+            sum_del_cv, full_delta, full_cv = calc.MER_curvature_calcs(x,y,z,c)
+            verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+            return calc.times[idx_frame], op_area, tot_mesh_area, sum_del_cv
+        else:
+            tot_gr_area = 0
+            all_full_delta = []
+            all_full_cv = []
+            print(MF.exodus_readers[0].nodal_var_names)
+            all_gr_ops = ['gr0','gr1','gr2','gr3']
+            all_grs = [x for x in all_gr_ops if x in MF.exodus_readers[0].nodal_var_names]
+            print(all_grs)
+            for grop in all_grs:
+                x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
+                op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
+                sum_del_cv, full_delta, full_cv, cx,cy,cz,cc = calc.MER_curvature_calcs(x,y,z,c,True)
+                if 'phi' not in grop:
+                    tot_gr_area += op_area
+                    all_full_delta.append(full_delta)
+                    all_full_cv.append(full_cv)
+            # sum_delta = sum(all_full_delta)
+            delta_cv = sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
+            tot_delta_cv = np.sum(np.where(sum(all_full_delta)<=1,delta_cv,0))
+
+
+
+            # tot_del_cv = np.sum((_full_delta * tot_full_cv))
+            # print(tot_del_cv)
+            # print(np.sum((tot_full_delta * tot_full_cv)))
+            # print(np.sum((np.where(tot_full_delta<=1,tot_full_delta,0) * tot_full_cv)))
+            calc.plot_slice('test_full_deltacv',cx,cy,cz,delta_cv,'gr_delta*gr_cv')
+            calc.plot_slice('test_gb_deltacv',cx,cy,cz,np.where(sum(all_full_delta)<=1,delta_cv,0),'gr_delta*gr_cv gbonly')
+            # calc.plot_slice('test_wphi_combinedDeltaFunction_max1_combinedCv',cx,cy,cz,np.where(tot_full_delta<=1,tot_full_delta,0)*tot_full_cv,'total_op_delta_max1*total_gr_cv')
+            print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+            return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_delta_cv
+
+    results.append(do_calculations(0,0,True))
+    print(results)
+
 
     sys.exit()
     # gr0

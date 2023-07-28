@@ -827,17 +827,18 @@ class CalculationsV2:
         return delta
 
     # Full single OP curvature calculations
+    # For the GB plane only, need to sum all the ops delta funcs and use that combined one only
     def MER_curvature_calcs(self,x,y,z,c,xyz_out=False):
         self.timerReset()
         cx,cy,cz,cc,cv = self.threeplane_curvature(x,y,z,c)
-        delta_func = self.delta_interface_func(cc,1)
+        delta_func = self.delta_interface_func(cc)#,1
         delta_cv = delta_func*cv
         sum_delta_cv = np.sum(delta_cv)
         self.timerMessage('Full Curvature Calculation')
         if xyz_out:
-            return sum_delta_cv, delta_cv, cx, cy, cz, cc
+            return sum_delta_cv, delta_func, cv, cx, cy, cz, cc
         else:
-            return sum_delta_cv, delta_cv
+            return sum_delta_cv, delta_func, cv
 
 
 
