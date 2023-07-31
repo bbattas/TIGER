@@ -51,6 +51,13 @@ def cr_r0(df):
     df['cr_r0'] = df.cr_eff / r_0
     return
 
+def read_and_math_csv(csvname,surf_energy,Ds,T):
+    df = pd.read_csv(csvname)
+    df.sort_values(by="time").reset_index(drop=True, inplace=True)
+    cr_r0(df)
+    nondimen_time(df,surf_energy,Ds,T)
+    return df
+
 
 # ███╗   ███╗ █████╗ ██╗███╗   ██╗
 # ████╗ ████║██╔══██╗██║████╗  ██║
@@ -62,30 +69,36 @@ def cr_r0(df):
 
 if __name__ == "__main__":
     print("__main__ Start")
-    short = False
+    short = True
 
     if short:
         # Using Pandas for shit
         filename = '*_calc_data.csv'
         for file in glob.glob(filename):
             csv_file = file
-        df = pd.read_csv(csv_file)
-        # csv_header = ['time', 'grain_area', 'tot_mesh_area','curvature']
-        df.sort_values(by="time").reset_index(drop=True, inplace=True)
-        cr_r0(df)
-        nondimen_time(df,9.86,1e11,1600)
-        print(df)
+        # df = pd.read_csv(csv_file)
+        # # csv_header = ['time', 'grain_area', 'tot_mesh_area','curvature']
+        # df.sort_values(by="time").reset_index(drop=True, inplace=True)
+        # cr_r0(df)
+        # nondimen_time(df,9.86,1e11,1600)
+        # print(df)
+        df = read_and_math_csv(csv_file,9.86,1e11,1600)
+        df['kappa_star'] = - df.curvature / df.grain_area
+        df['kappa_star2'] = - df.delta_normalized_curvature / df.grain_area
 
         plt.figure(1)
-        plt.plot(df.time,df.n_time)
-        plt.xlabel('Time')
-        plt.ylabel('t*')
+        # plt.plot(df.cr_r0,-df.curvature,label='1')
+        # plt.plot(df.cr_r0,-df.delta_normalized_curvature,label='2')
+        plt.plot(df.cr_r0,df.kappa_star,label='3')
+        plt.plot(df.cr_r0,df.kappa_star2,label='4')
+        plt.xlabel('c*/r0')
+        plt.ylabel('Curvature* x Ac')
         # plt.plot(df.n_time,df.cr_r0)
         # plt.xlabel('t*')
         # plt.ylabel('c*/r0')
         # plt.loglog()
         # plt.ylim([0.2,1.2])
-
+        plt.legend()
         plt.show()
 
         sys.exit()

@@ -51,21 +51,26 @@ def do_calculations(i,idx_frame,all_op=False):
         for grop in all_grs:
             x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
             op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
-            sum_del_cv, full_delta, full_cv = calc.MER_curvature_calcs(x,y,z,c)
+            sum_del_cv, full_delta, full_cv, cx, cy, cz, cc = calc.MER_curvature_calcs(x,y,z,c,True)
+            calc.plot_slice(str(grop)+'_curv_'+str(i),cx,cy,cz,full_cv,str(grop)+"_curvature")
             # Change this and just use it for tot_cr_area for more grains
             if 'phi' not in grop:
                 tot_gr_area += op_area
                 all_full_delta.append(full_delta)
                 all_full_cv.append(full_cv)
         # No Cross Terms (delta_gr0*cv_gr1, etc)
-        delta_cv = sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
-        tot_delta_cv = np.sum(np.where(sum(all_full_delta)<=1,delta_cv,0))
+        delta_cv = sum(all_full_delta)#sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
+        tot_delta_cv = np.sum(np.where((sum(all_full_delta)<=1) & (sum(all_full_delta)>0),delta_cv,0))
+        tot_delta = np.sum(np.where(sum(all_full_delta)<=1,1,0))
+        calc.plot_slice('delta_'+str(i),cx,cy,cz,delta_cv,'delta_total')
+        calc.plot_slice('full_curvature_'+str(i),cx,cy,cz,np.where((sum(all_full_delta)<=1) & (sum(all_full_delta)>0),delta_cv,0),'curvature_total')
+        # print(tot_delta_cv, tot_delta, tot_delta_cv/tot_delta)
         # With those cross terms
         # deltas = sum([np.where(all_full_delta[n]<=1,all_full_delta[n],0) for n in range(len(all_grs))])
         # cvs = sum([all_full_delta[n] for n in range(len(all_grs))])
         # tot_delta_cv = np.sum(deltas*cvs)
         print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
-        return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_delta_cv
+        return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_delta_cv, tot_delta_cv/tot_delta
 
 
 
@@ -143,7 +148,7 @@ if __name__ == "__main__":
         # Using Pandas for shit
         saveloc = calc.outNameBase + '_calc_data.csv'
         print('Saving Data: ',saveloc)
-        csv_header = ['time', 'grain_area', 'tot_mesh_area','curvature']
+        csv_header = ['time', 'grain_area', 'tot_mesh_area','curvature', 'delta_normalized_curvature']
         # calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_del_cv
         df = pd.DataFrame(para_results, columns = csv_header)
         df.sort_values(by="time").reset_index(drop=True, inplace=True)
