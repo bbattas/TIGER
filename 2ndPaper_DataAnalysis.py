@@ -83,6 +83,10 @@ if __name__ == "__main__":
         # nondimen_time(df,9.86,1e11,1600)
         # print(df)
         df = read_and_math_csv(csv_file,9.86,1e11,1600)
+        # Trim some
+        # df = df.drop(df[(df.n_time < 10**2) | (df.n_time > 10**5)].index)
+        df = df.truncate(after=62)
+
         df['kappa_star'] = - df.curvature / df.grain_area
         df['kappa_star2'] = - df.delta_normalized_curvature / df.grain_area
 
@@ -93,10 +97,14 @@ if __name__ == "__main__":
         plt.plot(df.cr_r0,df.kappa_star2,label='4')
         plt.xlabel('c*/r0')
         plt.ylabel('Curvature* x Ac')
-        # plt.plot(df.n_time,df.cr_r0)
-        # plt.xlabel('t*')
-        # plt.ylabel('c*/r0')
-        # plt.loglog()
+        plt.legend()
+
+
+        plt.figure(2)
+        plt.plot(df.n_time,df.cr_r0)
+        plt.xlabel('t*')
+        plt.ylabel('c*/r0')
+        plt.loglog()
         # plt.ylim([0.2,1.2])
         plt.legend()
         plt.show()

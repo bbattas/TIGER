@@ -46,24 +46,40 @@ def do_calculations(i,idx_frame,all_op=False):
         tot_gr_area = 0
         all_full_delta = []
         all_full_cv = []
-        all_gr_ops = ['gr0','gr1','gr2','gr3']
+        delta_phi = 0
+        # Only using gr0 and gr1 to focus only on the GB plane of interest
+        all_gr_ops = ['phi','gr0','gr1','gr2','gr3']
         all_grs = [x for x in all_gr_ops if x in MF.exodus_readers[0].nodal_var_names]
+        # all_grs = ['gr0','gr1']
         for grop in all_grs:
             x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
             op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
             sum_del_cv, full_delta, full_cv, cx, cy, cz, cc = calc.MER_curvature_calcs(x,y,z,c,True)
+            # Individual OP Curvature Plots for Testing
             calc.plot_slice(str(grop)+'_curv_'+str(i),cx,cy,cz,full_cv,str(grop)+"_curvature")
             # Change this and just use it for tot_cr_area for more grains
-            if 'phi' not in grop:
+            # if 'phi' not in grop:
+            #     all_full_cv.append(full_cv)
+            if 'phi' in grop:
+                delta_phi = np.where((full_delta>0),0,1)
+            if grop not in ['phi','gr2','gr3']:
                 tot_gr_area += op_area
                 all_full_delta.append(full_delta)
                 all_full_cv.append(full_cv)
+        # DATED/Depreciated
         # No Cross Terms (delta_gr0*cv_gr1, etc)
-        delta_cv = sum(all_full_delta)#sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
-        tot_delta_cv = np.sum(np.where((sum(all_full_delta)<=1) & (sum(all_full_delta)>0),delta_cv,0))
-        tot_delta = np.sum(np.where(sum(all_full_delta)<=1,1,0))
-        calc.plot_slice('delta_'+str(i),cx,cy,cz,delta_cv,'delta_total')
-        calc.plot_slice('full_curvature_'+str(i),cx,cy,cz,np.where((sum(all_full_delta)<=1) & (sum(all_full_delta)>0),delta_cv,0),'curvature_total')
+        # delta_cv = sum(all_full_delta)#sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
+        # tot_delta_cv = np.sum(np.where((sum(all_full_delta)<=1) & (sum(all_full_delta)>0),delta_cv,0))
+        # tot_delta = np.sum(np.where(sum(all_full_delta)<=1,1,0))
+        # Delta and Curvature combination for the gr0/gr1 gb plane (assuming allgrs is only those 2)
+        dels = [np.where((all_full_delta[n]>0) & (all_full_delta[n]<=1) & delta_phi,1,0) for n in range(len(all_full_delta))]
+        del_tot = np.where(sum(dels)>0.0,1,0)
+        cv_tot = sum(all_full_cv)
+        tot_delta_cv = np.sum(cv_tot*del_tot)
+        tot_delta = np.sum(del_tot)
+        # Testing Output Plots
+        calc.plot_slice('GB_delta_'+str(i),cx,cy,cz,del_tot,'gr0/gr1 GB outer delta function')
+        calc.plot_slice('GB_cv_output_'+str(i),cx,cy,cz,cv_tot*del_tot,'gr0/gr1 GB curvature*delta')
         # print(tot_delta_cv, tot_delta, tot_delta_cv/tot_delta)
         # With those cross terms
         # deltas = sum([np.where(all_full_delta[n]<=1,all_full_delta[n],0) for n in range(len(all_grs))])
