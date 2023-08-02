@@ -893,6 +893,51 @@ class CalculationsV2:
             plt.close()
         return
 
+    def plot_slice_forCurvature(self,frame,x,y,z,c,cb_label=None):
+        db('Plotting the sliced data')
+        # Make pics subdirectory if it doesnt exist
+        pic_directory = 'pics'
+        if not os.path.isdir(pic_directory):
+            db('Making picture directory: '+pic_directory)
+            os.makedirs(pic_directory)
+        db('Plotting the slice as specified')
+        # Take the average of the 4 corner values for c
+        if hasattr(c[0], "__len__"):
+            plotc = np.average(c, axis=1)
+        else:
+            plotc = c
+        plt_x, plt_y = self.plt_xy(x,y,z)
+        coords = np.asarray([ np.asarray([x_val,y_val]).T for (x_val,y_val) in zip(plt_x,plt_y) ])
+        fig, ax = plt.subplots()
+        p = PolyCollection(coords, cmap=matplotlib.cm.binary, alpha=1)#,edgecolor='k'
+        p.set_array(np.array(plotc) )
+        ax.add_collection(p)
+        ax.set_xlim([np.amin(plt_x),np.amax(plt_x)])
+        ax.set_ylim([np.amin(plt_y),np.amax(plt_y)])
+        # ax.set_ylim([np.amin(plt_x),np.amax(plt_x)])
+        #SET ASPECT RATIO TO EQUAL TO ENSURE IMAGE HAS SAME ASPECT RATIO AS ACTUAL MESH
+        ax.set_aspect('equal')
+        # ax.axis('off')
+        # ax.set_yticklabels([])
+        # ax.set_xticklabels([])
+        plt.tick_params(left = False, right = False , labelleft = False ,
+                labelbottom = False, bottom = False)
+        #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION, [0,1]
+        p.set_clim(0.0, 1.0)
+        # p.set_clim(-0.8, 0.0)
+        # if cb_label==None:
+        #     p.set_clim(0.0, 1.0)
+        #     fig.colorbar(p, label=self.var_to_plot)
+        # else:
+        #     fig.colorbar(p, label=cb_label)
+        fig.savefig(pic_directory+'/'+self.outNameBase+'_cv2_gb_'+self.plane_axis+
+                    str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
+        if self.cl_args.debug:
+            plt.show()
+        else:
+            plt.close()
+        return
+
 
 
 

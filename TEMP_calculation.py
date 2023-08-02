@@ -217,6 +217,7 @@ if __name__ == "__main__":
             all_full_delta = []
             delta_phi = 0
             all_full_cv = []
+            gb = []
             all_gr_ops = ['phi','gr0','gr1','gr2','gr3']
             all_grs = [x for x in all_gr_ops if x in MF.exodus_readers[0].nodal_var_names]
             # all_grs = ['gr0', 'gr1']
@@ -231,13 +232,13 @@ if __name__ == "__main__":
                 if 'phi' in grop:
                     delta_phi = np.where((full_delta>0),0,1)
                 if grop not in ['phi','gr2','gr3']:
+                    gb.append(cc)
                     tot_gr_area += op_area
                     all_full_delta.append(full_delta)
                     # all_full_cv.append(full_cv)
             # No Cross Terms (delta_gr0*cv_gr1, etc)
             # delta_cv = sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
-            del0 = np.where((all_full_delta[0]>0) & (all_full_delta[0]<=1),1,0)
-            del1 = np.where((all_full_delta[1]>0) & (all_full_delta[1]<=1),1,0)
+            calc.plot_slice_forCurvature(str(i),cx,cy,cz,sum(gb),'gr0 + gr1')
             # delphi = np.where((delta_phi>0),0,1)
             # del01 = np.where(del0 & del1 & delphi, 1, 0)
             # calc.plot_slice('delta_gb_phi_'+str(i),cx,cy,cz,delphi,'delta_gb and phi')
