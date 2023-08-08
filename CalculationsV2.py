@@ -11,6 +11,9 @@ import subprocess
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
+import cv2
+import math
+import regex
 
 
 # # Needs to have access to '~/projects/TIGER/parallel_time_file_make.py'
@@ -841,7 +844,141 @@ class CalculationsV2:
             return sum_delta_cv, delta_func, cv
 
 
+    # ACTUAL IMAGE CURVATURE
+    def image_scaleFactor(self,bw_img_w_box,xrange,yrange=None):
+        '''Reads the image of the GB plane OPs summed with a 0-1 white-black colorbar and
+        based on the CV2 pixels in the image calculates the ratio between CV2 pixels and
+        actual domain units (uses the box outlining the plot and the max x dimension)
 
+        Args:
+            bw_img_w_box: .png image of gr0+gr1 in B/W with a box around the domain (plot_slice_forCurvature output)
+            xrange: Domain x range (max x - min x)
+            yrange: Domain y range (not used currently). Defaults to None.
+
+        Returns:
+            scaling factor (nm/pixel), plot pixel x minimum value, plot pixel y minimum value
+        '''
+        # Pixels go 0 -> n for x but y is 0 v n down (0,0 is top left)
+        # https://pyimagesearch.com/2021/01/20/opencv-getting-and-setting-pixels/
+        src = cv2.imread(bw_img_w_box)#,-1
+        gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)  # convert to grayscale
+        blur = cv2.blur(gray, (3, 3))
+        ret, thresh = cv2.threshold(blur, 50, 255, cv2.THRESH_BINARY)
+        contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        n = 0
+        if 0 in contours[n]:
+            n += 1
+        x,y = contours[n].T
+        x_pixels = max(x[0]) - min(x[0])
+        # Contour Testing Image
+        # # src = cv2.imread('02_3grain_base_cv2_gb_x250_test_60.png')
+        # cv2.drawContours(src, contours, n, (255,0,0), 1)
+        # cv2.imwrite('scaling_domain_contour.jpg', src)
+        return xrange/x_pixels, min(x[0]), min(y[0])
+
+    def find_circle(self,a,b,c,fullcontour,returnXY=False):
+        '''Calculates the circle passing through 3 points using the vertex method and
+        the circle formulation process from http://paulbourke.net/geometry/circlesphere/
+
+        Args:
+            a: Point 1 (x,y)
+            b: Point 2 (x,y) (middle of abc)
+            c: Point 3 (x,y)
+            fullcontour: The cv2 contour containing all the points
+            returnXY: Whether or not to append the x_ctr and y_ctr. Defaults to False.
+
+        Returns:
+            r (radius), signage (-1 when the point is outside the contour, 1 inside and 0 on it)
+        '''
+        # Using the process from http://paulbourke.net/geometry/circlesphere/
+        # slope of ab and bc
+        tol = 1e-8
+        if b[0] == a[0] and b[0] == c[0]:
+            # Vertical line
+            # print('vertical')
+            if returnXY:
+                return -1, 0, 0, 0
+            else:
+                return -1, 0
+        # Calculate Slopes between the points
+        m1 = (b[1] - a[1])/(b[0] - a[0])
+        m2 = (c[1] - b[1])/(c[0] - b[0])
+        if m2 == m1:
+            # Horizontal line
+            if returnXY:
+                return -1, 0, 0, 0
+            else:
+                return -1, 0
+        # Correction for when 2 points are stacked vertically to prevent the slope = nan
+        if b[0] == a[0]:
+            m1 = (b[1] - a[1])/(tol)
+        if b[0] == c[0]:
+            m2 = (c[1] - b[1])/(tol)
+        # Calculate the center points based on where the lines perpendicular cross
+        x_ctr = (m1*m2*(a[1] - c[1]) + m2*(a[0] + b[0]) - m1*(b[0] + c[0]))/(2*(m2 - m1))
+        # y_ctr = -(1/m1)*(x_ctr - ((a[0] + b[0])/2) ) + ((a[1] + b[1])/2)
+        y_ctr = (m1*(a[1] + b[1]) - m2*(b[1] + c[1]) + (a[0] - c[0]))/(2*(m1-m2))
+        r = math.sqrt((a[0] - x_ctr)**2 + (a[1] - y_ctr)**2)
+        # this returns -1 when the point is outside the contour, 1 inside and 0 on it
+        signage = cv2.pointPolygonTest(fullcontour, (x_ctr,y_ctr), False)
+        if returnXY:
+            return r, signage, x_ctr, y_ctr
+        else:
+            return r, signage
+
+
+    def curvature_fromImage(self,bw_img_w_box,xrange,nn):
+        '''Calcaulates the curvature of the GB plane using CV2 contour
+
+        Args:
+            bw_img_w_box: .png image of gr0+gr1 in B/W with a box around the domain (plot_slice_forCurvature output)
+            xrange: Domain x range (max-min)
+            nn: Next Nearest parameter (1,2,3...) for +/- nn to select 3 points for a circle
+
+        Returns:
+            cv: Curvature (1/R) average value for the whole boundary
+        '''
+        # frame = [int(s) for s in bw_img_w_box.split() if s.isdigit()]
+        frame = [int(x) for x in regex.findall(bw_img_w_box)]
+        frame = frame[-1]
+        print(frame)
+        scale, xmin, ymin = self.image_scaleFactor(bw_img_w_box,xrange)
+        src = cv2.imread(bw_img_w_box)#,-1
+        gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)  # convert to grayscale
+        blur = cv2.medianBlur(gray,45)
+        ret, thresh = cv2.threshold(blur, 50, 255, cv2.THRESH_BINARY)
+        contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)#CHAIN_APPROX_SIMPLE)
+        n = 0
+        # print(contours)
+        if 0 in contours[n]:
+            n += 1
+        x,y = contours[n].T
+        if xmin in x[0] or ymin in y[0]:
+            # print("Plot Boundary in second contour, using third")
+            n +=1
+            x,y = contours[n].T
+        xy = [np.asarray([a,b]) for (a,b) in zip(x[0],y[0])]
+        rad_loc = []
+        for i in range(len(xy)):
+            if (i + nn) > (len(xy) - 1):
+                rad_loc.append(self.find_circle(xy[i-nn],xy[i],xy[i+nn-len(xy)],contours[n]))
+            else:
+                rad_loc.append(self.find_circle(xy[i-nn],xy[i],xy[i+nn],contours[n]))
+        radii = [row[0] for row in rad_loc]
+        sign = [row[1] for row in rad_loc]
+        curvature = 1/(np.asarray(radii)*scale)
+        curvature = np.where(np.asarray(radii)==-1,0,-1*np.asarray(sign)*curvature)
+        cv = np.average(curvature)
+        # # Testing Plot
+        cm = plt.cm.get_cmap('RdYlBu')
+        sc = plt.scatter((x-xmin)*scale, (y-ymin)*scale, c=curvature, vmin=min(curvature), vmax=max(curvature), s=35, cmap=cm)
+        plt.colorbar(sc)
+        plt.xlim([0,xrange])
+        # plt.show()
+        plt.savefig('pics/'+self.outNameBase+'_curvature_'+self.plane_axis+
+                    str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
+        plt.close()
+        return cv
 
 
 
@@ -900,6 +1037,10 @@ class CalculationsV2:
         if not os.path.isdir(pic_directory):
             db('Making picture directory: '+pic_directory)
             os.makedirs(pic_directory)
+        cv_directory = 'cv_images'
+        if not os.path.isdir(cv_directory):
+            db('Making picture directory: '+pic_directory+'/'+cv_directory)
+            os.makedirs(pic_directory+'/'+cv_directory)
         db('Plotting the slice as specified')
         # Take the average of the 4 corner values for c
         if hasattr(c[0], "__len__"):
@@ -930,7 +1071,7 @@ class CalculationsV2:
         #     fig.colorbar(p, label=self.var_to_plot)
         # else:
         #     fig.colorbar(p, label=cb_label)
-        fig.savefig(pic_directory+'/'+self.outNameBase+'_cv2_gb_'+self.plane_axis+
+        fig.savefig(pic_directory+'/'+cv_directory+'/'+self.outNameBase+'_cv2_gb_'+self.plane_axis+
                     str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
         if self.cl_args.debug:
             plt.show()
