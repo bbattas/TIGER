@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 import cv2
 import math
-import regex
 
 
 # # Needs to have access to '~/projects/TIGER/parallel_time_file_make.py'
@@ -649,7 +648,7 @@ class CalculationsV2:
         c_val = C[tuple(ind)]
         return c_val
 
-    # Uses min and max value of each coordinate in each element to return center
+    # Uses min and max value of each coordinate (xyz) in each element to return center
     def mesh_center_dir_independent(self,*args):
         min = []
         max = []
@@ -927,21 +926,22 @@ class CalculationsV2:
             return r, signage
 
 
-    def curvature_fromImage(self,bw_img_w_box,xrange,nn):
+    def curvature_fromImage(self,bw_img_w_box,xrange,yrange,nn):
         '''Calcaulates the curvature of the GB plane using CV2 contour
 
         Args:
             bw_img_w_box: .png image of gr0+gr1 in B/W with a box around the domain (plot_slice_forCurvature output)
             xrange: Domain x range (max-min)
+            yrange: Domain y range (max-min)
             nn: Next Nearest parameter (1,2,3...) for +/- nn to select 3 points for a circle
 
         Returns:
             cv: Curvature (1/R) average value for the whole boundary
         '''
-        # frame = [int(s) for s in bw_img_w_box.split() if s.isdigit()]
-        frame = [int(x) for x in regex.findall(bw_img_w_box)]
+        filename = bw_img_w_box.rsplit('.',1)[0]
+        frame = [int(s) for s in filename.split('_') if s.isdigit()]
+        # frame = [int(x) for x in regex.findall(bw_img_w_box)]
         frame = frame[-1]
-        print(frame)
         scale, xmin, ymin = self.image_scaleFactor(bw_img_w_box,xrange)
         src = cv2.imread(bw_img_w_box)#,-1
         gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)  # convert to grayscale
@@ -974,13 +974,57 @@ class CalculationsV2:
         sc = plt.scatter((x-xmin)*scale, (y-ymin)*scale, c=curvature, vmin=min(curvature), vmax=max(curvature), s=35, cmap=cm)
         plt.colorbar(sc)
         plt.xlim([0,xrange])
+        plt.ylim([0,yrange])
+        plt.gca().set_aspect('equal')
         # plt.show()
         plt.savefig('pics/'+self.outNameBase+'_curvature_'+self.plane_axis+
                     str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
         plt.close()
         return cv
 
+    def gb_curvature(self,x,y,z,cgb,nn,frame):
+        '''Caclulate the gb curvature and gb area on the specified plane of interest
 
+        Args:
+            x: Full 3D x data
+            y: Full 3D y data
+            z: Full 3D z data
+            cgb: Combined gr0+gr1 full 3D data
+            nn: Nearest Neighbor (1,2,3...) for curvature calculation
+            frame: Frame number for the curvature image
+
+        Returns:
+            cv: Curvature (1/R) of gr0+gr1 on the plane
+            gb_area: weighted area of gr0+gr1 on the plane
+            tot_mesh_area: total mesh area on the plane
+        '''
+        cx,cy,cz,ccgb = self.plane_slice(x,y,z,cgb)
+        gb_area, tot_mesh_area = self.c_area_in_slice(cx,cy,cz,ccgb,'gb')
+        figname = self.plot_slice_forCurvature(str(frame),cx,cy,cz,ccgb,'gr0 + gr1')
+        pltx,plty,pltz,xyzref = self.plt_xyz(cx,cy,cz)
+        cv = self.curvature_fromImage(figname,pltx.max(),plty.max(),nn)
+        return cv, gb_area, tot_mesh_area
+
+    def rbm_distance_centroids(self,x,y,z,c):
+        c_int = np.rint(c)
+        zeros = np.zeros_like(c_int)
+        mesh_ctr = self.mesh_center_dir_independent(x,y,z)
+        mesh_vol = self.mesh_vol_dir_independent(x,y,z)
+        # Setup Empty sets for the calculation
+        volumes = []
+        grain_centroids = []
+        # Loop over the Unique Grains for gr0/gr1 (and not phi)
+        for n in range(2):
+            volumes.append(np.sum(np.where(c_int==(n),mesh_vol,zeros)))
+            # if volumes[n] > 0.0:
+            grain_centroids.append([np.sum(np.where(c_int==(n),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n),mesh_vol,zeros)),
+                                    np.sum(np.where(c_int==(n),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n),mesh_vol,zeros)),
+                                    np.sum(np.where(c_int==(n),mesh_ctr[:,2] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n),mesh_vol,zeros))])
+        # Calculate the distance between the two centroids
+        dist = math.sqrt((grain_centroids[1][0]-grain_centroids[0][0])**2 +
+                         (grain_centroids[1][1]-grain_centroids[0][1])**2 +
+                         (grain_centroids[1][2]-grain_centroids[0][2])**2 )
+        return dist
 
     # ██████╗ ██╗      ██████╗ ████████╗████████╗██╗███╗   ██╗ ██████╗
     # ██╔══██╗██║     ██╔═══██╗╚══██╔══╝╚══██╔══╝██║████╗  ██║██╔════╝
@@ -1037,10 +1081,10 @@ class CalculationsV2:
         if not os.path.isdir(pic_directory):
             db('Making picture directory: '+pic_directory)
             os.makedirs(pic_directory)
-        cv_directory = 'cv_images'
+        cv_directory = pic_directory+'/cv_images'
         if not os.path.isdir(cv_directory):
-            db('Making picture directory: '+pic_directory+'/'+cv_directory)
-            os.makedirs(pic_directory+'/'+cv_directory)
+            db('Making picture directory: '+cv_directory)
+            os.makedirs(cv_directory)
         db('Plotting the slice as specified')
         # Take the average of the 4 corner values for c
         if hasattr(c[0], "__len__"):
@@ -1071,13 +1115,14 @@ class CalculationsV2:
         #     fig.colorbar(p, label=self.var_to_plot)
         # else:
         #     fig.colorbar(p, label=cb_label)
-        fig.savefig(pic_directory+'/'+cv_directory+'/'+self.outNameBase+'_cv2_gb_'+self.plane_axis+
-                    str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
+        figname = cv_directory+'/'+self.outNameBase+'_cv2_gb_'+self.plane_axis+\
+        str(self.plane_coord_name)+'_'+str(frame)+'.png'
+        fig.savefig(figname,dpi=500,transparent=True )
         if self.cl_args.debug:
             plt.show()
         else:
             plt.close()
-        return
+        return figname
 
 
 

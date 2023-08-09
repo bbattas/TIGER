@@ -213,57 +213,78 @@ if __name__ == "__main__":
             verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
             return calc.times[idx_frame], op_area, tot_mesh_area, sum_del_cv
         else:
-            tot_gr_area = 0
-            all_full_delta = []
-            delta_phi = 0
-            all_full_cv = []
-            gb = []
-            all_gr_ops = ['phi','gr0','gr1','gr2','gr3']
-            all_grs = [x for x in all_gr_ops if x in MF.exodus_readers[0].nodal_var_names]
-            # all_grs = ['gr0', 'gr1']
-            for grop in all_grs:
+            allgrs = ['gr0','gr1']
+            cgb = 0
+            for grop in allgrs:
                 x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
-                op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
-                sum_del_cv, full_delta, full_cv, cx, cy, cz, cc = calc.MER_curvature_calcs(x,y,z,c,True)
-                calc.plot_slice(str(grop)+'_curv_'+str(i),cx,cy,cz,full_cv,str(grop)+"_curvature")
-                # Change this and just use it for tot_cr_area for more grains
-                # if 'phi' not in grop:
-                all_full_cv.append(full_cv)
-                if 'phi' in grop:
-                    delta_phi = np.where((full_delta>0),0,1)
-                if grop not in ['phi','gr2','gr3']:
-                    gb.append(cc)
-                    tot_gr_area += op_area
-                    all_full_delta.append(full_delta)
-                    # all_full_cv.append(full_cv)
-            # No Cross Terms (delta_gr0*cv_gr1, etc)
-            # delta_cv = sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
-            calc.plot_slice_forCurvature(str(i),cx,cy,cz,sum(gb),'gr0 + gr1')
-            # delphi = np.where((delta_phi>0),0,1)
-            # del01 = np.where(del0 & del1 & delphi, 1, 0)
-            # calc.plot_slice('delta_gb_phi_'+str(i),cx,cy,cz,delphi,'delta_gb and phi')
-            # calc.plot_slice('del_gb_phi_'+str(i),cx,cy,cz,del01,'delta_gb and phi')
-            dels = [np.where((all_full_delta[n]>0) & (all_full_delta[n]<=1) & delta_phi,1,0) for n in range(len(all_full_delta))]
-            # dels_phi = np.where(dels & delta_phi,1,0)
-            deltot = np.where(sum(dels)>0,1,0)
-            calc.plot_slice('all_gr_delta_'+str(i),cx,cy,cz,deltot,'delta_total all grs')
-            # calc.plot_slice('all_gr_minus_phi_delta_'+str(i),cx,cy,cz,dels_phi,'delta_total all grs without phi')
-            calc.plot_slice('delta_gr0_'+str(i),cx,cy,cz,del0,'delta_gr0')
-            calc.plot_slice('delta_gr1_'+str(i),cx,cy,cz,del1,'delta_gr1')
-            # delta_cv = sum([all_full_cv[n] for n in range(len(all_grs))])
-            cv_tot = sum(all_full_cv)
-            calc.plot_slice('delta_'+str(i),cx,cy,cz,deltot,'delta_total')
-            tot_delta_cv = np.sum(cv_tot*deltot)
-            tot_delta = np.sum(deltot)
-            calc.plot_slice('curvature_'+str(i),cx,cy,cz,cv_tot*deltot,'delta*curvature_total')
-            calc.plot_slice('full_curvature_'+str(i),cx,cy,cz,cv_tot,'curvature_total')
-            # print(tot_delta_cv, tot_delta, tot_delta_cv/tot_delta)
-            # With those cross terms
-            # deltas = sum([np.where(all_full_delta[n]<=1,all_full_delta[n],0) for n in range(len(all_grs))])
-            # cvs = sum([all_full_delta[n] for n in range(len(all_grs))])
-            # tot_delta_cv = np.sum(deltas*cvs)
+                cgb += c
+            cv, gb_area, tot_mesh_area = calc.gb_curvature(x,y,z,cgb,2,i)
+            if 'gr2' not in MF.exodus_readers[0].nodal_var_names:
+                x,y,z,c = MF.get_data_at_time('unique_grains',calc.times[idx_frame],False)
+                calc.rbm_distance_centroids(x,y,z,c)
             print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
-            return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_delta_cv, tot_delta_cv/tot_delta
+            return calc.times[idx_frame], gb_area, tot_mesh_area, cv
+
+    # def do_calculations(i,idx_frame,all_op=False):
+    #     para_t0 = time.perf_counter()
+    #     if not all_op:
+    #         x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+    #         op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,calc.var_to_plot)
+    #         sum_del_cv, full_delta, full_cv = calc.MER_curvature_calcs(x,y,z,c)
+    #         verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+    #         return calc.times[idx_frame], op_area, tot_mesh_area, sum_del_cv
+    #     else:
+    #         tot_gr_area = 0
+    #         all_full_delta = []
+    #         delta_phi = 0
+    #         all_full_cv = []
+    #         gb = []
+    #         all_gr_ops = ['phi','gr0','gr1','gr2','gr3']
+    #         all_grs = [x for x in all_gr_ops if x in MF.exodus_readers[0].nodal_var_names]
+    #         # all_grs = ['gr0', 'gr1']
+    #         for grop in all_grs:
+    #             x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
+    #             op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
+    #             sum_del_cv, full_delta, full_cv, cx, cy, cz, cc = calc.MER_curvature_calcs(x,y,z,c,True)
+    #             calc.plot_slice(str(grop)+'_curv_'+str(i),cx,cy,cz,full_cv,str(grop)+"_curvature")
+    #             # Change this and just use it for tot_cr_area for more grains
+    #             # if 'phi' not in grop:
+    #             all_full_cv.append(full_cv)
+    #             if 'phi' in grop:
+    #                 delta_phi = np.where((full_delta>0),0,1)
+    #             if grop not in ['phi','gr2','gr3']:
+    #                 gb.append(cc)
+    #                 tot_gr_area += op_area
+    #                 all_full_delta.append(full_delta)
+    #                 # all_full_cv.append(full_cv)
+    #         # No Cross Terms (delta_gr0*cv_gr1, etc)
+    #         # delta_cv = sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
+    #         calc.plot_slice_forCurvature(str(i),cx,cy,cz,sum(gb),'gr0 + gr1')
+    #         # delphi = np.where((delta_phi>0),0,1)
+    #         # del01 = np.where(del0 & del1 & delphi, 1, 0)
+    #         # calc.plot_slice('delta_gb_phi_'+str(i),cx,cy,cz,delphi,'delta_gb and phi')
+    #         # calc.plot_slice('del_gb_phi_'+str(i),cx,cy,cz,del01,'delta_gb and phi')
+    #         dels = [np.where((all_full_delta[n]>0) & (all_full_delta[n]<=1) & delta_phi,1,0) for n in range(len(all_full_delta))]
+    #         # dels_phi = np.where(dels & delta_phi,1,0)
+    #         deltot = np.where(sum(dels)>0,1,0)
+    #         calc.plot_slice('all_gr_delta_'+str(i),cx,cy,cz,deltot,'delta_total all grs')
+    #         # calc.plot_slice('all_gr_minus_phi_delta_'+str(i),cx,cy,cz,dels_phi,'delta_total all grs without phi')
+    #         calc.plot_slice('delta_gr0_'+str(i),cx,cy,cz,del0,'delta_gr0')
+    #         calc.plot_slice('delta_gr1_'+str(i),cx,cy,cz,del1,'delta_gr1')
+    #         # delta_cv = sum([all_full_cv[n] for n in range(len(all_grs))])
+    #         cv_tot = sum(all_full_cv)
+    #         calc.plot_slice('delta_'+str(i),cx,cy,cz,deltot,'delta_total')
+    #         tot_delta_cv = np.sum(cv_tot*deltot)
+    #         tot_delta = np.sum(deltot)
+    #         calc.plot_slice('curvature_'+str(i),cx,cy,cz,cv_tot*deltot,'delta*curvature_total')
+    #         calc.plot_slice('full_curvature_'+str(i),cx,cy,cz,cv_tot,'curvature_total')
+    #         # print(tot_delta_cv, tot_delta, tot_delta_cv/tot_delta)
+    #         # With those cross terms
+    #         # deltas = sum([np.where(all_full_delta[n]<=1,all_full_delta[n],0) for n in range(len(all_grs))])
+    #         # cvs = sum([all_full_delta[n] for n in range(len(all_grs))])
+    #         # tot_delta_cv = np.sum(deltas*cvs)
+    #         print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+    #         return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_delta_cv, tot_delta_cv/tot_delta
 
     results.append(do_calculations('test_60',calc.idx_frames[60],True))
     print(results)
