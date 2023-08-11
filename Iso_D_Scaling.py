@@ -22,12 +22,27 @@ pre_s = (ds - Db * (1 - 1.5*(0.5/iw)) ) / (1.5*0.5/iw)
 input_dgb = pre_gb / Db
 input_ds = pre_s / Db
 
+def Dgb_of_Ds(Ds_coeff,Dgb_div_Ds,delta):
+    ds = Db * Ds_coeff
+    scaled_s = ds * (1.5*0.5/iw) + Db * (1 - 1.5*(0.5/iw))
+    # Delta here is assuming it only applies to GB and not Surf
+    scaled_gb = scaled_s * Dgb_div_Ds / delta
+    back_gb = (scaled_gb - Db * (1 - 1.5*(0.5/iw)) ) / (1.5*0.5/iw)
+    gb_input = back_gb / Db
+    return gb_input
+
+
+
 print('With input values, the scaled Dgb and Ds we use is:')
 print(scaled_gb)
 print(scaled_s)
 print('or just x times bulk:')
 print(scaled_gb/Db)
 print(scaled_s/Db)
+print(' ')
+print('Input File values for delta*Dgb = Ds')
+print('Dgb: ',Dgb_of_Ds(ds_coeff,1,iw))
+print("Ds: ",ds_coeff)
 print(' ')
 print('With input as the scaled value, the input multiplier needs to be:')
 print(input_dgb)
