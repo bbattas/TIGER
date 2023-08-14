@@ -128,7 +128,7 @@ def curvature_fromImage(bw_img_w_box,xrange,nn):
         print("Plot Boundary in second contour, using third")
         n +=1
         x,y = contours[n].T
-    xy = [np.asarray([a,b]) for (a,b) in zip(x[0],y[0])]
+    xy = np.asarray([np.asarray([a,b]) for (a,b) in zip(x[0],y[0])])
     rad_loc = []
     for i in range(len(xy)):
         if (i + nn) > (len(xy) - 1):
@@ -184,6 +184,85 @@ if __name__ == "__main__":
     # print(conBox)
     # Finding contours for the thresholded image #im2,
     contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    full_contours, full_hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    x1,y1 = contours[1].T
+    xy1 = np.asarray([np.asarray([a,b]) for (a,b) in zip(x1[0],y1[0])])
+    xfull,yfull = full_contours[1].T
+    xyfull = np.asarray([np.asarray([a,b]) for (a,b) in zip(xfull[0],yfull[0])])
+    print(xyfull)
+    print(xyfull[2])
+    print(xy1)
+    res = (xyfull[:, None] == xy1).all(-1).any(-1)
+    print(res)
+    print(~res)
+    print(xyfull[res])
+    straight = ~res
+    n = len(straight) +1
+    doublestraight = np.concatenate((straight, straight), axis=None)
+    print(len(straight))
+    print(len(doublestraight))
+    print(straight[:10])
+    print(straight[-5:5])
+    print(doublestraight[n-5:n])
+    mins = []
+    maxes = []
+    ls = len(straight) + 1
+    for i,val in enumerate(straight):
+        if val and straight[i-1]==False and all(doublestraight[i:i+20]):
+            mins.append(i)
+        if val and doublestraight[i+1]==False and all(doublestraight[ls+i-20:ls+i]):
+            maxes.append(i)
+    print(mins)
+    print(maxes)
+    print(min(maxes, key=lambda x: x-mins[1]))
+    # pairs = [[lf,maxes[maxes > lf].min() ] for lf in mins]
+    linpars = []
+    if mins[0] > maxes[0]:
+        for i in range(len(mins)):
+            if i == (len(mins)-1):
+                print(i,'last')
+                linpars.append([mins[i],maxes[0]])
+            else:
+                linpars.append([mins[i],maxes[i+1]])
+    else:
+        for i in range(len(mins)):
+            linpars.append([mins[i],maxes[i]])
+    print(linpars)
+    # print(pairs)
+    plt.scatter(xyfull[:,0],xyfull[:,1],s=10)
+    plt.scatter(xyfull[straight][:,0],xyfull[straight][:,1],s=5)
+    plt.show()
+    # out = np.where(res,np.zeros_like(xyfull),xyfull)
+    # print(out)
+    print(len(xy1))
+    print(len(xyfull))
+    # print(len(out))
+    # out = []
+    # for i,row in enumerate(xyfull):
+    #     if row in xy1:
+    #         out.append('True')
+    #     else:
+    #         out.append('False')
+    # print(out)
+    # print(np.where(xyfull == xy1,axis=1))
+    # idx, = np.where((xyfull == xy1[:,None]).all(axis=-1).any(0))
+    print((xyfull[:] == xy1[:]))
+    tempres = ((xyfull == xy1[:,None]).all(-1).any(0))
+    if (tempres == res).all():
+        print("same")
+    # print(list(check))
+    # print(idx)
+    # print(full_contours)
+    # print(len(contours[1]))
+    # print(np.unique(full_contours[1],axis=0))
+    # print(len(np.unique(full_contours[1],axis=0)))
+    # print(~np.isin(full_contours[1],contours[1]))
+    # print(np.where(~np.isin(full_contours[1],contours[1]),full_contours,[-1,-1]))
+    # print(len(full_contours[1]))
+    # print(full_contours[1][~np.isin(full_contours[1],contours[1])])
+    # print(full_contours[1] == contours[1][:, None])
+    # check = (full_contours[1][:, None] == contours[1]).all(-1).any(-1)
+    # print(check)
     # create hull array for convex hull points
     hull = []
 
@@ -219,11 +298,38 @@ if __name__ == "__main__":
         # cv2.drawContours(drawing, smoothened, -1, (255,255,255), 2)
         # draw ith convex hull object
         cv2.drawContours(drawing, hull, i, color, 1, 8)
+
+    cv2.imwrite('image_contours_bin.jpg', drawing)
+
+    # # Apply HoughLinesP method to
+    # # to directly obtain line end points
+    # lines_list =[]
+    # lines = cv2.HoughLinesP(
+    #             thresh, # Input edge image
+    #             1, # Distance resolution in pixels
+    #             np.pi/180, # Angle resolution in radians
+    #             threshold=100, # Min number of votes for valid line
+    #             minLineLength=5, # Min allowed length of line
+    #             maxLineGap=10 # Max allowed gap between line for joining them
+    #             )
+
+    # # Iterate over points
+    # for points in lines:
+    #     # Extracted points nested in the list
+    #     x1,y1,x2,y2=points[0]
+    #     # Draw the lines joing the points
+    #     # On the original image
+    #     cv2.line(drawing,(x1,y1),(x2,y2),(0,255,0),2)
+    #     # Maintain a simples lookup list for points
+    #     lines_list.append([(x1,y1),(x2,y2)])
+
+    # # Save the result image
+    # cv2.imwrite('detectedLines.png',drawing)
     # cv2.imshow('drawing', drawing)
     # cv2.waitKey(0)
     cv2.imwrite('image_contours_src.jpg', src)
     cv2.imwrite('image_contours_gray.jpg', gray)
-    cv2.imwrite('image_contours_bin.jpg', drawing)
+    # cv2.imwrite('image_contours_bin.jpg', drawing)
     cv2.imwrite('image_contours_blur.jpg', blur)
     cv2.imwrite('image_contours_binary.jpg', thresh)
     # cv2.imwrite('image_contours_fullThreshold.jpg', t2)
