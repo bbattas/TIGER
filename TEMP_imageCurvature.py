@@ -228,9 +228,16 @@ if __name__ == "__main__":
         for i in range(len(mins)):
             linpars.append([mins[i],maxes[i]])
     print(linpars)
+    straightlen = 0
+    for n in linpars:
+        straightlen += math.sqrt((xyfull[n[0]][0] - xyfull[n[1]][0])**2 +
+                                 (xyfull[n[0]][1] - xyfull[n[1]][1])**2)
+    print(straightlen)
+    print(cv2.arcLength(full_contours[1],True))
     # print(pairs)
     plt.scatter(xyfull[:,0],xyfull[:,1],s=10)
-    plt.scatter(xyfull[straight][:,0],xyfull[straight][:,1],s=5)
+    plt.scatter(xyfull[mins][:,0],xyfull[mins][:,1],s=15)
+    plt.scatter(xyfull[maxes][:,0],xyfull[maxes][:,1],s=15)
     plt.show()
     # out = np.where(res,np.zeros_like(xyfull),xyfull)
     # print(out)

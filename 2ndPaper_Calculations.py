@@ -51,9 +51,9 @@ def do_calculations(i,idx_frame,all_op=False):
         cv, gb_area, tot_mesh_area = calc.gb_curvature(x,y,z,cgb,2,i)
         # 2 Grain only: Rigid Body Motion
         ctr_dist = 0
-        if 'gr2' not in MF.exodus_readers[0].nodal_var_names:
-            x,y,z,c = MF.get_data_at_time('unique_grains',calc.times[idx_frame],False)
-            ctr_dist = calc.rbm_distance_centroids(x,y,z,c)
+        # if 'gr2' not in MF.exodus_readers[0].nodal_var_names:
+        x,y,z,c = MF.get_data_at_time('unique_grains',calc.times[idx_frame],False)
+        ctr_dist = calc.rbm_distance_centroids(x,y,z,c)
         print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
         return calc.times[idx_frame], gb_area, tot_mesh_area, cv, ctr_dist
 

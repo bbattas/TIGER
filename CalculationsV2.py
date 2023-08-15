@@ -948,6 +948,7 @@ class CalculationsV2:
         blur = cv2.medianBlur(gray,45)
         ret, thresh = cv2.threshold(blur, 50, 255, cv2.THRESH_BINARY)
         contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)#CHAIN_APPROX_SIMPLE)
+        con_approx, hier_approx = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)#CHAIN_APPROX_SIMPLE)
         n = 0
         # print(contours)
         if 0 in contours[n]:
@@ -957,7 +958,9 @@ class CalculationsV2:
             # print("Plot Boundary in second contour, using third")
             n +=1
             x,y = contours[n].T
-        xy = [np.asarray([a,b]) for (a,b) in zip(x[0],y[0])]
+        xy = np.asarray([np.asarray([a,b]) for (a,b) in zip(x[0],y[0])])
+        x_a,y_a = con_approx[n].T
+        xy_approx = np.asarray([np.asarray([a,b]) for (a,b) in zip(x_a[0],y_a[0])])
         rad_loc = []
         for i in range(len(xy)):
             if (i + nn) > (len(xy) - 1):
@@ -968,7 +971,12 @@ class CalculationsV2:
         sign = [row[1] for row in rad_loc]
         curvature = 1/(np.asarray(radii)*scale)
         curvature = np.where(np.asarray(radii)==-1,0,-1*np.asarray(sign)*curvature)
-        cv = np.average(curvature)
+        # Get contour lengths, using 30 as minimum pixels to count as a straight line
+        straight_len = self.contourStraightLength(xy,xy_approx,30)
+        full_len = cv2.arcLength(contours[n],True)
+        # cv = np.average(curvature)
+        curve_length = full_len - straight_len
+        cv = np.sum(curvature) / curve_length
         # # Testing Plot
         cm = plt.cm.get_cmap('RdYlBu')
         sc = plt.scatter((x-xmin)*scale, (y-ymin)*scale, c=curvature, vmin=min(curvature), vmax=max(curvature), s=35, cmap=cm)
@@ -981,6 +989,40 @@ class CalculationsV2:
                     str(self.plane_coord_name)+'_'+str(frame)+'.png',dpi=500,transparent=True )
         plt.close()
         return cv
+
+    def contourStraightLength(self,fullContourXY,approxContourXY,minPixelStraight):
+        res = (fullContourXY[:, None] == approxContourXY).all(-1).any(-1)
+        straight = ~res
+        if any(straight) == False:
+            return 0
+        doublestraight = np.concatenate((straight, straight), axis=None)
+        mins = []
+        maxes = []
+        ls = len(straight) + 1
+        for i,val in enumerate(straight):
+            if val and straight[i-1]==False and all(doublestraight[i:i+minPixelStraight]):
+                mins.append(i)
+            if val and doublestraight[i+1]==False and all(doublestraight[ls+i-minPixelStraight:ls+i]):
+                maxes.append(i)
+        linpars = []
+        if len(mins) == 0:
+            return 0
+        if mins[0] > maxes[0]:
+            for i in range(len(mins)):
+                if i == (len(mins)-1):
+                    linpars.append([mins[i],maxes[0]])
+                else:
+                    linpars.append([mins[i],maxes[i+1]])
+        else:
+            for i in range(len(mins)):
+                linpars.append([mins[i],maxes[i]])
+        straightlen = 0
+        for n in linpars:
+            straightlen += math.sqrt((fullContourXY[n[0]][0] - fullContourXY[n[1]][0])**2 +
+                                    (fullContourXY[n[0]][1] - fullContourXY[n[1]][1])**2)
+        return straightlen
+
+
 
     def gb_curvature(self,x,y,z,cgb,nn,frame):
         '''Caclulate the gb curvature and gb area on the specified plane of interest
@@ -1025,6 +1067,8 @@ class CalculationsV2:
                          (grain_centroids[1][1]-grain_centroids[0][1])**2 +
                          (grain_centroids[1][2]-grain_centroids[0][2])**2 )
         return dist
+
+
 
     # ██████╗ ██╗      ██████╗ ████████╗████████╗██╗███╗   ██╗ ██████╗
     # ██╔══██╗██║     ██╔═══██╗╚══██╔══╝╚══██╔══╝██║████╗  ██║██╔════╝
