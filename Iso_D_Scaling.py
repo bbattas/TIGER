@@ -31,6 +31,15 @@ def Dgb_of_Ds(Ds_coeff,Dgb_div_Ds,delta):
     gb_input = back_gb / Db
     return gb_input
 
+# Going the other way to calc the Ds>Dgb for a given Dgb
+def Ds_of_Dgb(Dgb_coeff,Dgb_div_Ds,delta):
+    d_gb = Db * Dgb_coeff
+    scaled_gb = d_gb * (1.5*0.5/iw) + Db * (1 - 1.5*(0.5/iw))
+    # Delta here is assuming it only applies to GB and not Surf
+    scaled_s = scaled_gb * delta / Dgb_div_Ds
+    back_s = (scaled_s - Db * (1 - 1.5*(0.5/iw)) ) / (1.5*0.5/iw)
+    s_input = back_s / Db
+    return s_input
 
 
 print('With input values, the scaled Dgb and Ds we use is:')
@@ -43,6 +52,10 @@ print(' ')
 print('Input File values for delta*Dgb = Ds')
 print('Dgb: ',Dgb_of_Ds(ds_coeff,1,iw))
 print("Ds: ",ds_coeff)
+print(' ')
+print('OR Input File values for delta*Dgb = Ds')
+print('Dgb: ',dgb_coeff)
+print("Ds: ",Ds_of_Dgb(dgb_coeff,0.1,iw))
 print(' ')
 print('With input as the scaled value, the input multiplier needs to be:')
 print(input_dgb)
