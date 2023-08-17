@@ -150,16 +150,19 @@ def curvature_fromImage(bw_img_w_box,xrange,nn):
 
 if __name__ == "__main__":
     print("__main__ Start")
-    xcoord = [1,2,3,4,5]
-    print(xcoord[0])
-    print(xcoord[1])
-    print(xcoord[1-3])
-    scaleFactor('02_3grain_base_cv2_bwbox_gb_x250_test_60.png',300)
-    read_ti = time.perf_counter()
-    # curvature_fromImage('02_3grain_base_cv2_bwbox_gb_x250_test_60.png',300,3)
-    curvature_fromImage('02_2grain_full_test_cv2_bwbox_gb_x250_test_60.png',300,3)
-    read_tf = time.perf_counter()
-    print("  Finished testing:",round(read_tf-read_ti,2),"s")
+    # xcoord = [1,2,3,4,5]
+    # print(xcoord[0])
+    # print(xcoord[1])
+    # print(xcoord[1-3])
+    # scaleFactor('02_3grain_base_cv2_bwbox_gb_x250_test_60.png',300)
+    # read_ti = time.perf_counter()
+    # # curvature_fromImage('02_3grain_base_cv2_bwbox_gb_x250_test_60.png',300,3)
+    # curvature_fromImage('02_2grain_full_test_cv2_bwbox_gb_x250_test_60.png',300,3)
+    # read_tf = time.perf_counter()
+    # print("  Finished testing:",round(read_tf-read_ti,2),"s")
+
+
+
     # print(xcoord[4+2])
     # image = cv2.imread('02_3grain_base_sliced_x250_delta_gr0_test_60.png')
     # img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -171,13 +174,52 @@ if __name__ == "__main__":
     # cv2.imwrite('image_thres1.jpg', thresh)
     # cv2.destroyAllWindows()
     # src = cv2.imread('02_3grain_base_sliced_x250_delta_gr0_test_60.png', 1)
-    src = cv2.imread('02_3grain_base_cv2_bwbox_gb_x250_test_60.png')#,-1
+    # src = cv2.imread('02_3grain_base_cv2_bwbox_gb_x250_test_60.png')#,-1
+    src = cv2.imread('03_4grain_base_cv2_gb_x250_52.png')
     gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)  # convert to grayscale
     # blur = cv2.blur(gray, (3, 3))  # blur the image
     # r2, t2 = cv2.threshold(blur, 50, 255, cv2.THRESH_BINARY)
     # blur = cv2.medianBlur(src,5)
-    blur = cv2.medianBlur(gray,45)
+
+    # Median
+    medblur = cv2.medianBlur(gray,45)
+    ret, thresh = cv2.threshold(medblur, 50, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    for i in range(len(contours)):
+        cv2.drawContours(medblur, contours, i, (0, 255, 0), 1, 8, hierarchy)
+    cv2.imwrite('image_contours_blur_median.jpg', medblur)
+    epsilon = 0.01*cv2.arcLength(contours[1],True)
+    approx = cv2.approxPolyDP(contours[1],epsilon,True)
+    cv2.drawContours(medblur, [approx], 0, (255, 0, 0), 1, 8)
+    cv2.imwrite('image_contours_blur_median_approx.jpg', medblur)
+
+    # Normal
+    blur = cv2.blur(gray,(3, 3))
     ret, thresh = cv2.threshold(blur, 50, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    for i in range(len(contours)):
+        cv2.drawContours(blur, contours, i, (0, 255, 0), 1, 8, hierarchy)
+    cv2.imwrite('image_contours_blur_blur.jpg', blur)
+    # Gaussian
+    gausblur = cv2.GaussianBlur(gray,(5,5),cv2.BORDER_WRAP)
+    ret, thresh = cv2.threshold(gausblur, 50, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    for i in range(len(contours)):
+        cv2.drawContours(gausblur, contours, i, (0, 255, 0), 1, 8, hierarchy)
+        epsilon = 0.01*cv2.arcLength(contours[i],True)
+        approx = cv2.approxPolyDP(contours[i],epsilon,True)
+        cv2.drawContours(gausblur, [approx], -1, (255, 0, 0), 3)
+    cv2.imwrite('image_contours_blur_gausblur.jpg', gausblur)
+    # epsilon = 0.05*cv2.arcLength(contours[-1],True)
+    # approx = cv2.approxPolyDP(contours[-1],epsilon,True)
+    # cv2.drawContours(gausblur, [approx], -1, (255, 0, 0), 3)
+    # print(approx)
+    # cv2.imwrite('image_contours_blur_gaus_approx.jpg', gausblur)
+
+
+    ret, thresh = cv2.threshold(blur, 50, 255, cv2.THRESH_BINARY)
+
+
 
     # th3 = cv2.adaptiveThreshold(blur,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,11,2)
     # conBox, h2 = cv2.findContours(t2, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)

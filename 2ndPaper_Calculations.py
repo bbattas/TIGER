@@ -45,10 +45,20 @@ def do_calculations(i,idx_frame,all_op=False):
     else:
         allgrs = ['gr0','gr1']
         cgb = 0
+        # Determine the number of grains
+        numGrs = 0
+        if 'gr2' not in MF.exodus_readers[0].nodal_var_names:
+            numGrs = 2
+        elif 'gr3' not in MF.exodus_readers[0].nodal_var_names:
+            numGrs = 3
+        elif 'gr3' in MF.exodus_readers[0].nodal_var_names:
+            numGrs = 4
+        else:
+            raise ValueError('Number of grains not 2 3 or 4?')
         for grop in allgrs:
             x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
             cgb += c
-        cv, gb_area, tot_mesh_area = calc.gb_curvature(x,y,z,cgb,2,i)
+        cv, gb_area, tot_mesh_area = calc.gb_curvature(x,y,z,cgb,5,i,numGrs)
         # 2 Grain only: Rigid Body Motion
         ctr_dist = 0
         # if 'gr2' not in MF.exodus_readers[0].nodal_var_names:

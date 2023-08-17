@@ -926,7 +926,7 @@ class CalculationsV2:
             return r, signage
 
 
-    def curvature_fromImage(self,bw_img_w_box,xrange,yrange,nn):
+    def curvature_fromImage(self,bw_img_w_box,xrange,yrange,nn,numGrs):
         '''Calcaulates the curvature of the GB plane using CV2 contour
 
         Args:
@@ -934,6 +934,7 @@ class CalculationsV2:
             xrange: Domain x range (max-min)
             yrange: Domain y range (max-min)
             nn: Next Nearest parameter (1,2,3...) for +/- nn to select 3 points for a circle
+            numGrs: Number of grain order parameters
 
         Returns:
             cv: Curvature (1/R) average value for the whole boundary
@@ -972,15 +973,16 @@ class CalculationsV2:
         curvature = 1/(np.asarray(radii)*scale)
         curvature = np.where(np.asarray(radii)==-1,0,-1*np.asarray(sign)*curvature)
         # Get contour lengths, using 30 as minimum pixels to count as a straight line
-        straight_len = self.contourStraightLength(xy,xy_approx,30)
+        straight_len = self.contourStraightLength(xy,xy_approx,30,numGrs)
         full_len = cv2.arcLength(contours[n],True)
         # cv = np.average(curvature)
-        curve_length = full_len - straight_len
+        curve_length = (full_len - straight_len) * scale
         cv = np.sum(curvature) / curve_length
         # # Testing Plot
         cm = plt.cm.get_cmap('RdYlBu')
         sc = plt.scatter((x-xmin)*scale, (y-ymin)*scale, c=curvature, vmin=min(curvature), vmax=max(curvature), s=35, cmap=cm)
         plt.colorbar(sc)
+        plt.scatter((x_a-xmin)*scale, (y_a-ymin)*scale,s=5,marker='+')
         plt.xlim([0,xrange])
         plt.ylim([0,yrange])
         plt.gca().set_aspect('equal')
@@ -990,7 +992,9 @@ class CalculationsV2:
         plt.close()
         return cv
 
-    def contourStraightLength(self,fullContourXY,approxContourXY,minPixelStraight):
+    def contourStraightLength(self,fullContourXY,approxContourXY,minPixelStraight,numGrs):
+        if numGrs == 2:
+            return 0
         res = (fullContourXY[:, None] == approxContourXY).all(-1).any(-1)
         straight = ~res
         if any(straight) == False:
@@ -1016,15 +1020,24 @@ class CalculationsV2:
         else:
             for i in range(len(mins)):
                 linpars.append([mins[i],maxes[i]])
-        straightlen = 0
+        # straightlen = 0
+        # for n in linpars:
+        #     straightlen += math.sqrt((fullContourXY[n[0]][0] - fullContourXY[n[1]][0])**2 +
+        #                             (fullContourXY[n[0]][1] - fullContourXY[n[1]][1])**2)
+        # Using largest 1 for 3gr and 2 for 4gr
+        straightlen = []
         for n in linpars:
-            straightlen += math.sqrt((fullContourXY[n[0]][0] - fullContourXY[n[1]][0])**2 +
-                                    (fullContourXY[n[0]][1] - fullContourXY[n[1]][1])**2)
-        return straightlen
+            straightlen.append(math.sqrt((fullContourXY[n[0]][0] - fullContourXY[n[1]][0])**2 )+
+                               (fullContourXY[n[0]][1] - fullContourXY[n[1]][1])**2)
+        straightlen.sort()
+        num = numGrs - 2
+        maxlen = sum(straightlen[-num:])
+        print(straightlen, maxlen)
+        return maxlen
 
 
 
-    def gb_curvature(self,x,y,z,cgb,nn,frame):
+    def gb_curvature(self,x,y,z,cgb,nn,frame,numGrs):
         '''Caclulate the gb curvature and gb area on the specified plane of interest
 
         Args:
@@ -1034,6 +1047,7 @@ class CalculationsV2:
             cgb: Combined gr0+gr1 full 3D data
             nn: Nearest Neighbor (1,2,3...) for curvature calculation
             frame: Frame number for the curvature image
+            numGrs: Number of grain order parameters
 
         Returns:
             cv: Curvature (1/R) of gr0+gr1 on the plane
@@ -1044,7 +1058,7 @@ class CalculationsV2:
         gb_area, tot_mesh_area = self.c_area_in_slice(cx,cy,cz,ccgb,'gb')
         figname = self.plot_slice_forCurvature(str(frame),cx,cy,cz,ccgb,'gr0 + gr1')
         pltx,plty,pltz,xyzref = self.plt_xyz(cx,cy,cz)
-        cv = self.curvature_fromImage(figname,pltx.max(),plty.max(),nn)
+        cv = self.curvature_fromImage(figname,pltx.max(),plty.max(),nn,numGrs)
         return cv, gb_area, tot_mesh_area
 
     def rbm_distance_centroids(self,x,y,z,c):
