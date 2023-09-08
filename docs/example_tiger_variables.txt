@@ -1,0 +1,308 @@
+self.elem_var_names:
+Elemental Variables
+['Diff', 'OU', 'T', 'unique_grains', 'var_indices']
+
+self.nodal_var_names:
+Nodal Variables
+['bnds', 'gr0', 'gr1', 'phi', 'w']
+
+
+
+
+
+
+<class 'netCDF4._netCDF4.Dataset'>
+root group (NETCDF4 data model, file format HDF5):
+    api_version: 8.11
+    version: 8.11
+    floating_point_word_size: 8
+    file_size: 1
+    maximum_name_length: 32
+    int64_status: 0
+    nemesis_file_version: 2.6
+    nemesis_api_version: 8.11
+    title: 02_2grain_full_test_nemesis.e.480.148
+    dimensions(sizes): num_processors(480), num_procs_file(1), num_nodes_global(2942841), num_elems_global(2880000), num_el_blk_global(1), num_ns_global(6), num_ss_global(6), num_int_elem(4690), num_bor_elem(1367), num_int_node(5295), num_bor_node(2088), num_n_cmaps(8), num_e_cmaps(8), ncnt_cmap(2321), ecnt_cmap(2027), len_name(256), time_step(85), num_dim(3), num_nodes(7383), num_elem(6057), num_el_blk(1), num_node_sets(6), num_side_sets(6), num_el_in_blk1(6057), num_nod_per_el1(8), num_nod_ns2(409), num_nod_ns3(144), num_side_ss2(362), num_side_ss3(119), num_nod_var(5), num_elem_var(5), num_glo_var(2)
+    variables(dimensions): int32 nem_ftype(), int32 el_blk_ids_global(num_el_blk_global), int32 el_blk_cnt_global(num_el_blk_global), int32 ns_ids_global(num_ns_global), int32 ns_node_cnt_global(num_ns_global), int32 ns_df_cnt_global(num_ns_global), int32 ss_ids_global(num_ss_global), int32 ss_side_cnt_global(num_ss_global), int32 ss_df_cnt_global(num_ss_global), int32 int_n_stat(num_procs_file), int32 bor_n_stat(num_procs_file), int32 ext_n_stat(num_procs_file), int32 int_e_stat(num_procs_file), int32 bor_e_stat(num_procs_file), int32 elem_mapi(num_int_elem), int32 elem_mapb(num_bor_elem), int32 node_mapi(num_int_node), int32 node_mapb(num_bor_node), int32 n_comm_ids(num_n_cmaps), int32 n_comm_stat(num_n_cmaps), int32 e_comm_ids(num_e_cmaps), int32 e_comm_stat(num_e_cmaps), int64 n_comm_data_idx(num_n_cmaps), int32 n_comm_nids(ncnt_cmap), int32 n_comm_proc(ncnt_cmap), int64 e_comm_data_idx(num_e_cmaps), int32 e_comm_eids(ecnt_cmap), int32 e_comm_proc(ecnt_cmap), int32 e_comm_sids(ecnt_cmap), float64 time_whole(time_step), int32 eb_status(num_el_blk), int32 eb_prop1(num_el_blk), int32 ns_status(num_node_sets), int32 ns_prop1(num_node_sets), int32 ss_status(num_side_sets), int32 ss_prop1(num_side_sets), float64 coordx(num_nodes), float64 coordy(num_nodes), float64 coordz(num_nodes), |S1 eb_names(num_el_blk, len_name), |S1 ns_names(num_node_sets, len_name), |S1 ss_names(num_side_sets, len_name), |S1 coor_names(num_dim, len_name), int32 node_num_map(num_nodes), int32 connect1(num_el_in_blk1, num_nod_per_el1), int32 elem_num_map(num_elem), int32 node_ns2(num_nod_ns2), int32 node_ns3(num_nod_ns3), int32 elem_ss2(num_side_ss2), int32 side_ss2(num_side_ss2), int32 elem_ss3(num_side_ss3), int32 side_ss3(num_side_ss3), |S1 name_nod_var(num_nod_var, len_name), float64 vals_nod_var1(time_step, num_nodes), float64 vals_nod_var2(time_step, num_nodes), float64 vals_nod_var3(time_step, num_nodes), float64 vals_nod_var4(time_step, num_nodes), float64 vals_nod_var5(time_step, num_nodes), |S1 name_elem_var(num_elem_var, len_name), float64 vals_elem_var1eb1(time_step, num_el_in_blk1), float64 vals_elem_var2eb1(time_step, num_el_in_blk1), float64 vals_elem_var3eb1(time_step, num_el_in_blk1), float64 vals_elem_var4eb1(time_step, num_el_in_blk1), float64 vals_elem_var5eb1(time_step, num_el_in_blk1), int32 elem_var_tab(num_el_blk, num_elem_var), |S1 name_glo_var(num_glo_var, len_name), float64 vals_glo_var(time_step, num_glo_var)
+    groups: 
+{'nem_ftype': <class 'netCDF4._netCDF4.Variable'>
+int32 nem_ftype()
+unlimited dimensions: 
+current shape = ()
+filling off, 'el_blk_ids_global': <class 'netCDF4._netCDF4.Variable'>
+int32 el_blk_ids_global(num_el_blk_global)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'el_blk_cnt_global': <class 'netCDF4._netCDF4.Variable'>
+int32 el_blk_cnt_global(num_el_blk_global)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'ns_ids_global': <class 'netCDF4._netCDF4.Variable'>
+int32 ns_ids_global(num_ns_global)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ns_node_cnt_global': <class 'netCDF4._netCDF4.Variable'>
+int32 ns_node_cnt_global(num_ns_global)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ns_df_cnt_global': <class 'netCDF4._netCDF4.Variable'>
+int32 ns_df_cnt_global(num_ns_global)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ss_ids_global': <class 'netCDF4._netCDF4.Variable'>
+int32 ss_ids_global(num_ss_global)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ss_side_cnt_global': <class 'netCDF4._netCDF4.Variable'>
+int32 ss_side_cnt_global(num_ss_global)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ss_df_cnt_global': <class 'netCDF4._netCDF4.Variable'>
+int32 ss_df_cnt_global(num_ss_global)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'int_n_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 int_n_stat(num_procs_file)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'bor_n_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 bor_n_stat(num_procs_file)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'ext_n_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 ext_n_stat(num_procs_file)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'int_e_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 int_e_stat(num_procs_file)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'bor_e_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 bor_e_stat(num_procs_file)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'elem_mapi': <class 'netCDF4._netCDF4.Variable'>
+int32 elem_mapi(num_int_elem)
+unlimited dimensions: 
+current shape = (4690,)
+filling off, 'elem_mapb': <class 'netCDF4._netCDF4.Variable'>
+int32 elem_mapb(num_bor_elem)
+unlimited dimensions: 
+current shape = (1367,)
+filling off, 'node_mapi': <class 'netCDF4._netCDF4.Variable'>
+int32 node_mapi(num_int_node)
+unlimited dimensions: 
+current shape = (5295,)
+filling off, 'node_mapb': <class 'netCDF4._netCDF4.Variable'>
+int32 node_mapb(num_bor_node)
+unlimited dimensions: 
+current shape = (2088,)
+filling off, 'n_comm_ids': <class 'netCDF4._netCDF4.Variable'>
+int32 n_comm_ids(num_n_cmaps)
+unlimited dimensions: 
+current shape = (8,)
+filling off, 'n_comm_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 n_comm_stat(num_n_cmaps)
+unlimited dimensions: 
+current shape = (8,)
+filling off, 'e_comm_ids': <class 'netCDF4._netCDF4.Variable'>
+int32 e_comm_ids(num_e_cmaps)
+unlimited dimensions: 
+current shape = (8,)
+filling off, 'e_comm_stat': <class 'netCDF4._netCDF4.Variable'>
+int32 e_comm_stat(num_e_cmaps)
+unlimited dimensions: 
+current shape = (8,)
+filling off, 'n_comm_data_idx': <class 'netCDF4._netCDF4.Variable'>
+int64 n_comm_data_idx(num_n_cmaps)
+unlimited dimensions: 
+current shape = (8,)
+filling off, 'n_comm_nids': <class 'netCDF4._netCDF4.Variable'>
+int32 n_comm_nids(ncnt_cmap)
+unlimited dimensions: 
+current shape = (2321,)
+filling off, 'n_comm_proc': <class 'netCDF4._netCDF4.Variable'>
+int32 n_comm_proc(ncnt_cmap)
+unlimited dimensions: 
+current shape = (2321,)
+filling off, 'e_comm_data_idx': <class 'netCDF4._netCDF4.Variable'>
+int64 e_comm_data_idx(num_e_cmaps)
+unlimited dimensions: 
+current shape = (8,)
+filling off, 'e_comm_eids': <class 'netCDF4._netCDF4.Variable'>
+int32 e_comm_eids(ecnt_cmap)
+unlimited dimensions: 
+current shape = (2027,)
+filling off, 'e_comm_proc': <class 'netCDF4._netCDF4.Variable'>
+int32 e_comm_proc(ecnt_cmap)
+unlimited dimensions: 
+current shape = (2027,)
+filling off, 'e_comm_sids': <class 'netCDF4._netCDF4.Variable'>
+int32 e_comm_sids(ecnt_cmap)
+unlimited dimensions: 
+current shape = (2027,)
+filling off, 'time_whole': <class 'netCDF4._netCDF4.Variable'>
+float64 time_whole(time_step)
+unlimited dimensions: time_step
+current shape = (85,)
+filling off, 'eb_status': <class 'netCDF4._netCDF4.Variable'>
+int32 eb_status(num_el_blk)
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'eb_prop1': <class 'netCDF4._netCDF4.Variable'>
+int32 eb_prop1(num_el_blk)
+    name: ID
+unlimited dimensions: 
+current shape = (1,)
+filling off, 'ns_status': <class 'netCDF4._netCDF4.Variable'>
+int32 ns_status(num_node_sets)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ns_prop1': <class 'netCDF4._netCDF4.Variable'>
+int32 ns_prop1(num_node_sets)
+    name: ID
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ss_status': <class 'netCDF4._netCDF4.Variable'>
+int32 ss_status(num_side_sets)
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'ss_prop1': <class 'netCDF4._netCDF4.Variable'>
+int32 ss_prop1(num_side_sets)
+    name: ID
+unlimited dimensions: 
+current shape = (6,)
+filling off, 'coordx': <class 'netCDF4._netCDF4.Variable'>
+float64 coordx(num_nodes)
+unlimited dimensions: 
+current shape = (7383,)
+filling off, 'coordy': <class 'netCDF4._netCDF4.Variable'>
+float64 coordy(num_nodes)
+unlimited dimensions: 
+current shape = (7383,)
+filling off, 'coordz': <class 'netCDF4._netCDF4.Variable'>
+float64 coordz(num_nodes)
+unlimited dimensions: 
+current shape = (7383,)
+filling off, 'eb_names': <class 'netCDF4._netCDF4.Variable'>
+|S1 eb_names(num_el_blk, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (1, 256)
+filling on, 'ns_names': <class 'netCDF4._netCDF4.Variable'>
+|S1 ns_names(num_node_sets, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (6, 256)
+filling on, 'ss_names': <class 'netCDF4._netCDF4.Variable'>
+|S1 ss_names(num_side_sets, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (6, 256)
+filling on, 'coor_names': <class 'netCDF4._netCDF4.Variable'>
+|S1 coor_names(num_dim, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (3, 256)
+filling on, 'node_num_map': <class 'netCDF4._netCDF4.Variable'>
+int32 node_num_map(num_nodes)
+unlimited dimensions: 
+current shape = (7383,)
+filling off, 'connect1': <class 'netCDF4._netCDF4.Variable'>
+int32 connect1(num_el_in_blk1, num_nod_per_el1)
+    elem_type: HEX8
+unlimited dimensions: 
+current shape = (6057, 8)
+filling off, 'elem_num_map': <class 'netCDF4._netCDF4.Variable'>
+int32 elem_num_map(num_elem)
+unlimited dimensions: 
+current shape = (6057,)
+filling off, 'node_ns2': <class 'netCDF4._netCDF4.Variable'>
+int32 node_ns2(num_nod_ns2)
+unlimited dimensions: 
+current shape = (409,)
+filling off, 'node_ns3': <class 'netCDF4._netCDF4.Variable'>
+int32 node_ns3(num_nod_ns3)
+unlimited dimensions: 
+current shape = (144,)
+filling off, 'elem_ss2': <class 'netCDF4._netCDF4.Variable'>
+int32 elem_ss2(num_side_ss2)
+unlimited dimensions: 
+current shape = (362,)
+filling off, 'side_ss2': <class 'netCDF4._netCDF4.Variable'>
+int32 side_ss2(num_side_ss2)
+unlimited dimensions: 
+current shape = (362,)
+filling off, 'elem_ss3': <class 'netCDF4._netCDF4.Variable'>
+int32 elem_ss3(num_side_ss3)
+unlimited dimensions: 
+current shape = (119,)
+filling off, 'side_ss3': <class 'netCDF4._netCDF4.Variable'>
+int32 side_ss3(num_side_ss3)
+unlimited dimensions: 
+current shape = (119,)
+filling off, 'name_nod_var': <class 'netCDF4._netCDF4.Variable'>
+|S1 name_nod_var(num_nod_var, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (5, 256)
+filling on, 'vals_nod_var1': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_nod_var1(time_step, num_nodes)
+unlimited dimensions: time_step
+current shape = (85, 7383)
+filling off, 'vals_nod_var2': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_nod_var2(time_step, num_nodes)
+unlimited dimensions: time_step
+current shape = (85, 7383)
+filling off, 'vals_nod_var3': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_nod_var3(time_step, num_nodes)
+unlimited dimensions: time_step
+current shape = (85, 7383)
+filling off, 'vals_nod_var4': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_nod_var4(time_step, num_nodes)
+unlimited dimensions: time_step
+current shape = (85, 7383)
+filling off, 'vals_nod_var5': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_nod_var5(time_step, num_nodes)
+unlimited dimensions: time_step
+current shape = (85, 7383)
+filling off, 'name_elem_var': <class 'netCDF4._netCDF4.Variable'>
+|S1 name_elem_var(num_elem_var, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (5, 256)
+filling on, 'vals_elem_var1eb1': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_elem_var1eb1(time_step, num_el_in_blk1)
+unlimited dimensions: time_step
+current shape = (85, 6057)
+filling off, 'vals_elem_var2eb1': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_elem_var2eb1(time_step, num_el_in_blk1)
+unlimited dimensions: time_step
+current shape = (85, 6057)
+filling off, 'vals_elem_var3eb1': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_elem_var3eb1(time_step, num_el_in_blk1)
+unlimited dimensions: time_step
+current shape = (85, 6057)
+filling off, 'vals_elem_var4eb1': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_elem_var4eb1(time_step, num_el_in_blk1)
+unlimited dimensions: time_step
+current shape = (85, 6057)
+filling off, 'vals_elem_var5eb1': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_elem_var5eb1(time_step, num_el_in_blk1)
+unlimited dimensions: time_step
+current shape = (85, 6057)
+filling off, 'elem_var_tab': <class 'netCDF4._netCDF4.Variable'>
+int32 elem_var_tab(num_el_blk, num_elem_var)
+unlimited dimensions: 
+current shape = (1, 5)
+filling off, 'name_glo_var': <class 'netCDF4._netCDF4.Variable'>
+|S1 name_glo_var(num_glo_var, len_name)
+    _FillValue: b'\x00'
+unlimited dimensions: 
+current shape = (2, 256)
+filling on, 'vals_glo_var': <class 'netCDF4._netCDF4.Variable'>
+float64 vals_glo_var(time_step, num_glo_var)
+unlimited dimensions: time_step
+current shape = (85, 2)
+filling off}
+

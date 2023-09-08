@@ -62,15 +62,24 @@ class ExodusReader:
             elem_var_names+=[''.join(temp[:idx]) ]
         self.elem_var_names = elem_var_names
         return self.elem_var_names
-    def get_var_values(self,var_name,timestep):
+    def get_var_values(self,var_name,timestep,full_nodal=False):
         if var_name in self.nodal_var_names:
             idx = self.nodal_var_names.index(var_name)
             var_name_exodus = 'vals_nod_var'+str(idx+1)
             var_vals_nodal = self.mesh.variables[var_name_exodus]
-            if timestep == -1:
-                var_vals = np.average([ var_vals_nodal[:,(self.connect[:,i] -1) ] for i in range(self.connect.shape[1]) ],0 )
+            var_vals_nodal_time = var_vals_nodal[timestep,:]
+            if full_nodal:
+                # Set this mode to output full mesh values for nodal variables,
+                # instead of taking the average of the values for each element?
+                if timestep == -1:
+                    var_vals = np.asarray(var_vals_nodal[:,:][(self.connect[:,:] -1)])
+                else:
+                    var_vals = np.asarray(var_vals_nodal[timestep,:][(self.connect[:,:] -1)])
             else:
-                var_vals = np.average([ var_vals_nodal[timestep,(self.connect[:,i] -1) ] for i in range(self.connect.shape[1]) ],0 )
+                if timestep == -1:
+                    var_vals = np.average([ var_vals_nodal[:,(self.connect[:,i] -1) ] for i in range(self.connect.shape[1]) ],0 )
+                else:
+                    var_vals = np.average([ var_vals_nodal[timestep,(self.connect[:,i] -1) ] for i in range(self.connect.shape[1]) ],0 )
 
         elif var_name in self.elem_var_names:
             idx = self.elem_var_names.index(var_name)

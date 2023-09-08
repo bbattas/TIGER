@@ -1,7 +1,7 @@
 from MultiExodusReader import MultiExodusReader
 import multiprocessing as mp
-from CalculationEngine import CalculationEngine
-from CalculationEngine import para_time_build
+from CalculationsV2 import CalculationsV2#, parallelPlot
+# from CalculationEngine import para_time_build
 
 import json
 import argparse
@@ -31,37 +31,475 @@ import math
 import sys
 import tracemalloc
 
-# This is the 2D conversion of parallel_3d_volume_from_timeFile
-# 1st command line input is the number of cpus
-# 2nd command line input is 'skip' if you want to skip the last unique file
 
-# if len(sys.argv) > 1:
-#     n_cpu = int(sys.argv[1])
-# else:
-n_cpu = 1
-var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
-# z_plane = 10000#19688/2
-sequence = True
-n_frames = 300
-cutoff = 0.0
-# Only for quarter structure hull adding the top right corner points and the centroid
-quarter_hull = True
-max_xy = 30000#1000
-#ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
-dirName = os.path.split(os.getcwd())[-1]
+# plot as specified but in parallel
+# needs calc and MF named as such
+def parallelPlot(i,idx_frame):
+    para_t0 = time.perf_counter()
+    x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+    nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
+    calc.plot_slice(i,nx,ny,nz,nc)
+    verb('  Finished plotting file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+    return
 
-#EXODUS FILE FOR RENDERING
-#ANY CHARACTER(S) CAN BE PLACED IN PLACE OF THE *, EG. 2D/grain_growth_2D_graintracker_out.e.1921.0000 or 2D/grain_growth_2D_graintracker_out.e-s001
-# filenames = '2D/grain_growth_2D_graintracker_out.e*'
-#IF IN MAIN PROCESS
-# calc = CalculationEngine()
-# print("Into main")
-# pt(calc.cl_args)
-#
-# pt("pt test warning")
-# verb("verbose test info")
-#
+
+if __name__ == "__main__":
+    print("__main__ Start")
+    # xlist = []
+    # x1 = np.asarray([0, 1, 2, 3, 4, 5, 6, 7])
+    # x2 = np.asarray([10, 11, 12, 13, 14, 15, 16, 17])
+
+    # xlist.append(x1)
+    # xlist.append(x2)
+    # x = np.vstack(xlist)
+    # print(x)
+    # print(" ")
+    # mask = [0,3,7,4]
+    # temp = []
+    # test1 = x[:,0]
+    # for n in mask:
+    #     temp.append(x[:,n])
+    #     test1 = test1 + x[:,n]
+    # check = np.hstack(temp)
+
+    # print(check)
+    # print(test1)
+    # test21 = [np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4) in zip(x[:,0], x[:,3], x[:,7], x[:,4])]
+    # print(test21)
+    # test2 = np.asarray([np.asarray([n1, n2, n3, n4]) for (n1,n2,n3,n4) in zip(x[:,0], x[:,3], x[:,7], x[:,4])])
+
+    # print(test2)
+
+    # # MESHGRID TESTING
+    # x_data = np.asarray([2, 2, 2, 3, 3, 3, 1, 1, 1, 4, 4, 4])
+    # y_data = np.asarray([16, 64, 32, 64, 32, 16, 16, 32, 64, 32, 16, 64])
+    # z_data = np.asarray([64, 31, 29, 78, 72, 63, 93, 40, 54, 35, 44, 3])
+    # z_vals = np.asarray([2, 2, 2, 3, 3, 3, 1, 1, 1, 4, 4, 4])
+    # # Sort coordinates and reshape in grid
+    # idx1 = np.lexsort((y_data, x_data))
+    # # print(idx1)
+    # idx = np.lexsort((y_data, x_data)).reshape(4, 3)
+    # # Plot
+    # # print(idx)
+    # # print(x_data[idx], y_data[idx], z_data[idx])
+    # def tempctr(x,y):
+    #     xy = np.asarray([x[:],y[:]]).T
+    #     return xy
+
+    # def tempctrz(x,y,z):
+    #     xyz = np.asarray([x[:],y[:],z[:]]).T
+    #     return xyz
+
+    # ctr = tempctr(x_data,y_data)
+    # ctrz = tempctrz(x_data,y_data,z_vals)
+    # print(ctr)
+    # print(" ")
+    # print(ctr[2])
+
+    # def get_c(xy_ctr, c, x, y):
+    #     ind = (xy_ctr == (x,y)).all(axis=1)
+    #     row = c[ind]
+    #     return row
+    # def get_c3(xy_ctr, c, x, y, z):
+    #     ind = (xy_ctr == (x,y,z)).all(axis=1)
+    #     row = c[ind]
+    #     return row
+    # print(get_c(ctr,z_data,2,32))
+
+    # def xyc_to_array(xy_ctr,c):
+    #     x_u = np.unique(xy_ctr[:,0])#[:,0]
+    #     y_u = np.unique(xy_ctr[:,1])#mat[:,1]
+    #     print(x_u)
+    #     print(y_u)
+    #     X,Y = np.meshgrid(x_u, y_u, indexing='xy')#specify indexing!!
+    #     c_sort = np.array([get_c(xy_ctr,c,x,y) for (x,y) in zip(np.ravel(X), np.ravel(Y))])
+    #     C = c_sort.reshape(X.shape)
+    #     print(C)
+    #     cdx,cdy = np.gradient(C)
+    #     print(cdx)
+    #     xdx,xdy= np.gradient(X)
+    #     print(xdy)
+    #     ydx,ydy= np.gradient(Y)
+    #     print(xdy)
+    #     print('dCdx')
+    #     print(cdy/xdy)
+    #     print('dCdy')
+    #     print(cdx/ydx)
+    #     dcdx = cdy/xdy
+    #     dcdy = cdx/ydx
+
+    #     return X, Y, C, dcdx, dcdy
+    #     print(X)
+    #     print(Y)
+    #     print(C)
+    #     plt.pcolormesh(X,Y,C)
+    #     # plt.xlim(min(x), max(x))
+    #     # plt.ylim(min(y), max(y))
+    #     plt.show()
+
+    # def xyzc_to_array(xy_ctr,c):
+    #     x_u = np.unique(xy_ctr[:,0])#[:,0]
+    #     y_u = np.unique(xy_ctr[:,1])#mat[:,1]
+    #     z_u = np.unique(xy_ctr[:,2])
+    #     print(x_u)
+    #     print(y_u)
+    #     print(z_u)
+    #     X,Y,Z = np.meshgrid(x_u, y_u, z_u, indexing='xy')#specify indexing!!
+    #     c_sort = np.array([get_c3(xy_ctr,c,x,y,z) for (x,y,z) in zip(np.ravel(X), np.ravel(Y), np.ravel(Z))])
+    #     C = c_sort.reshape(X.shape)
+    #     print(C)
+    #     cdx,cdy = np.gradient(C)
+    #     print(cdx)
+    #     xdx,xdy= np.gradient(X)
+    #     print(xdy)
+    #     ydx,ydy= np.gradient(Y)
+    #     print(xdy)
+    #     print('dCdx')
+    #     print(cdy/xdy)
+    #     print('dCdy')
+    #     print(cdx/ydx)
+    #     dcdx = cdy/xdy
+    #     dcdy = cdx/ydx
+
+    #     return X, Y, C, dcdx, dcdy
+    # X, Y, C, dcdx, dcdy = xyzc_to_array(ctrz,z_data)
+    # print(dcdx)
+    # print(dcdx.reshape(z_data.shape))
+    # dCdxy = np.gradient(C, X, Y, axis=(1,2))
+    # print(dCdxy)
+    # quit()
 # quit()
+# exit()
+    calc = CalculationsV2()
+    # # print(calc.__dict__)
+    # print("Testing some shit:")
+
+    # calc_it = calc.get_frames()
+    # # print(calc_it)
+    # # frames = calc.frames
+    read_ti = time.perf_counter()
+    MF = MultiExodusReader(calc.file_names[0])
+    # MF = MultiExodusReader('2D_NS_200iw_nemesis.e.12*')
+    read_tf = time.perf_counter()
+    print("  Finished reading files:",round(read_tf-read_ti,2),"s")
+
+    # TEST
+    # x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[2],True)
+    # nx, ny, nz, nc = calc.plane_slice(x,y,z,c,False)#, grads, norm
+    # avg_c = np.average(nc, axis=1)
+    # plt_x, plt_y = calc.plt_xy(nx,ny,nz)
+    # mesh_ctr, mesh_vol = calc.mesh_center_quadElements(plt_x,plt_y)
+    # gr_area = calc.c_area_in_slice(*MF.get_data_at_time(calc.var_to_plot,calc.times[1],True))
+    # print(gr_area)
+
+    # X, Y, C, dcdx, dcdy = xyc_to_array(mesh_ctr,avg_c)
+    # plt.pcolormesh(X,Y,dcdz.reshape(X.shape),shading='nearest',cmap='coolwarm')
+    # plt.colorbar()
+    # calc.cl_args.debug = True
+    # calc.plot_slice(1,nx,ny,nz,dcdz)
+    # plt.show()
+    # read_ti = time.perf_counter()
+    # dx = calc.element_gradients(nx,ny,nz,nc)
+    # read_tf = time.perf_counter()
+    # print("  Finished doing gradients:",round(read_tf-read_ti,2),"s")
+    results = []
+
+    def do_calculations(i,idx_frame,all_op=False):
+        para_t0 = time.perf_counter()
+        if not all_op:
+            x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+            op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,calc.var_to_plot)
+            sum_del_cv, full_delta, full_cv = calc.MER_curvature_calcs(x,y,z,c)
+            verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+            return calc.times[idx_frame], op_area, tot_mesh_area, sum_del_cv
+        else:
+            allgrs = ['gr0','gr1']
+            cgb = 0
+            for grop in allgrs:
+                x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
+                cgb += c
+            cv, gb_area, tot_mesh_area = calc.gb_curvature(x,y,z,cgb,2,i)
+            if 'gr2' not in MF.exodus_readers[0].nodal_var_names:
+                x,y,z,c = MF.get_data_at_time('unique_grains',calc.times[idx_frame],False)
+                calc.rbm_distance_centroids(x,y,z,c)
+            print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+            return calc.times[idx_frame], gb_area, tot_mesh_area, cv
+
+    # def do_calculations(i,idx_frame,all_op=False):
+    #     para_t0 = time.perf_counter()
+    #     if not all_op:
+    #         x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx_frame],True)
+    #         op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,calc.var_to_plot)
+    #         sum_del_cv, full_delta, full_cv = calc.MER_curvature_calcs(x,y,z,c)
+    #         verb('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+    #         return calc.times[idx_frame], op_area, tot_mesh_area, sum_del_cv
+    #     else:
+    #         tot_gr_area = 0
+    #         all_full_delta = []
+    #         delta_phi = 0
+    #         all_full_cv = []
+    #         gb = []
+    #         all_gr_ops = ['phi','gr0','gr1','gr2','gr3']
+    #         all_grs = [x for x in all_gr_ops if x in MF.exodus_readers[0].nodal_var_names]
+    #         # all_grs = ['gr0', 'gr1']
+    #         for grop in all_grs:
+    #             x,y,z,c = MF.get_data_at_time(grop,calc.times[idx_frame],True)
+    #             op_area, tot_mesh_area = calc.c_area_in_slice(x,y,z,c,grop)
+    #             sum_del_cv, full_delta, full_cv, cx, cy, cz, cc = calc.MER_curvature_calcs(x,y,z,c,True)
+    #             calc.plot_slice(str(grop)+'_curv_'+str(i),cx,cy,cz,full_cv,str(grop)+"_curvature")
+    #             # Change this and just use it for tot_cr_area for more grains
+    #             # if 'phi' not in grop:
+    #             all_full_cv.append(full_cv)
+    #             if 'phi' in grop:
+    #                 delta_phi = np.where((full_delta>0),0,1)
+    #             if grop not in ['phi','gr2','gr3']:
+    #                 gb.append(cc)
+    #                 tot_gr_area += op_area
+    #                 all_full_delta.append(full_delta)
+    #                 # all_full_cv.append(full_cv)
+    #         # No Cross Terms (delta_gr0*cv_gr1, etc)
+    #         # delta_cv = sum([all_full_delta[n]*all_full_cv[n] for n in range(len(all_grs))])
+    #         calc.plot_slice_forCurvature(str(i),cx,cy,cz,sum(gb),'gr0 + gr1')
+    #         # delphi = np.where((delta_phi>0),0,1)
+    #         # del01 = np.where(del0 & del1 & delphi, 1, 0)
+    #         # calc.plot_slice('delta_gb_phi_'+str(i),cx,cy,cz,delphi,'delta_gb and phi')
+    #         # calc.plot_slice('del_gb_phi_'+str(i),cx,cy,cz,del01,'delta_gb and phi')
+    #         dels = [np.where((all_full_delta[n]>0) & (all_full_delta[n]<=1) & delta_phi,1,0) for n in range(len(all_full_delta))]
+    #         # dels_phi = np.where(dels & delta_phi,1,0)
+    #         deltot = np.where(sum(dels)>0,1,0)
+    #         calc.plot_slice('all_gr_delta_'+str(i),cx,cy,cz,deltot,'delta_total all grs')
+    #         # calc.plot_slice('all_gr_minus_phi_delta_'+str(i),cx,cy,cz,dels_phi,'delta_total all grs without phi')
+    #         calc.plot_slice('delta_gr0_'+str(i),cx,cy,cz,del0,'delta_gr0')
+    #         calc.plot_slice('delta_gr1_'+str(i),cx,cy,cz,del1,'delta_gr1')
+    #         # delta_cv = sum([all_full_cv[n] for n in range(len(all_grs))])
+    #         cv_tot = sum(all_full_cv)
+    #         calc.plot_slice('delta_'+str(i),cx,cy,cz,deltot,'delta_total')
+    #         tot_delta_cv = np.sum(cv_tot*deltot)
+    #         tot_delta = np.sum(deltot)
+    #         calc.plot_slice('curvature_'+str(i),cx,cy,cz,cv_tot*deltot,'delta*curvature_total')
+    #         calc.plot_slice('full_curvature_'+str(i),cx,cy,cz,cv_tot,'curvature_total')
+    #         # print(tot_delta_cv, tot_delta, tot_delta_cv/tot_delta)
+    #         # With those cross terms
+    #         # deltas = sum([np.where(all_full_delta[n]<=1,all_full_delta[n],0) for n in range(len(all_grs))])
+    #         # cvs = sum([all_full_delta[n] for n in range(len(all_grs))])
+    #         # tot_delta_cv = np.sum(deltas*cvs)
+    #         print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
+    #         return calc.times[idx_frame], tot_gr_area, tot_mesh_area, tot_delta_cv, tot_delta_cv/tot_delta
+
+    results.append(do_calculations('test_60',calc.idx_frames[60],True))
+    print(results)
+
+
+    sys.exit()
+    # gr0
+    # x0,y0,z0,c0 = MF.get_data_at_time('gr0',calc.times[2],True)
+    # cx0, cy0, cz0, cc0, cv0 = calc.threeplane_curvature(x0,y0,z0,c0)
+    # d0 = calc.delta_interface_func(cc0,1)
+
+    # sumcv0, outcv0, outx,outy,outz,outc = calc.MER_curvature_calcs(x0,y0,z0,c0,True)
+    # print(sumcv0)
+    # calc.plot_slice('TEST_c_gr0',cx0,cy0,cz0,cc0,'gr0')
+    # calc.plot_slice('TEST_c_gr0_calc',outx,outy,outz,outc,'gr0')
+    # calc.plot_slice('TEST_cv_gr0',cx0,cy0,cz0,cv0*d0,'gr0_curvature*delta')
+    # calc.plot_slice('TEST_cv_gr0_calc',outx,outy,outz,outcv0,'gr0_curvature*delta')
+    # sys.exit()
+    # gr1
+    x1,y1,z1,c1 = MF.get_data_at_time('gr1',calc.times[2],True)
+    cx1, cy1, cz1, cc1, cv1 = calc.threeplane_curvature(x1,y1,z1,c1)
+    d1 = calc.delta_interface_func(cc1)
+
+    # gr2
+    x2,y2,z2,c2 = MF.get_data_at_time('phi',calc.times[2],True)
+    cx2, cy2, cz2, cc2, cv2 = calc.threeplane_curvature(x2,y2,z2,c2)
+    d2 = calc.delta_interface_func(cc2)
+
+    # calc.plot_slice(0,X,Y,Z,C)
+    # calc.plot_slice(1,X[1],Y[1],Z[1],C[1])
+    # calc.plot_slice(2,X[2],Y[2],Z[2],C[2])
+    # print(min(cv0))
+    # print(max(cv0))
+    # calc.plot_slice('cv_gr0',cx0,cy0,cz0,np.where(cv0>=0.0,-1,cv0),'gr0_curvature')
+    sys.exit()
+    # # PLOTS
+    temp_gb = np.where(((d20+d21+d22)<=1),(d20+d21+d22),0)
+    temp_grs = np.where(((d20+d21)<=1),(d20+d21),0)
+    calc.plot_slice('c_gr0',cx0,cy0,cz0,cc0,'gr0')
+    calc.plot_slice('c_gr1',cx1,cy1,cz1,cc1,'gr1')
+    calc.plot_slice('c_phi',cx2,cy2,cz2,cc2,'phi')
+    calc.plot_slice('cv_gr0',cx0,cy0,cz0,cv0,'gr0_curvature')
+    calc.plot_slice('cv_gr1',cx1,cy1,cz1,cv1,'gr1_curvature')
+    calc.plot_slice('cv_phi',cx2,cy2,cz2,cv2,'phi_curvature')
+    calc.plot_slice('cv_sum',cx2,cy2,cz2,cv0+cv1+cv2,'all_curvature')
+    calc.plot_slice('cv_grsum',cx2,cy2,cz2,cv0+cv1,'allGr_curvature')
+    calc.plot_slice('d_gr0',cx0,cy0,cz0,d20,'gr0_delta')
+    calc.plot_slice('d_gr1',cx1,cy1,cz1,d21,'gr1_delta')
+    calc.plot_slice('d_phi',cx2,cy2,cz2,d22,'phi_delta')
+    calc.plot_slice('d_sum',cx2,cy2,cz2,d20+d21+d22,'all_delta')
+    calc.plot_slice('d_grsum',cx2,cy2,cz2,d20+d21,'allGr_delta')
+    calc.plot_slice('dcv_gr0',cx0,cy0,cz0,d20*cv0,'gr0_delta*cv')
+    calc.plot_slice('dcv_gr1',cx1,cy1,cz1,d21*cv1,'gr1_delta*cv')
+    calc.plot_slice('dcv_phi',cx2,cy2,cz2,d22*cv2,'phi_delta*cv')
+    calc.plot_slice('d_all_cv_gr0',cx0,cy0,cz0,(d20+d21+d22)*cv0,'all_delta*gr0_cv')
+    calc.plot_slice('d_all_cv_gr1',cx1,cy1,cz1,(d20+d21+d22)*cv1,'all_delta*gr1_cv')
+    calc.plot_slice('d_all_cv_phi',cx2,cy2,cz2,(d20+d21+d22)*cv2,'all_delta*phi_cv')
+    calc.plot_slice('d_all_cv_allgr',cx1,cy1,cz1,(d20+d21+d22)*(cv0+cv1),'all_delta*allgr_cv')
+    calc.plot_slice('d_allmax1_cv_gr0',cx0,cy0,cz0,temp_gb*cv0,'all_delta_max1*gr0_cv')
+    calc.plot_slice('d_allmax1_cv_gr1',cx1,cy1,cz1,temp_gb*cv1,'all_delta_max1*gr1_cv')
+    calc.plot_slice('d_allmax1_cv_phi',cx2,cy2,cz2,temp_gb*cv2,'all_delta_max1*phi_cv')
+    calc.plot_slice('d_allmax1_cv_phi',cx2,cy2,cz2,temp_gb*(cv0+cv1),'all_delta_max1*allgr_cv')
+    calc.plot_slice('dcv_sumEachOP',cx0,cy0,cz0,(d20*cv0)+(d21*cv1)+(d22*cv2),'all delta*cv')
+    calc.plot_slice('dcv_sumEachgr',cx0,cy0,cz0,(d20*cv0)+(d21*cv1),'allgr delta*cv')
+    calc.plot_slice('dmax1cv_sumEachgr',cx0,cy0,cz0,(np.where(d20<=1,d20,0)*cv0)+(np.where(d21<=1,d21,0)*cv1),'allgr delta(max1)*cv')
+    calc.plot_slice('dcv_sumAllgrMax1',cx0,cy0,cz0,(temp_grs*cv0)+(temp_grs*cv1),'allgr deltaSumMax1*cv')
+    # calc.plot_slice(4,cx1,cy1,cz1,d20+d21+d22)
+    # calc.plot_slice(5,cx1,cy1,cz1,d20+d22)
+    # calc.plot_slice(6,cx1,cy1,cz1,d20)
+    # calc.plot_slice(7,cx1,cy1,cz1,d21)
+    # calc.plot_slice(8,cx1,cy1,cz1,d22)
+    # calc.plot_slice(9,cx2,cy2,cz2,cc2)
+    # calc.plot_slice(10,cx1,cy1,cz1,temp_gb)
+    # calc.plot_slice(11,cx1,cy1,cz1,cv1)
+
+        # plt.figure()
+        # # plt.plot(Y[1][0],label='X')
+        # plt.plot(Y[1][0],dcdy[1][0],label='dcdy')
+        # plt.plot(Y[1][0],dc_norm[1][0],label='dcnorm')
+        # plt.plot(Y[1][0],dcdy[1][0]/dc_norm[1][0],label='man dcdy_norm')
+        # # plt.plot(Y[1][0],dcdy_norm[1][0],label='dcdy_norm')
+        # plt.legend()
+        # plt.show()
+        # plt.pcolormesh(X[1],Y[1],dcdy[1],shading='nearest',cmap='coolwarm')
+        # plt.colorbar()
+        # plt.show()
+
+    # calc.plot_slice(3,cx,cy,cz,cv)
+    # tempcv = np.where(cv<0.0,0,1)
+    # calc.plot_slice(4,cx,cy,cz,tempcv)
+    # calc.plot_slice(5,cx,cy,cz,d1)
+    # calc.plot_slice(6,cx,cy,cz,d2)
+    # calc.plot_slice(7,cx,cy,cz,d2*cv)
+    # calc.plot_slice(8,cx,cy,cz,d2*tempcv)
+    # calc.plot_slice(9,cx,cy,cz,np.where((d2*cv)<0.0,0,d2*cv))
+    # calc.plot_slice(10,cx,cy,cz,np.where((d2)<=1.0,d2,0))
+    # calc.plot_slice(11,cx,cy,cz,np.where((d2)<5.0,d2*cv,0))
+    # for n in range(len(C)):
+    #     fig = plt.figure(n)
+    #     plt.pcolormesh(X[n],Y[n],cv[n],shading='nearest',cmap='coolwarm')
+    #     plt.colorbar()
+    #     fig.savefig('pics'+'/'+calc.outNameBase+'_sliced_'+calc.plane_axis+
+    #             str(calc.plane_coord_name)+'_curvature_'+str(n)+'.png',dpi=500,transparent=True )
+
+    # calc.plot_slice(0,nx,ny,nz,nc)
+
+
+    # calc.plot_slice(1,nx,ny,nz,grads[1])
+    # calc.plot_slice(2,nx,ny,nz,grads[2])
+    # calc.plot_slice(3,nx,ny,nz,norm[2])
+
+    # quit()
+    quit()
+quit()
+quit()
+quit()
+    # REMEMBERR IF NO MESH ADAPTIVITY CAN JUST OPEN THEM ALL!!!!
+    # for i,idx in enumerate(calc_it[0]):
+    #     pt('Frame '+str(i+1)+'/'+str(len(calc_it[0])))
+    #     # MF = MultiExodusReader(calc.files[idx])
+    #     x,y,z,c = MF.get_data_at_time(calc.var_to_plot,calc.times[idx],True)
+    #     print('Got the data at the time')
+    #     nx, ny, nz, nc = calc.plane_slice(x,y,z,c)
+    #     calc.plot_slice(i,nx,ny,nz,nc)
+    # calc.getMER()
+    # for i,idx in enumerate(calc_it[0]):
+    #     print(i)
+    #     print(idx)
+    #     print('and now run')
+    #     calc.parallelPlot(i,idx)
+    # print('Got this far')
+
+
+
+
+
+    # cpu_pool = mp.Pool(calc.cpu)
+    # pt(cpu_pool)
+    # pool_t0 = time.perf_counter()
+    # results = []
+    # for i,idx in enumerate(calc_it[0]):
+    #     # results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
+    #     results.append(cpu_pool.apply_async(parallelPlot,args = (i, idx )))
+    # cpu_pool.close()
+    # cpu_pool.join()
+    # pt("Total Pool Time: "+str(round(time.perf_counter()-pool_t0))+"s")
+    # pt("Aggregating data...")#Restructuring
+    # # pt(results[0])
+    # results = [r.get() for r in results]
+    # print(results)
+
+
+
+
+
+        # # plott
+        # fig, ax = plt.subplots()
+        # coords = np.asarray([ np.asarray([x_val,y_val]).T for (x_val,y_val) in zip(ny,nz) ])
+        # # coords, vols = calc.mesh_center_quadElements(y,z)
+        # print(coords)
+        # #USE POLYCOLLECTION TO DRAW ALL POLYGONS DEFINED BY THE COORDINATES
+        # p = PolyCollection(coords, cmap=matplotlib.cm.coolwarm, alpha=1)#,edgecolor='k'      #Edge color can be set if you want to show mesh
+
+        # #COLOR THE POLYGONS WITH OUR VARIABLE
+        # ## Map plot variable range to color range
+        # c_min = np.amin(c)
+        # c_max = np.amax(c)
+        # colors = pc#(c - c_min)/(c_max-c_min)
+        # #
+        # p.set_array(np.array(colors) )
+
+        # #ADD THE POLYGON COLLECTION TO AXIS --> THIS IS WHAT ACTUALLY PLOTS THE POLYGONS ON OUR WINDOW
+        # ax.add_collection(p)
+
+        # #FIGURE FORMATTING
+
+        # #SET X AND Y LIMITS FOR FIGURE --> CAN USE x,y ARRAYS BUT MANUALLY SETTING IS EASIER
+        # # ax.set_xlim([0,300])
+        # # ax.set_ylim([0,300])
+        # ax.set_xlim([np.amin(ny),np.amax(ny)])
+        # ax.set_ylim([np.amin(nz),np.amax(nz)])
+        # #SET ASPECT RATIO TO EQUAL TO ENSURE IMAGE HAS SAME ASPECT RATIO AS ACTUAL MESH
+        # ax.set_aspect('equal')
+
+        # #ADD A COLORBAR, VALUE SET USING OUR COLORED POLYGON COLLECTION
+        # fig.colorbar(p,label="phi")
+        # plt.show()
+
+
+
+
+
+
+    # dict = {}
+    # dict['cl_args'] = vars(calc.cl_args)
+    # dict['params'] = {
+    #     'adaptive_mesh':calc.adaptive_mesh,
+    #     'test' : 7
+    # }
+    # dict['file_names'] = list(calc.file_names)
+    # # dict['testvalue'] = list(calc.file_names)
+    # print(calc.file_names)
+    # print(dict)
+    # with open('tiger_meta.json', 'w') as fp:
+    #     json.dump(dict, fp, indent=4)
+
+#     pt("END OF THE MAIN")
+
+#     quit()
+# quit()
+
+
+
+
+
 
 if __name__ == "__main__":
     print("__main__ Start")
