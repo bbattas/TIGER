@@ -1039,6 +1039,7 @@ class CalculationsV2:
 
     def gb_curvature(self,x,y,z,cgb,nn,frame,numGrs):
         '''Caclulate the gb curvature and gb area on the specified plane of interest
+        Disabled the curvature calculation for now
 
         Args:
             x: Full 3D x data
@@ -1056,10 +1057,11 @@ class CalculationsV2:
         '''
         cx,cy,cz,ccgb = self.plane_slice(x,y,z,cgb)
         gb_area, tot_mesh_area = self.c_area_in_slice(cx,cy,cz,ccgb,'gb')
-        figname = self.plot_slice_forCurvature(str(frame),cx,cy,cz,ccgb,'gr0 + gr1')
-        pltx,plty,pltz,xyzref = self.plt_xyz(cx,cy,cz)
-        cv = self.curvature_fromImage(figname,pltx.max(),plty.max(),nn,numGrs)
-        return cv, gb_area, tot_mesh_area
+        return 0, gb_area, tot_mesh_area
+        # figname = self.plot_slice_forCurvature(str(frame),cx,cy,cz,ccgb,'gr0 + gr1')
+        # pltx,plty,pltz,xyzref = self.plt_xyz(cx,cy,cz)
+        # cv = self.curvature_fromImage(figname,pltx.max(),plty.max(),nn,numGrs)
+        # return cv, gb_area, tot_mesh_area
 
     def rbm_distance_centroids(self,x,y,z,c):
         c_int = np.rint(c)
