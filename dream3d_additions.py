@@ -11,6 +11,7 @@ import argparse
 import re
 import numpy as np
 from itertools import product
+import csv
 
 
 def parseArgs():
@@ -20,9 +21,9 @@ def parseArgs():
         cl_args
     '''
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dir','-d',type=str,
-                                help='Coordinate direction (x,y,z) to add the phi volume.')
-    parser.add_argument('--planes','-n',type=str,
+    parser.add_argument('--dir','-d',choices=['x','y','z'],default='x',
+                                help='Coordinate direction (x,y,z) to add the phi volume. Defaults to +x')
+    parser.add_argument('--planes','-n',type=int, default=20,
                                 help='Number of element planes of phi to add.')
     parser.add_argument('--input','-i',type=str,
                                 help='Name of Dream3D txt file to glob.glob(*__*.txt) find and read.')
@@ -97,19 +98,19 @@ if __name__ == "__main__":
         searchName = '*.txt'
     elif '.txt' in cl_args.input:
         searchName = '*'+cl_args.input
+    elif '/' in cl_args.input and '.txt' not in cl_args.input:
+        searchName = cl_args.input + '*.txt'
     else:
         searchName = '*'+cl_args.input + '*.txt'
+    # print(searchName)
     for file in glob.glob(searchName):
         txt_names.append(file)
     txt_file = txt_names[0]
 
+    # Read the txt file to a list
     with open(txt_file) as f:
-        # # Iterate through the file until the table starts
-        # for line in f:
-        #     if line.startswith('#'):
-        #         break
-        # Read the rest of the data, using spaces to split.
         full_data = [r.split() for r in f]
+
     header = []
     body = []
     for row in full_data:
@@ -119,25 +120,43 @@ if __name__ == "__main__":
             body.append(row)
     # ['phi1', 'PHI', 'phi2', 'x', 'y', 'z', 'FeatureId', 'PhaseId', 'Symmetry']
     data = np.asarray(body,dtype=float)
-    # Important columns
-    # x = data[:,3]
-    # y = data[:,4]
-    # z = data[:,5]
-    # feat = data[:,6]
-    # print('X Unique')
-    # print(np.unique(x))
-    # print('y Unique')
-    # print(np.unique(y))
-    # print('z Unique')
-    # print(np.unique(z))
-    # print('FID Unique')
-    # print(np.unique(feat))
-    # print(" ")
-
     # Measure mesh coordinates:
     mesh = header_vals(data[:,3],data[:,4],data[:,5],data[:,6])
-    print(vars(mesh))
-    print(" ")
+    # print(vars(mesh))
+    # print(" ")
+
+    # Define new coordinates to add
+    if 'x' in cl_args.dir:
+        new_x = np.asarray([mesh.ctr_xmax + (n+1)*mesh.dx for n in range(cl_args.planes)])
+        new_y = mesh.yu
+        new_z = mesh.zu
+    new_coords = list(product(new_x,new_y,new_z))
+
+    phi_txt = []
+    f_num = mesh.feature_id_max + 1
+    for set in new_coords:
+        phi_txt.append(['0.0','0.0','0.0',str(set[0]),str(set[1]),str(set[2]),str(f_num),'2','43'])
+
+
+    # Output Naming
+    if cl_args.out is None:
+        out_name = txt_file.rsplit('.',1)[0] + '_plusVoid.txt'
+    elif '.txt' in cl_args.out:
+        out_name = cl_args.out
+    else:
+        out_name = cl_args.out + '.txt'
+
+
+    with open(out_name,'w') as file:
+        writer = csv.writer(file, delimiter=' ')
+        writer.writerows(full_data)
+        writer.writerows(phi_txt)
+
+
+    print('Done')
+
+
+
 
 
     # print(header)
