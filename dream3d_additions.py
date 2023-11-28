@@ -12,6 +12,7 @@ import re
 import numpy as np
 from itertools import product
 import csv
+import math
 
 
 def parseArgs():
@@ -29,6 +30,10 @@ def parseArgs():
                                 help='Name of Dream3D txt file to glob.glob(*__*.txt) find and read.')
     parser.add_argument('--out','-o',type=str,
                                 help='Name of output txt file. If not specified will use [inputName]_plusVoid.txt')
+    parser.add_argument('--pores','-p',type=int, default=5,
+                                help='Number of pores to add.')
+    parser.add_argument('--volume','-v',type=int, default=5,
+                                help='Volume percentage (1-100) to make the pores.')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -65,12 +70,12 @@ class header_vals:
             self.dim = self.dim - 1
             self.dy = 0.0
             self.ymin = 0.0
-            self.ymay = 0.0
+            self.ymax = 0.0
             self.ctr_ymax = 0.0
         else:
             self.dy = self.yu[1] - self.yu[0]
             self.ymin = min(self.yu) - (0.5*self.dy)
-            self.ymay = max(self.yu) + (0.5*self.dy)
+            self.ymax = max(self.yu) + (0.5*self.dy)
             self.ctr_ymax = max(self.yu)
         # z coordinates
         self.zu = np.unique(z)
@@ -78,13 +83,79 @@ class header_vals:
             self.dim = self.dim - 1
             self.dz = 0.0
             self.zmin = 0.0
-            self.zmaz = 0.0
+            self.zmax = 0.0
             self.ctr_zmax = 0.0
         else:
             self.dz = self.zu[1] - self.zu[0]
             self.zmin = min(self.zu) - (0.5*self.dz)
-            self.zmaz = max(self.zu) + (0.5*self.dz)
+            self.zmax = max(self.zu) + (0.5*self.dz)
             self.ctr_zmax = max(self.zu)
+
+
+def vol_per_sphere(volume_solid,dims):
+    min_vol = 1/(1.5*cl_args.pores) #0.055
+
+    a = np.random.rand(cl_args.pores)
+    a = (a/a.sum()*(1-min_vol*cl_args.pores))
+    weights = a+min_vol
+    volumes = weights*volume_solid*cl_args.volume/100
+    r = []
+    if dims == 2:
+        r = (volumes / math.pi)**(1/2)
+    elif dims == 3:
+        r = (3 * volumes / (4 * math.pi))**(1/3)
+    return r
+
+def distance(pt_list1,pt_list2):
+    dist = math.sqrt((pt_list1[0]-pt_list2[0])**2 +
+                     (pt_list1[1]-pt_list2[1])**2 +
+                     (pt_list1[2]-pt_list2[2])**2)
+    return dist
+
+def generate_centers(radii,mesh,max_its=100):
+    coords = []
+    it = 0
+    for n in range(cl_args.pores):
+        loop = True
+        while loop == True:
+            # Random location
+            ctr = [mesh.xmax, mesh.ymax, mesh.zmax] * np.random.rand(1,3)
+            ctr = ctr[0] #remove the [[x y z]] so its just [x y z]
+            # check if the pores overlap each other
+            if n != 0:
+                for i in range(0, n):
+                    dist = distance(ctr,coords[i])
+                    if dist < (radii[n] + radii[i]):
+                        if it < max_its:
+                            it = it + 1
+                            loop = True
+                            break
+                        else:
+                            print("ERROR: MAX ITERATIONS REACHED - there will be pore overlap")
+                    else:
+                        loop = False
+            else:
+                loop = False
+            # Check if the pores overlap a boundary
+            # print(ctr)
+            # print(ctr[0], radii[n])
+            if (ctr[0] - radii[n] < 0) or (ctr[0] + radii[n] > mesh.xmax):
+                print('X Issue')
+                it = it + 1
+                loop = True
+            if (ctr[1] - radii[n] < 0) or (ctr[1] + radii[n] > mesh.ymax):
+                print('Y Issue')
+                it = it + 1
+                loop = True
+            if dim == 3:
+                if (ctr[2] - radii[n] < 0) or (ctr[2] + radii[n] > mesh.zmax):
+                    print('Z Issue')
+                    it = it + 1
+                    loop = True
+        # If it worked, save it
+        coords.append(ctr)
+    # print(it)
+    return np.asarray(coords)
 
 
 
@@ -137,7 +208,32 @@ if __name__ == "__main__":
     for set in new_coords:
         phi_txt.append(['0.0','0.0','0.0',str(set[0]),str(set[1]),str(set[2]),str(f_num),'2','43'])
 
+    # Adjust the header values
+    new_xmax = mesh.xmax + (cl_args.planes)*mesh.dx
+    for row in full_data:
+        if len(row)>1:
+            # Assuming positive x direction for extra planes
+            if 'X_MAX' in row[1]:
+                row[2] = str(new_xmax)
+            if 'X_DIM' in row[1]:
+                row[2] = str(int(row[2]) + cl_args.planes)
 
+
+    # Calculate the solid volume
+    dim = 3
+    if mesh.zmax == 0.0:
+        dim = 2
+    volume_solid = mesh.ymax * mesh.ymax
+    if dim == 3:
+        volume_solid = volume_solid * mesh.zmax
+    print(volume_solid)
+    # Generate Pore centers and radii
+    # pore_ctrs = np.random.rand(cl_args.pores,3)
+    rads = vol_per_sphere(volume_solid,dim)
+    pore_ctrs = generate_centers(rads,mesh)
+
+    # Find and replace the gridpoints in the pores
+    quit()
     # Output Naming
     if cl_args.out is None:
         out_name = txt_file.rsplit('.',1)[0] + '_plusVoid.txt'
