@@ -13,6 +13,7 @@ import numpy as np
 from itertools import product
 import csv
 import math
+import time
 
 
 def parseArgs():
@@ -140,16 +141,16 @@ def generate_centers(radii,mesh,max_its=100):
             # print(ctr)
             # print(ctr[0], radii[n])
             if (ctr[0] - radii[n] < 0) or (ctr[0] + radii[n] > mesh.xmax):
-                print('X Issue')
+                # print('X Issue')
                 it = it + 1
                 loop = True
             if (ctr[1] - radii[n] < 0) or (ctr[1] + radii[n] > mesh.ymax):
-                print('Y Issue')
+                # print('Y Issue')
                 it = it + 1
                 loop = True
             if dim == 3:
                 if (ctr[2] - radii[n] < 0) or (ctr[2] + radii[n] > mesh.zmax):
-                    print('Z Issue')
+                    # print('Z Issue')
                     it = it + 1
                     loop = True
         # If it worked, save it
@@ -186,7 +187,7 @@ if __name__ == "__main__":
     body = []
     for row in full_data:
         if '#' in row[0]:
-            header.append(row[1:])
+            header.append(row)#[1:]
         else:
             body.append(row)
     # ['phi1', 'PHI', 'phi2', 'x', 'y', 'z', 'FeatureId', 'PhaseId', 'Symmetry']
@@ -196,6 +197,7 @@ if __name__ == "__main__":
     # print(vars(mesh))
     # print(" ")
 
+    # Adding Phi
     # Define new coordinates to add
     if 'x' in cl_args.dir:
         new_x = np.asarray([mesh.ctr_xmax + (n+1)*mesh.dx for n in range(cl_args.planes)])
@@ -208,9 +210,9 @@ if __name__ == "__main__":
     for set in new_coords:
         phi_txt.append(['0.0','0.0','0.0',str(set[0]),str(set[1]),str(set[2]),str(f_num),'2','43'])
 
-    # Adjust the header values
+    # Adjust the header values to include phi addition
     new_xmax = mesh.xmax + (cl_args.planes)*mesh.dx
-    for row in full_data:
+    for row in header:
         if len(row)>1:
             # Assuming positive x direction for extra planes
             if 'X_MAX' in row[1]:
@@ -226,14 +228,30 @@ if __name__ == "__main__":
     volume_solid = mesh.ymax * mesh.ymax
     if dim == 3:
         volume_solid = volume_solid * mesh.zmax
-    print(volume_solid)
+
     # Generate Pore centers and radii
     # pore_ctrs = np.random.rand(cl_args.pores,3)
     rads = vol_per_sphere(volume_solid,dim)
     pore_ctrs = generate_centers(rads,mesh)
 
     # Find and replace the gridpoints in the pores
-    quit()
+    for pore in range(cl_args.pores):
+        ctr = pore_ctrs[pore]
+        loop_rad = rads[pore]
+        pore_id = mesh.feature_id_max + 2 + pore
+        for row in data:
+            if distance([row[3],row[4],row[5]], ctr) <= loop_rad:
+                row[6] = pore_id
+                row[7] = 2
+
+    # Rebuild the data as a list so i can make the featureID and phaseID whole numbers
+    body_list = []
+    for row in data:
+        # ['phi1', 'PHI', 'phi2', 'x', 'y', 'z', 'FeatureId', 'PhaseId', 'Symmetry']
+        body_list.append([str(row[0]),str(row[1]),str(row[2]),
+                          str(row[3]),str(row[4]),str(row[5]),
+                          str(row[6]).split('.')[0],str(row[7]).split('.')[0],str(row[8]).split('.')[0]])
+
     # Output Naming
     if cl_args.out is None:
         out_name = txt_file.rsplit('.',1)[0] + '_plusVoid.txt'
@@ -242,10 +260,12 @@ if __name__ == "__main__":
     else:
         out_name = cl_args.out + '.txt'
 
-
+    # Write all the data to a new txt file
     with open(out_name,'w') as file:
         writer = csv.writer(file, delimiter=' ')
-        writer.writerows(full_data)
+        # writer.writerows(full_data)
+        writer.writerows(header)
+        writer.writerows(body_list)
         writer.writerows(phi_txt)
 
 
