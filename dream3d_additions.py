@@ -1,7 +1,7 @@
 '''Adds an external void phase to extend a Dream3D.txt file for use in MOOSE
 
 Returns:
-    out.gif or out.avi
+    out.txt file for ebsd reader in Moose
 '''
 from PIL import Image
 import glob
@@ -35,6 +35,8 @@ def parseArgs():
                                 help='Number of pores to add.')
     parser.add_argument('--volume','-v',type=int, default=5,
                                 help='Volume percentage (1-100) to make the pores.')
+    parser.add_argument('--scale','-s',type=int, default=1,
+                                help='Multiplier to apply to all dimensions to scale the domain (default=1)')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -208,7 +210,7 @@ if __name__ == "__main__":
     phi_txt = []
     f_num = mesh.feature_id_max + 1
     for set in new_coords:
-        phi_txt.append(['0.0','0.0','0.0',str(set[0]),str(set[1]),str(set[2]),str(f_num),'2','43'])
+        phi_txt.append(['0.0','0.0','0.0',str(cl_args.scale*set[0]),str(cl_args.scale*set[1]),str(cl_args.scale*set[2]),str(f_num),'2','43'])
 
     # Adjust the header values to include phi addition
     new_xmax = mesh.xmax + (cl_args.planes)*mesh.dx
@@ -218,7 +220,9 @@ if __name__ == "__main__":
             if 'X_MAX' in row[1]:
                 row[2] = str(new_xmax)
             if 'X_DIM' in row[1]:
-                row[2] = str(int(row[2]) + cl_args.planes)
+                row[2] = str(float(row[2]) + cl_args.planes)
+            if 'STEP' in row[1] or 'MAX' in row[1]:
+                row[2] = str( cl_args.scale * float(row[2]))
 
 
     # Calculate the solid volume
@@ -249,7 +253,7 @@ if __name__ == "__main__":
     for row in data:
         # ['phi1', 'PHI', 'phi2', 'x', 'y', 'z', 'FeatureId', 'PhaseId', 'Symmetry']
         body_list.append([str(row[0]),str(row[1]),str(row[2]),
-                          str(row[3]),str(row[4]),str(row[5]),
+                          str(cl_args.scale*row[3]),str(cl_args.scale*row[4]),str(cl_args.scale*row[5]),
                           str(row[6]).split('.')[0],str(row[7]).split('.')[0],str(row[8]).split('.')[0]])
 
     # Output Naming
