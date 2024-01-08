@@ -38,7 +38,7 @@ if __name__ == "__main__":
     cl_args = parseArgs()
 
     bypass = False
-    if glob.glob('combined_voids_*.csv'):
+    if glob.glob('cut_voids_*.csv'):
         bypass = True
     if cl_args.force == True:
         bypass = False
