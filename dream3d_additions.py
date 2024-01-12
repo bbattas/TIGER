@@ -37,6 +37,8 @@ def parseArgs():
                                 help='Volume percentage (1-100) to make the pores.')
     parser.add_argument('--scale','-s',type=int, default=1,
                                 help='Multiplier to apply to all dimensions to scale the domain (default=1)')
+    parser.add_argument('--spacing','-x',type=float, default=1,
+                                help='Fraction of the average pore radius to include as the minimum seperation between pores (default=1)')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -115,10 +117,11 @@ def distance(pt_list1,pt_list2):
                      (pt_list1[2]-pt_list2[2])**2)
     return dist
 
-def generate_centers(radii,mesh,max_its=100):
+def generate_centers(radii,mesh,min_sep,max_its=10000):
     coords = []
     it = 0
     for n in range(cl_args.pores):
+        # print(n)
         loop = True
         while loop == True:
             # Random location
@@ -128,7 +131,7 @@ def generate_centers(radii,mesh,max_its=100):
             if n != 0:
                 for i in range(0, n):
                     dist = distance(ctr,coords[i])
-                    if dist < (radii[n] + radii[i]):
+                    if dist < (radii[n] + radii[i] + min_sep):
                         if it < max_its:
                             it = it + 1
                             loop = True
@@ -142,16 +145,16 @@ def generate_centers(radii,mesh,max_its=100):
             # Check if the pores overlap a boundary
             # print(ctr)
             # print(ctr[0], radii[n])
-            if (ctr[0] - radii[n] < 0) or (ctr[0] + radii[n] > mesh.xmax):
+            if (ctr[0] - radii[n] - min_sep < 0) or (ctr[0] + radii[n] + min_sep > mesh.xmax):
                 # print('X Issue')
                 it = it + 1
                 loop = True
-            if (ctr[1] - radii[n] < 0) or (ctr[1] + radii[n] > mesh.ymax):
+            if (ctr[1] - radii[n] - min_sep < 0) or (ctr[1] + radii[n] + min_sep > mesh.ymax):
                 # print('Y Issue')
                 it = it + 1
                 loop = True
             if dim == 3:
-                if (ctr[2] - radii[n] < 0) or (ctr[2] + radii[n] > mesh.zmax):
+                if (ctr[2] - radii[n] - min_sep < 0) or (ctr[2] + radii[n] + min_sep > mesh.zmax):
                     # print('Z Issue')
                     it = it + 1
                     loop = True
@@ -229,14 +232,15 @@ if __name__ == "__main__":
     dim = 3
     if mesh.zmax == 0.0:
         dim = 2
-    volume_solid = mesh.ymax * mesh.ymax
+    volume_solid = mesh.xmax * mesh.ymax
     if dim == 3:
         volume_solid = volume_solid * mesh.zmax
-
+    print(volume_solid)
     # Generate Pore centers and radii
     # pore_ctrs = np.random.rand(cl_args.pores,3)
     rads = vol_per_sphere(volume_solid,dim)
-    pore_ctrs = generate_centers(rads,mesh)
+    min_sep = np.average(rads) * cl_args.spacing
+    pore_ctrs = generate_centers(rads,mesh,min_sep)
 
     # Find and replace the gridpoints in the pores
     for pore in range(cl_args.pores):
