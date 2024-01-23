@@ -24,17 +24,17 @@ def parseArgs():
     '''
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir','-d',choices=['x','y','z'],default='x',
-                                help='Coordinate direction (x,y,z) to add the phi volume. Defaults to +x')
+                                help='OUTDATED: Only does x direction.  Coordinate direction (x,y,z) to add the phi volume. Defaults to +x')
     parser.add_argument('--planes','-n',type=int, default=20,
-                                help='Number of element planes of phi to add.')
+                                help='Number of element planes of phi to add. Default = 20')
     parser.add_argument('--input','-i',type=str,
                                 help='Name of Dream3D txt file to glob.glob(*__*.txt) find and read.')
     parser.add_argument('--out','-o',type=str,
                                 help='Name of output txt file. If not specified will use [inputName]_plusVoid.txt')
     parser.add_argument('--pores','-p',type=int, default=5,
-                                help='Number of pores to add.')
+                                help='Number of pores to add. Default = 5')
     parser.add_argument('--volume','-v',type=int, default=5,
-                                help='Volume percentage (1-100) to make the pores.')
+                                help='Volume percentage (1-100) to make the pores. Default = 5')
     parser.add_argument('--scale','-s',type=int, default=1,
                                 help='Multiplier to apply to all dimensions to scale the domain (default=1)')
     parser.add_argument('--spacing','-x',type=float, default=1,
@@ -228,29 +228,35 @@ if __name__ == "__main__":
                 row[2] = str( cl_args.scale * float(row[2]))
 
 
-    # Calculate the solid volume
-    dim = 3
-    if mesh.zmax == 0.0:
-        dim = 2
-    volume_solid = mesh.xmax * mesh.ymax
-    if dim == 3:
-        volume_solid = volume_solid * mesh.zmax
-    print(volume_solid)
-    # Generate Pore centers and radii
-    # pore_ctrs = np.random.rand(cl_args.pores,3)
-    rads = vol_per_sphere(volume_solid,dim)
-    min_sep = np.average(rads) * cl_args.spacing
-    pore_ctrs = generate_centers(rads,mesh,min_sep)
+    # Porosity Internal
+    if cl_args.pores > 0:
+        # Calculate the solid volume
+        dim = 3
+        if mesh.zmax == 0.0:
+            dim = 2
+        volume_solid = mesh.xmax * mesh.ymax
+        if dim == 3:
+            volume_solid = volume_solid * mesh.zmax
+        # print(volume_solid)
+        # Generate Pore centers and radii
+        # pore_ctrs = np.random.rand(cl_args.pores,3)
+        rads = vol_per_sphere(volume_solid,dim)
+        min_sep = np.average(rads) * cl_args.spacing
+        pore_ctrs = generate_centers(rads,mesh,min_sep)
+        print('Centers: ')
+        print(pore_ctrs)
+        print("Radii: ")
+        print(rads)
 
-    # Find and replace the gridpoints in the pores
-    for pore in range(cl_args.pores):
-        ctr = pore_ctrs[pore]
-        loop_rad = rads[pore]
-        pore_id = mesh.feature_id_max + 2 + pore
-        for row in data:
-            if distance([row[3],row[4],row[5]], ctr) <= loop_rad:
-                row[6] = pore_id
-                row[7] = 2
+        # Find and replace the gridpoints in the pores
+        for pore in range(cl_args.pores):
+            ctr = pore_ctrs[pore]
+            loop_rad = rads[pore]
+            pore_id = mesh.feature_id_max + 2 + pore
+            for row in data:
+                if distance([row[3],row[4],row[5]], ctr) <= loop_rad:
+                    row[6] = pore_id
+                    row[7] = 2
 
     # Rebuild the data as a list so i can make the featureID and phaseID whole numbers
     body_list = []
