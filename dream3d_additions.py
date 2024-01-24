@@ -39,6 +39,8 @@ def parseArgs():
                                 help='Multiplier to apply to all dimensions to scale the domain (default=1)')
     parser.add_argument('--spacing','-x',type=float, default=1,
                                 help='Fraction of the average pore radius to include as the minimum seperation between pores (default=1)')
+    parser.add_argument('--phase3',action='store_true',
+                                help='Make internal porosity a third phase, seperate from external.')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -249,6 +251,9 @@ if __name__ == "__main__":
         print(rads)
 
         # Find and replace the gridpoints in the pores
+        pore_phase = int(2)
+        if cl_args.phase3:
+            pore_phase = int(3)
         for pore in range(cl_args.pores):
             ctr = pore_ctrs[pore]
             loop_rad = rads[pore]
@@ -256,7 +261,7 @@ if __name__ == "__main__":
             for row in data:
                 if distance([row[3],row[4],row[5]], ctr) <= loop_rad:
                     row[6] = pore_id
-                    row[7] = 2
+                    row[7] = pore_phase
 
     # Rebuild the data as a list so i can make the featureID and phaseID whole numbers
     body_list = []
