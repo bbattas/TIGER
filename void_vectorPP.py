@@ -108,6 +108,7 @@ if __name__ == "__main__":
         cutdf['time'] = outdf['time']
         cutdf['void_tracker'] = outdf['void_tracker']
         cutdf['grain_tracker'] = outdf['grain_tracker']
+        cutdf['runtime'] = outdf['runtime']
 
         cutName = "cut_" + postprocessorName + "_" + inputName + ".csv"
         cutdf.to_csv(cutName)
