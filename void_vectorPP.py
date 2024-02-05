@@ -76,7 +76,7 @@ if __name__ == "__main__":
             df.loc[len(df.index)] = [large, tot, bubbles]
 
         # GRAIN SIZE(S)
-        if argparse.grain:
+        if cl_args.grain:
             dfg = pd.DataFrame(columns=['avg_vol'])
             grain_files = sorted(glob.glob(cwd + '/*' + cl_args.gname + "*_*.csv"))
             # print(grain_files)
