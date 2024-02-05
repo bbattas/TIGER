@@ -4,6 +4,7 @@ import glob
 import pandas as pd
 from matplotlib import pyplot as plt
 import argparse
+import math
 
 # # For sorting to deal with no leading zeros
 # def natural_sort_key(s, _nsre=re.compile('([0-9]+)')):
@@ -28,6 +29,12 @@ def parseArgs():
     parser = argparse.ArgumentParser()
     parser.add_argument('--force','-f',action='store_true',
                                 help='Overwrite existing combined_csv if there is one')
+    parser.add_argument('--grain','-g',action='store_true',
+                                help='Calculate grain size from *grain__sizes*.csv')
+    parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
+                        help='Dimensions for grain size calculation (Default=2)')
+    parser.add_argument('--gname',type=str, default='grain_sizes',
+                        help='Grain size VPP csv filename to *glob*. Default = grain_sizes')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -49,6 +56,7 @@ if __name__ == "__main__":
         for file in glob.glob("*.i"):
             inputName = os.path.splitext(file)[0]
         print("Input File is : " + inputName)
+        # VOIDS
         postprocessorName = 'voids'
 
         outputName = inputName + "_out_" + postprocessorName + "_*.csv"
@@ -67,6 +75,29 @@ if __name__ == "__main__":
             # df.loc[df.shape[0]] = tempDF['feature_volumes'].sum()-maxPore
             df.loc[len(df.index)] = [large, tot, bubbles]
 
+        # GRAIN SIZE(S)
+        if argparse.grain:
+            dfg = pd.DataFrame(columns=['avg_vol'])
+            grain_files = sorted(glob.glob(cwd + '/*' + cl_args.gname + "*_*.csv"))
+            # print(grain_files)
+            for files in grain_files:
+                tempDF = pd.read_csv(files)
+                avg_vol = tempDF['feature_volumes'].mean()
+                # df.loc[df.shape[0]] = tempDF['feature_volumes'].sum()-maxPore
+                dfg.loc[len(dfg.index)] = [avg_vol]
+            # Grain Size from area/vol (ESD)
+            if cl_args.dim == 2:
+                dfg['grain_size'] = 2 * (dfg['avg_vol'] / math.pi)**(1/2)
+            elif cl_args.dim == 3:
+                dfg['grain_size'] = (6 * dfg['avg_vol'] / math.pi)**(1/3)
+            else:
+                dfg['grain_size'] = 0
+            # Add to pore df
+            df['grain_size'] = dfg['grain_size']
+            df['avg_grain_vol'] = dfg['avg_vol']
+
+
+
         combinedName = "combined_" + postprocessorName + "_" + inputName + ".csv"
         df.to_csv(combinedName)
         print("The combined csv file is : " + combinedName)
@@ -76,6 +107,7 @@ if __name__ == "__main__":
         outdf = pd.read_csv(inputName + "_out.csv")
         cutdf['time'] = outdf['time']
         cutdf['void_tracker'] = outdf['void_tracker']
+        cutdf['grain_tracker'] = outdf['grain_tracker']
 
         cutName = "cut_" + postprocessorName + "_" + inputName + ".csv"
         cutdf.to_csv(cutName)
