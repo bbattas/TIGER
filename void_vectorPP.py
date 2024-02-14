@@ -28,13 +28,15 @@ def parseArgs():
     '''
     parser = argparse.ArgumentParser()
     parser.add_argument('--force','-f',action='store_true',
-                                help='Overwrite existing combined_csv if there is one')
+                        help='Overwrite existing combined_csv if there is one')
     parser.add_argument('--grain','-g',action='store_true',
-                                help='Calculate grain size from *grain__sizes*.csv')
+                        help='Calculate grain size from *grain__sizes*.csv')
     parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
                         help='Dimensions for grain size calculation (Default=2)')
     parser.add_argument('--gname',type=str, default='grain_sizes',
                         help='Grain size VPP csv filename to *glob*. Default = grain_sizes')
+    parser.add_argument('--all','-a',action='store_true',
+                        help='Append a list of columns/PPs to the cut*.csv file from the *_out.csv')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -109,6 +111,11 @@ if __name__ == "__main__":
         cutdf['void_tracker'] = outdf['void_tracker']
         cutdf['grain_tracker'] = outdf['grain_tracker']
         cutdf['runtime'] = outdf['runtime']
+        all_pp_list = ['total_phi','total_rhoi','total_rhov']
+        if cl_args.all:
+            for n in all_pp_list:
+                if n in outdf.columns:
+                    cutdf[n] = outdf[n]
 
         cutName = "cut_" + postprocessorName + "_" + inputName + ".csv"
         cutdf.to_csv(cutName)
