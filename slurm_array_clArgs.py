@@ -75,7 +75,7 @@ if __name__ == "__main__":
     # Compile the void and grain VPPs with the normal csv out
     if cl_args.csv:
         cwd = os.getcwd()
-        for n in glob.glob('*/', recursive = True):
+        for n in glob.glob('*_csv/', recursive = True):
             # print(n)
             # fr_1.00e-10_csv/ is n, while base is fr_1.00e-10
             base_csv = n.rsplit('_',1)[0]
