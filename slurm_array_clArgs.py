@@ -29,6 +29,8 @@ def parseArgs():
                                 help='Create the .txt file, default off')
     parser.add_argument('--csv','-c', action='store_true',
                                 help='Compile the voids/grains csv data, default off')
+    parser.add_argument('--multi','-m', action='store_true',
+                                help='Compile the voids/grains csv data in multiple p1/p2/etc directories, default off')
     parser.add_argument('--sort','-s', action='store_true',
                                 help='Present a sorted list of the generated csv files, default off')
     parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
@@ -131,3 +133,53 @@ if __name__ == "__main__":
         name_arr = name_arr[name_arr[:, 1].astype(float).argsort()]
         print(name_arr)
 
+    # Compile the void and grain VPPs with the normal csv out for multi-folder recovered simulations
+    if cl_args.multi:
+        cwd = os.getcwd()
+        for dir_n in glob.glob('*_csv/', recursive = True):
+            # print(n)
+            # fr_1.00e-10_csv/ is n, while base is fr_1.00e-10
+            n = dir_n.rsplit('_',1)[0]
+            base_csv = n
+            prefix = n.split('fr_')[0]
+            if prefix:
+                base_csv = "_".join(n.rsplit("_", 2)[1:])
+            # print(base_csv)
+            # Names and files
+            out_name = dir_n + '/' + base_csv + '.csv'
+            void_name = dir_n + '/' + base_csv + '_voids_*.csv'
+            void_files = sorted(glob.glob(void_name))
+            grain_name = dir_n + '/' + base_csv + '_grain_sizes_*.csv'
+            grain_files = sorted(glob.glob(grain_name))
+            output_name = prefix + base_csv + '_all.csv'
+            # Voids
+            vdf = pd.DataFrame(columns=['largest','total','bubbles'])
+            for files in void_files:
+                tempDF = pd.read_csv(files)
+                large = tempDF['feature_volumes'].max()
+                tot = tempDF['feature_volumes'].sum()
+                bubbles = tot - large
+                vdf.loc[len(vdf.index)] = [large, tot, bubbles]
+            # Grains
+            dfg = pd.DataFrame(columns=['avg_vol'])
+            # print(grain_files)
+            for files in grain_files:
+                tempDF = pd.read_csv(files)
+                avg_vol = tempDF['feature_volumes'].mean()
+                # df.loc[df.shape[0]] = tempDF['feature_volumes'].sum()-maxPore
+                dfg.loc[len(dfg.index)] = [avg_vol]
+            # Grain Size from area/vol (ESD)
+            if cl_args.dim == 2:
+                dfg['grain_size'] = 2 * (dfg['avg_vol'] / math.pi)**(1/2)
+            elif cl_args.dim == 3:
+                dfg['grain_size'] = (6 * dfg['avg_vol'] / math.pi)**(1/3)
+            else:
+                dfg['grain_size'] = 0
+            # Postprocessors and Time
+            df = pd.read_csv(out_name)
+            # Check if the header exists in the csv
+            if 'time' not in df.columns:
+                df = pd.read_csv(out_name,header=None)
+            # Add void and grain stuff
+            df = pd.concat([df,vdf,dfg], axis=1)
+            df.to_csv(output_name)
