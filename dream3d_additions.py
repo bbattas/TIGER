@@ -249,6 +249,12 @@ if __name__ == "__main__":
         print(pore_ctrs)
         print("Radii: ")
         print(rads)
+        # Print for moose input:
+        print('Or for MOOSE IC')
+        print('R: ',np.round(cl_args.scale*rads,2))
+        print(np.round(cl_args.scale*pore_ctrs.T,2))
+        # for n in range(len(rads)):
+
 
         # Find and replace the gridpoints in the pores
         pore_phase = int(2)
