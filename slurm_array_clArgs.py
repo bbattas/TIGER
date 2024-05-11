@@ -33,10 +33,30 @@ def parseArgs():
                                 help='Compile the voids/grains csv data in multiple p1/p2/etc directories, default off')
     parser.add_argument('--sort','-s', action='store_true',
                                 help='Present a sorted list of the generated csv files, default off')
+    parser.add_argument('--cwd', action='store_true',
+                                help='Run only on csv files in current directory, default off')
     parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
                         help='Dimensions for grain size calculation (Default=2)')
     cl_args = parser.parse_args()
     return cl_args
+
+
+
+def find_common_base_name(directory_path):
+    csv_files = [f for f in os.listdir(directory_path) if f.endswith('.csv')]
+
+    # Initialize the common base name with the first file's name (excluding extension)
+    common_base_name = csv_files[0].split('.')[0]
+
+    # Iterate over all files to find the shortest matching base name
+    for file in csv_files[1:]:
+        file_base_name = file.split('.')[0]
+        # Update the common base name to the longest common prefix
+        while not file_base_name.startswith(common_base_name):
+            common_base_name = common_base_name[:-1]
+
+    return common_base_name
+
 
 if __name__ == "__main__":
     print("__main__ Start")
@@ -183,3 +203,48 @@ if __name__ == "__main__":
             # Add void and grain stuff
             df = pd.concat([df,vdf,dfg], axis=1)
             df.to_csv(output_name)
+
+    # Compile the void and grain VPPs with the normal csv out for multi-folder recovered simulations
+    if cl_args.cwd:
+        cwd = os.getcwd()
+        base_csv = find_common_base_name(cwd)
+        print('Base csv name is: ', base_csv)
+        # print(base_csv)
+        # Names and files
+        out_name = base_csv + '.csv'
+        void_name = base_csv + '_voids_*.csv'
+        void_files = sorted(glob.glob(void_name))
+        grain_name = base_csv + '_grain_sizes_*.csv'
+        grain_files = sorted(glob.glob(grain_name))
+        output_name = base_csv + '_all.csv'
+        # Voids
+        vdf = pd.DataFrame(columns=['largest','total','bubbles'])
+        for files in void_files:
+            tempDF = pd.read_csv(files)
+            large = tempDF['feature_volumes'].max()
+            tot = tempDF['feature_volumes'].sum()
+            bubbles = tot - large
+            vdf.loc[len(vdf.index)] = [large, tot, bubbles]
+        # Grains
+        dfg = pd.DataFrame(columns=['avg_vol'])
+        # print(grain_files)
+        for files in grain_files:
+            tempDF = pd.read_csv(files)
+            avg_vol = tempDF['feature_volumes'].mean()
+            # df.loc[df.shape[0]] = tempDF['feature_volumes'].sum()-maxPore
+            dfg.loc[len(dfg.index)] = [avg_vol]
+        # Grain Size from area/vol (ESD)
+        if cl_args.dim == 2:
+            dfg['grain_size'] = 2 * (dfg['avg_vol'] / math.pi)**(1/2)
+        elif cl_args.dim == 3:
+            dfg['grain_size'] = (6 * dfg['avg_vol'] / math.pi)**(1/3)
+        else:
+            dfg['grain_size'] = 0
+        # Postprocessors and Time
+        df = pd.read_csv(out_name)
+        # Check if the header exists in the csv
+        if 'time' not in df.columns:
+            df = pd.read_csv(out_name,header=None)
+        # Add void and grain stuff
+        df = pd.concat([df,vdf,dfg], axis=1)
+        df.to_csv(output_name)
