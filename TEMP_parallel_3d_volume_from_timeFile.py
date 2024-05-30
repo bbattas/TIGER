@@ -20,20 +20,57 @@ import pandas as pd
 import math
 import sys
 import tracemalloc
+import argparse
+
+
+# CL Argument Parser
+parser = argparse.ArgumentParser()
+# parser.add_argument('--verbose','-v', action='store_true', help='Verbose output, default off')
+parser.add_argument('--cpus','-n',type=int, default=1,
+                            help='How many cpus, default=1')
+parser.add_argument('--max_xy','-x',type=float,required=True,
+                            help='''Max x&y for the 1/4 hull assuming center of symmetry is '''
+                            '''[max_xy,max_xy,max_z], Required, Default=None''')
+parser.add_argument('--max_z','-z',type=float,required=True,
+                            help='''Max z for the 1/4 hull assuming center of symmetry is '''
+                            '''[max_xy,max_xy,max_z], Required, Default=None''')
+parser.add_argument('--skip','-s',action='store_true',help='Skip last timestep/file, currently not working?')
+# parser.add_argument('--var','-i',type=str, default=default_vals.var_to_plot,
+#                             help='What variable to plot/calc, default='+str(default_vals.var_to_plot))
+# parser.add_argument('--threshold','-t',type=float, default=default_vals.var_threshold,
+#                             help='''What value to set as the threshold on the variable for plot/calc, '''
+#                             '''default='''+str(default_vals.var_threshold))
+# parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
+#                             help='Dimensions for grain size calculation (Default=2)')
+# parser.add_argument('--xcut','-x',type=float,default=default_vals.xcut,
+#                             help='Max x to include for hull/calculation, Default='+str(default_vals.xcut))
+# parser.add_argument('--subdirs','-s',action='store_true',
+#                             help='Run in all subdirectories (vs CWD), default=False')
+# parser.add_argument('--sequence',action='store_true',
+#                             help='Time as a sequence, default=False')
+# parser.add_argument('--n_frames','-f',type=int, default=default_vals.n_frames,
+#                             help='''How many frames for if sequence is true, '''
+#                             '''default='''+str(default_vals.n_frames))
+# parser.add_argument('--cutoff','-c',type=int, default=default_vals.cutoff,
+#                             help='''What time to stop at, if 0.0 uses all data. '''
+#                             '''default='''+str(default_vals.cutoff))
+
+cl_args = parser.parse_args()
+
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
 # 1st command line input is the number of cpus
 # 2nd command line input is 'skip' if you want to skip the last unique file
 
-n_cpu = int(sys.argv[1])
+n_cpu = cl_args.cpus
 var_to_plot = 'unique_grains' # OPs cant be plotted, needs to be elements not nodes
 # z_plane = 10000#19688/2
 sequence = False
 n_frames = 300
 
 quarter_hull = True
-max_xy = 1000#9000#1000#2000#1000
-max_z = 692#5800#692#1384#692
+max_xy = cl_args.max_xy
+max_z = cl_args.max_z
 #ADD OUTSIDE BOUNDS ERROR!!!!!!!!!!!!!!
 dirName = os.path.split(os.getcwd())[-1]
 
@@ -195,11 +232,10 @@ if __name__ == "__main__":
     op_max, csv_header = t0_opCount_headerBuild(idx_frames)
     print("Memory:",tracemalloc.get_traced_memory())
 
-    if len(sys.argv) > 2:
-        if "skip" in sys.argv[2]:
-            print("NOTE: Skipping last file as indicated with 'skip' flag")
-            print(" ")
-            name_unq = name_unq[:-1]
+    if cl_args.skip:
+        print("NOTE: Skipping last file as indicated with 'skip' flag")
+        print(" ")
+        name_unq = name_unq[:-1]
 
     #CREATE A PROCESS POOL
     cpu_pool = mp.Pool(n_cpu)
