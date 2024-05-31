@@ -41,6 +41,8 @@ def parseArgs():
                                 help='Fraction of the average pore radius to include as the minimum seperation between pores (default=1)')
     parser.add_argument('--phase3',action='store_true',
                                 help='Make internal porosity a third phase, seperate from external.')
+    parser.add_argument('--force','-f',action='store_true',
+                                help='Force the solve for pore center placement to keep resetting, may cause infinite loop!')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -119,7 +121,7 @@ def distance(pt_list1,pt_list2):
                      (pt_list1[2]-pt_list2[2])**2)
     return dist
 
-def generate_centers(radii,mesh,min_sep,max_its=10000):
+def generate_centers(radii,mesh,min_sep,max_its=100000):
     coords = []
     it = 0
     for n in range(cl_args.pores):
@@ -164,6 +166,54 @@ def generate_centers(radii,mesh,min_sep,max_its=10000):
         coords.append(ctr)
     # print(it)
     return np.asarray(coords)
+
+def force_generate_centers(radii, mesh, min_sep, max_its=100000):
+    while True:  # Continue until we successfully place all pores
+        coords = []
+        it = 0
+        for n in range(cl_args.pores):
+            loop = True
+            while loop:
+                # Random location
+                ctr = [mesh.xmax, mesh.ymax, mesh.zmax] * np.random.rand(1, 3)
+                ctr = ctr[0]
+
+                # Check if the pores overlap each other
+                if n != 0:
+                    overlap = False
+                    for i in range(n):
+                        dist = distance(ctr, coords[i])
+                        if dist < (radii[n] + radii[i] + min_sep):
+                            if it < max_its:
+                                it += 1
+                                overlap = True
+                                break
+                            else:
+                                print("Max iterations reached; restarting process.")
+                                loop = False
+                                break
+                    if overlap:
+                        continue
+
+                # Check if the pores overlap a boundary
+                if any([
+                    (ctr[0] - radii[n] - min_sep < 0) or (ctr[0] + radii[n] + min_sep > mesh.xmax),
+                    (ctr[1] - radii[n] - min_sep < 0) or (ctr[1] + radii[n] + min_sep > mesh.ymax),
+                    dim == 3 and ((ctr[2] - radii[n] - min_sep < 0) or (ctr[2] + radii[n] + min_sep > mesh.zmax))
+                ]):
+                    it += 1
+                    continue
+
+                # If it worked, save it
+                coords.append(ctr)
+                loop = False
+
+            if it >= max_its:
+                print("Max iterations reached; restarting process.")
+                break  # Break the outer for loop to restart the process
+
+        if len(coords) == cl_args.pores:  # If all pores are placed successfully, exit the loop
+            return np.asarray(coords)
 
 
 
@@ -244,7 +294,10 @@ if __name__ == "__main__":
         # pore_ctrs = np.random.rand(cl_args.pores,3)
         rads = vol_per_sphere(volume_solid,dim)
         min_sep = np.average(rads) * cl_args.spacing
-        pore_ctrs = generate_centers(rads,mesh,min_sep)
+        if cl_args.force:
+            pore_ctrs = force_generate_centers(rads,mesh,min_sep)
+        else:
+            pore_ctrs = generate_centers(rads,mesh,min_sep)
         print('Centers: ')
         print(pore_ctrs)
         print("Radii: ")
