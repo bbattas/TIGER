@@ -170,16 +170,18 @@ def find_files():
     e_names = []
     if cl_args.subdirs:
         for dir_n in glob.glob('*/', recursive=True):
-            e_files_in_subdir = glob.glob(dir_n + '*.e*')
+            e_files_in_subdir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(dir_n + "*.e.*")]
+            # e_files_in_subdir = glob.glob(dir_n + '*.e*')
             if e_files_in_subdir:
                 first_file = e_files_in_subdir[0]
-                trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+                # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+                trimmed_file = first_file #+ '.e*'
                 e_names.append(trimmed_file)
     else:
-        e_files_in_dir = glob.glob('*.e*')
+        e_files_in_dir = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
         if e_files_in_dir:
             first_file = e_files_in_dir[0]
-            trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+            trimmed_file = first_file #.split('.e', 1)[0] + '.e*'
             e_names.append(trimmed_file)
     if not e_names:
         raise ValueError('No files found matching *.e*, make sure to specify subdirectories or not')
