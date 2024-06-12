@@ -68,6 +68,8 @@ def argparser():
                                 help='Use log scale for plotting, default=False')
     parser.add_argument('--scale',action='store_true',
                                 help='Force plotting scale to [0-1], default=False')
+    parser.add_argument('--exo','-e',action='store_true',
+                                help='Look for and use Exodus files instead of Nemesis, default=False')
     parser.add_argument('--force','-p',action='store_true',
                                 help='If parallel isnt working try this to use fork method on MultiPool, default=False')
     # parser.add_argument('--threshold','-t',type=float, default=default_vals.var_threshold,
@@ -193,19 +195,35 @@ def find_files():
     e_names = []
     if cl_args.subdirs:
         for dir_n in glob.glob('*/', recursive=True):
-            e_files_in_subdir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(dir_n + "*.e.*")]
-            # e_files_in_subdir = glob.glob(dir_n + '*.e*')
+            if cl_args.exo:
+                e_files_in_subdir = glob.glob(dir_n + '*.e')
+                if e_files_in_subdir:
+                    first_file = e_files_in_subdir[0]
+                    # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+                    trimmed_file = first_file #+ '.e*'
+                    e_names.append(trimmed_file)
+            else:
+                e_files_in_subdir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(dir_n + "*.e.*")]
+                # e_files_in_subdir = glob.glob(dir_n + '*.e*')
+                if e_files_in_subdir:
+                    first_file = e_files_in_subdir[0]
+                    # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+                    trimmed_file = first_file #+ '.e*'
+                    e_names.append(trimmed_file)
+    else:
+        if cl_args.exo:
+            e_files_in_subdir = glob.glob('*.e')
             if e_files_in_subdir:
                 first_file = e_files_in_subdir[0]
                 # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
                 trimmed_file = first_file #+ '.e*'
                 e_names.append(trimmed_file)
-    else:
-        e_files_in_dir = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
-        if e_files_in_dir:
-            first_file = e_files_in_dir[0]
-            trimmed_file = first_file #.split('.e', 1)[0] + '.e*'
-            e_names.append(trimmed_file)
+        else:
+            e_files_in_dir = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
+            if e_files_in_dir:
+                first_file = e_files_in_dir[0]
+                trimmed_file = first_file #.split('.e', 1)[0] + '.e*'
+                e_names.append(trimmed_file)
     if not e_names:
         raise ValueError('No files found matching *.e*, make sure to specify subdirectories or not')
     e_names.sort(key=natural_sort_key)
