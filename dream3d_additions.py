@@ -14,6 +14,9 @@ from itertools import product
 import csv
 import math
 import time
+from scipy.spatial import KDTree
+import matplotlib.pyplot as plt
+
 
 
 def parseArgs():
@@ -25,14 +28,14 @@ def parseArgs():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir','-d',choices=['x','y','z'],default='x',
                                 help='OUTDATED: Only does x direction.  Coordinate direction (x,y,z) to add the phi volume. Defaults to +x')
-    parser.add_argument('--planes','-n',type=int, default=20,
-                                help='Number of element planes of phi to add. Default = 20')
+    parser.add_argument('--planes','-n',type=int, default=0,
+                                help='Number of element planes of phi to add. Default = 0') #20
     parser.add_argument('--input','-i',type=str,
                                 help='Name of Dream3D txt file to glob.glob(*__*.txt) find and read.')
     parser.add_argument('--out','-o',type=str,
                                 help='Name of output txt file. If not specified will use [inputName]_plusVoid.txt')
-    parser.add_argument('--pores','-p',type=int, default=5,
-                                help='Number of pores to add. Default = 5')
+    parser.add_argument('--pores','-p',type=int, default=0,
+                                help='Number of pores to add. Default = 0')
     parser.add_argument('--volume','-v',type=int, default=5,
                                 help='Volume percentage (1-100) to make the pores. Default = 5')
     parser.add_argument('--scale','-s',type=int, default=1,
@@ -43,8 +46,30 @@ def parseArgs():
                                 help='Make internal porosity a third phase, seperate from external.')
     parser.add_argument('--force','-f',action='store_true',
                                 help='Force the solve for pore center placement to keep resetting, may cause infinite loop!')
+    parser.add_argument('--irr',action='store_true',
+                                help='Use irradiation based cv and ci values (hard coded to 1600K).')
+    parser.add_argument('--noc',action='store_true',
+                                help='Do not add concentration columns (Adds them by default).')
+    parser.add_argument('--nnn',type=int, default=None,
+                                help='Number of nearest neighbors for cGB. Default = 8 (2D) / 26 (3D)')
     cl_args = parser.parse_args()
     return cl_args
+
+class concs:
+    cv_b = 2.424e-6
+    cv_gb = 5.130e-3
+    cv_v = 1.0
+    ci_b = 1.667e-32
+    ci_gb = 6.170e-8
+    ci_v = 0.0
+
+class concs_irr:
+    cv_b = 3.877e-4
+    cv_gb = 4.347e-3
+    cv_v = 1.0
+    ci_b = 7.258e-9
+    ci_gb = 5.900e-6
+    ci_v = 0.0
 
 class header_vals:
     def __init__(self, x, y, z, feature_id):
@@ -216,10 +241,72 @@ def force_generate_centers(radii, mesh, min_sep, max_its=100000):
             return np.asarray(coords)
 
 
+def create_c_columns(data):
+    phase_id = data[:, 7]
+    cv = np.where(phase_id == 1, cs.cv_b, cs.cv_v)
+    ci = np.where(phase_id == 1, cs.ci_b, cs.ci_v)
+    return cv,ci
+
+
+def find_nearest_neighbors_and_update_cgb(data,nnn,mesh):
+    x = data[:, 3]
+    y = data[:, 4]
+    z = data[:, 5]
+    feature_id = data[:, 6]
+    phase_id = data[:, 7]
+    cv,ci = create_c_columns(data)
+    cvgb = cs.cv_gb
+    cigb = cs.ci_gb
+
+    # Nearest Neighbors (1 for the point itself + N neighbors)
+    if nnn:
+        print('Nearest neighbors defined')
+        k = nnn + 1
+    else:
+        if mesh.dim == 2:
+            k = 9
+        elif mesh.dim == 3:
+            k = 27
+        else:
+            raise ValueError('Dimension in Number of nearest neighbors calc needs to be 2 or 3 not '+str(mesh.dim))
+
+    # Set max distance so it isnt weird on boundaries
+    maxdist = 1.95 * max(mesh.dx,mesh.dy,mesh.dz)
+    # Create KDTree for efficient neighbor search
+    points = np.column_stack((x, y, z))
+    tree = KDTree(points)
+
+    # Query for the k-1 nearest neighbors (k includes the point itself)
+    distances, indices = tree.query(points, k=k)
+
+    for i in range(len(points)):
+        if phase_id[i] == 2: #skip this point if void phase
+            # cv[i] = cs.cv_v #already assign void in the initial c column
+            continue
+        current_feature_id = feature_id[i] #do something for void phase too!
+        for j in range(1, k):  # Skip the first index as it is the point itself
+            neighbor_index = indices[i, j]
+            # If neighbor has a different feat_id and isnt phase 2
+            if feature_id[neighbor_index] != current_feature_id and phase_id[neighbor_index] != 2:
+                if distances[i,j] < maxdist:
+                    cv[i] = cvgb #cs.cv_gb
+                    ci[i] = cigb
+                    break
+
+    return np.column_stack((data, cv, ci))
+
+
+
+
+
 
 if __name__ == "__main__":
     print("__main__ Start")
     cl_args = parseArgs()
+    if cl_args.irr:
+        cs = concs_irr()
+    else:
+        cs = concs()
 
     # Find the input .txt file
     txt_names = []
@@ -255,29 +342,31 @@ if __name__ == "__main__":
     # print(" ")
 
     # Adding Phi
-    # Define new coordinates to add
-    if 'x' in cl_args.dir:
-        new_x = np.asarray([mesh.ctr_xmax + (n+1)*mesh.dx for n in range(cl_args.planes)])
-        new_y = mesh.yu
-        new_z = mesh.zu
-    new_coords = list(product(new_x,new_y,new_z))
-
     phi_txt = []
-    f_num = mesh.feature_id_max + 1
-    for set in new_coords:
-        phi_txt.append(['0.0','0.0','0.0',str(cl_args.scale*set[0]),str(cl_args.scale*set[1]),str(cl_args.scale*set[2]),str(f_num),'2','43'])
+    if cl_args.planes > 0:
+        # Define new coordinates to add
+        if 'x' in cl_args.dir:
+            new_x = np.asarray([mesh.ctr_xmax + (n+1)*mesh.dx for n in range(cl_args.planes)])
+            new_y = mesh.yu
+            new_z = mesh.zu
+        new_coords = list(product(new_x,new_y,new_z))
 
-    # Adjust the header values to include phi addition
-    new_xmax = mesh.xmax + (cl_args.planes)*mesh.dx
-    for row in header:
-        if len(row)>1:
-            # Assuming positive x direction for extra planes
-            if 'X_MAX' in row[1]:
-                row[2] = str(new_xmax)
-            if 'X_DIM' in row[1]:
-                row[2] = str(float(row[2]) + cl_args.planes)
-            if 'STEP' in row[1] or 'MAX' in row[1]:
-                row[2] = str( cl_args.scale * float(row[2]))
+        # phi_txt = []
+        f_num = mesh.feature_id_max + 1
+        for set in new_coords:
+            phi_txt.append(['0.0','0.0','0.0',str(cl_args.scale*set[0]),str(cl_args.scale*set[1]),str(cl_args.scale*set[2]),str(f_num),'2','43'])
+
+        # Adjust the header values to include phi addition
+        new_xmax = mesh.xmax + (cl_args.planes)*mesh.dx
+        for row in header:
+            if len(row)>1:
+                # Assuming positive x direction for extra planes
+                if 'X_MAX' in row[1]:
+                    row[2] = str(new_xmax)
+                if 'X_DIM' in row[1]:
+                    row[2] = str(float(row[2]) + cl_args.planes)
+                if 'STEP' in row[1] or 'MAX' in row[1]:
+                    row[2] = str( cl_args.scale * float(row[2]))
 
 
     # Porosity Internal
@@ -330,6 +419,24 @@ if __name__ == "__main__":
                           str(cl_args.scale*row[3]),str(cl_args.scale*row[4]),str(cl_args.scale*row[5]),
                           str(row[6]).split('.')[0],str(row[7]).split('.')[0],str(row[8]).split('.')[0]])
 
+
+    # Concentration columns(s)
+    combined_list = body_list + phi_txt
+    if not cl_args.noc:
+        data_with_c = find_nearest_neighbors_and_update_cgb(np.asarray(body_list,dtype=float),cl_args.nnn,mesh)
+        header[-1].append('Cv')
+        header[-1].append('Ci')
+        out_list = []
+        for row in data_with_c:
+            # ['phi1', 'PHI', 'phi2', 'x', 'y', 'z', 'FeatureId', 'PhaseId', 'Symmetry', 'Cv']
+            out_list.append([str(row[0]),str(row[1]),str(row[2]),
+                            str(cl_args.scale*row[3]),str(cl_args.scale*row[4]),str(cl_args.scale*row[5]),
+                            str(row[6]).split('.')[0],str(row[7]).split('.')[0],str(row[8]).split('.')[0],
+                            str(row[9]),str(row[10])])
+    else:
+        out_list = combined_list
+
+
     # Output Naming
     if cl_args.out is None:
         out_name = txt_file.rsplit('.',1)[0] + '_plusVoid.txt'
@@ -343,8 +450,10 @@ if __name__ == "__main__":
         writer = csv.writer(file, delimiter=' ')
         # writer.writerows(full_data)
         writer.writerows(header)
-        writer.writerows(body_list)
-        writer.writerows(phi_txt)
+        writer.writerows(out_list)
+        # writer.writerows(body_list)
+        # if phi_txt:
+        #     writer.writerows(phi_txt)
 
 
     print('Done')
