@@ -16,7 +16,7 @@ import time
 # from time import time
 import os
 import glob
-import pandas as pd
+# import pandas as pd
 import math
 import sys
 import tracemalloc
@@ -30,7 +30,7 @@ from tqdm import tqdm
 # from dask.diagnostics import ProgressBar
 import subprocess
 from joblib import Parallel, delayed
-from tqdm_joblib import tqdm_joblib
+# from tqdm_joblib import tqdm_joblib
 
 
 # ASSUMES A QUARTER HULL!!!
@@ -584,16 +584,47 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_m
             var_ctr = np.delete(mesh_ctr, np.where((c<cl_args.threshold))[0], axis=0)
             var_vol_weighted = np.delete(mesh_vol*c, np.where((c<cl_args.threshold))[0], axis=0)
             # Calculate in the hull
-            # temp_ctr = np.append(other_ctr,[[max_xy,max_xy]],axis=0)
-            db('Only running on a manually defined box for hull!')
-            ytop = np.amax(y)
-            topz = np.amax(z)
-            temp_ctr = np.array([[0, 0, 0], [0, ytop,0], [cl_args.xcut, ytop, 0], [cl_args.xcut, 0,0],
-                                 [0, 0, topz], [0, ytop,topz], [cl_args.xcut, ytop, topz], [cl_args.xcut, 0,topz]])
+            if cl_args.complexHull:
+                # Calculate the centroids of the grains from UG for only internal porosity
+                xug,yug,zug,cug = MF.get_data_at_time('unique_grains',t_frames[time_step])
+                c_int = np.rint(cug)
+                zeros = np.zeros_like(c_int)
+                # Calculate individual UniqueGrains volumes and centroids
+                grain_centroids = []
+                for n in range(op_max):
+                    tempVols = np.sum(np.where(c_int==(n-1),mesh_vol,zeros))
+                    if tempVols > 0.0 and n > 0:
+                        grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
+                                                 np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
+                                                 np.sum(np.where(c_int==(n-1),mesh_ctr[:,2] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros))])
+                # If there is only 1 or 0 grain centroids then skip this timestep and return -1
+                if len(grain_centroids) < 2:
+                    return -1
+                # Alter grain centroids to account for quarter hull
+                for n in range(len(grain_centroids)):
+                    if grain_centroids[n][0] > grain_centroids[n][1]:
+                        grain_centroids[n][0] = cl_args.max_xy
+                    elif grain_centroids[n][1] > grain_centroids[n][0]:
+                        grain_centroids[n][1] = cl_args.max_xy
+                    else:
+                        print("Centroid X/Y Error")
+                    if grain_centroids[n][2] > cl_args.max_z/2:
+                        grain_centroids[n][2] = cl_args.max_z
+                    elif grain_centroids[n][2] < cl_args.max_z/2:
+                        grain_centroids[n][2] = 0
+                    else:
+                        print("Centroid Z Error")
+                # Temp ctr using centroids and corner
+                temp_ctr = np.append(grain_centroids,[[cl_args.max_xy,cl_args.max_xy,0],[cl_args.max_xy,cl_args.max_xy,cl_args.max_z]],axis=0)
+            else:
+                temp_ctr = np.append(other_ctr,[[cl_args.max_xy,cl_args.max_xy]],axis=0)
             internal_var_vol_weighted = np.sum(var_vol_weighted[pore_in_hull(temp_ctr,var_ctr)])
             # Final calcs for output and mostly for debugging/checking calcs are correct
             total_hull_vol_weighted = volumes[1] + internal_var_vol_weighted
             per_tdens = (total_hull_vol_weighted - internal_var_vol_weighted) / total_hull_vol_weighted
+            # Debug plot on first frame if enabled
+            if i == 0 and cl_args.plot:
+                debug_plot(temp_ctr,void_ctr)
             return [t_frames[time_step], internal_var_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
 
         case DimensionCase.D3_ELEM:
