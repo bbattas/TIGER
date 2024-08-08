@@ -37,6 +37,8 @@ def parseArgs():
                         help='Grain size VPP csv filename to *glob*. Default = grain_sizes')
     parser.add_argument('--all','-a',action='store_true',
                         help='Append a list of columns/PPs to the cut*.csv file from the *_out.csv')
+    parser.add_argument('--plot','-p',action='store_true',
+                        help='Include the plots at the end?')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -107,10 +109,14 @@ if __name__ == "__main__":
         # Add time data
         cutdf = df#.loc[1].reset_index(drop=True)
         outdf = pd.read_csv(inputName + "_out.csv")
-        cutdf['time'] = outdf['time']
-        cutdf['void_tracker'] = outdf['void_tracker']
-        cutdf['grain_tracker'] = outdf['grain_tracker']
-        cutdf['runtime'] = outdf['runtime']
+        main_pp_list = ['time', 'void_tracker', 'grain_tracker', 'runtime']
+        for n in main_pp_list:
+            if n in outdf.columns:
+                cutdf[n] = outdf[n]
+        # cutdf['time'] = outdf['time']
+        # cutdf['void_tracker'] = outdf['void_tracker']
+        # cutdf['grain_tracker'] = outdf['grain_tracker']
+        # cutdf['runtime'] = outdf['runtime']
         all_pp_list = ['total_phi','total_rhoi','total_rhov']
         if cl_args.all:
             for n in all_pp_list:
@@ -127,20 +133,21 @@ if __name__ == "__main__":
     # Extra Portion - combine the dfs into a new csv and graph to view
 
     # print(cutdf)
+    if cl_args.plot:
+        plt.figure(1)
+        plt.scatter(cutdf.time,cutdf.largest)
+        plt.xlabel("Time")
+        plt.ylabel("External Void Volume")
 
-    plt.figure(1)
-    plt.scatter(cutdf.time,cutdf.largest)
-    plt.xlabel("Time")
-    plt.ylabel("External Void Volume")
+        plt.figure(2)
+        plt.scatter(cutdf.time,cutdf.total)
+        plt.xlabel("Time")
+        plt.ylabel("Total Void Volume")
 
-    plt.figure(2)
-    plt.scatter(cutdf.time,cutdf.total)
-    plt.xlabel("Time")
-    plt.ylabel("Total Void Volume")
+        plt.figure(3)
+        plt.scatter(cutdf.time,cutdf.bubbles)
+        plt.xlabel("Time")
+        plt.ylabel("Internal Void Volume")
 
-    plt.figure(3)
-    plt.scatter(cutdf.time,cutdf.bubbles)
-    plt.xlabel("Time")
-    plt.ylabel("Internal Void Volume")
+        plt.show()
 
-    plt.show()
