@@ -39,6 +39,8 @@ def parseArgs():
                         help='Append a list of columns/PPs to the cut*.csv file from the *_out.csv')
     parser.add_argument('--plot','-p',action='store_true',
                         help='Include the plots at the end?')
+    parser.add_argument('--input','-i',type=str,default=None,
+                        help='Optional specify input name to *name* glob.glob search/use')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -56,8 +58,11 @@ if __name__ == "__main__":
 
     if bypass == False:
         cwd = os.getcwd()
-
-        for file in glob.glob("*.i"):
+        if cl_args.input:
+            inputsearch = "*" + cl_args.input + "*.i"
+        else:
+            inputsearch = "*.i"
+        for file in glob.glob(inputsearch):
             inputName = os.path.splitext(file)[0]
         print("Input File is : " + inputName)
         # VOIDS
