@@ -8,6 +8,7 @@ class ExodusReader:
             self.file_name = file_name
             self.mesh = Dataset(self.file_name,'r') #,parallel=parallel_flag
             self.get_times()
+            self.get_blocks() # added to compile all subdomains/blocks
             self.get_xyz()
             self.get_nodal_names()
             self.get_elem_names()
@@ -17,6 +18,26 @@ class ExodusReader:
     def get_times(self):
         self.times = self.mesh.variables['time_whole'][:]
         return self.times
+    def get_blocks(self):
+        # Initialize an empty list to hold the connect arrays
+        connect_list = []
+        # Loop through possible connect variables (e.g., connect1, connect2, etc.)
+        i = 1
+        while True:
+            connect_var_name = f'connect{i}'
+            if connect_var_name in self.mesh.variables:
+                connect_list.append(self.mesh.variables[connect_var_name][:])
+                # print(connect_var_name)
+                i += 1
+            else:
+                break
+        # Combine all the connect arrays into a single continuous array
+        if connect_list:
+            connect = np.concatenate(connect_list, axis=0)
+        else:
+            raise ValueError("No connect variables found in the dataset.")
+        self.connect = connect
+        return self.connect
     def get_xyz(self):
         self.dim = 0
         try:
@@ -35,16 +56,16 @@ class ExodusReader:
             self.dim += 1
         except:
             z = np.zeros(x.shape)
-        connect = self.mesh.variables['connect1'][:]
+        # connect = self.mesh.variables['connect1'][:]
         xyz = np.array([x[:], y[:],z[:]]).T
-        X = x[connect[:] -1]
-        Y = y[connect[:] -1]
-        Z = z[connect[:] -1]
+        X = x[self.connect[:] -1]
+        Y = y[self.connect[:] -1]
+        Z = z[self.connect[:] -1]
 
         self.x = np.asarray(X)
         self.y = np.asarray(Y)
         self.z = np.asarray(Z)
-        self.connect = self.mesh.variables['connect1'][:]
+        # self.connect = self.mesh.variables['connect1'][:]
 
         return (self.x,self.y,self.z)
     def get_nodal_names(self):
