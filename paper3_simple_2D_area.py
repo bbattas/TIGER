@@ -39,9 +39,9 @@ class default_vals:
     cutoff = 0.0
     var_to_plot = 'phi'
     var_threshold = 0.5
-    nodal_var_names = ['phi', 'wvac', 'wint', 'bnds', 'gr0', 'gr1']
+    nodal_var_names = ['phi', 'wvac', 'wint', 'bnds', 'gr0', 'gr1', 'cvac_var','cint_var']
     elem_var_names = ['T', 'unique_grains']
-    xcut = 17000
+    xcut = 40000
 
 
 
@@ -69,6 +69,10 @@ parser.add_argument('--n_frames','-f',type=int, default=default_vals.n_frames,
 parser.add_argument('--cutoff','-c',type=int, default=default_vals.cutoff,
                             help='''What time to stop at, if 0.0 uses all data. '''
                             '''default='''+str(default_vals.cutoff))
+parser.add_argument('--exo','-e',action='store_true',
+                            help='Look for and use Exodus files instead of Nemesis, default=False')
+parser.add_argument('--ma',action='store_true',
+                            help='Assumes a multiapps run, where the main file is *_out.e*, default=False')
 
 cl_args = parser.parse_args()
 
@@ -157,9 +161,54 @@ def time_info(MF):
     # tot_frames = len(idx_frames)
     return idx_frames, t_frames_array
 
+# def find_files():
+#     """
+#     Find files with extension '.e*' in the current directory or subdirectories.
+
+#     Returns:
+#         list: Sorted list of file names with '.e*' extension.
+
+#     Raises:
+#         ValueError: If no files matching the pattern '*.e*' are found.
+#     """
+#     e_names = []
+#     if cl_args.exo:
+#         if cl_args.ma:
+#             endstr = "*_out.e"
+#         else:
+#             endstr = "*.e"
+#     else:
+#         if cl_args.ma:
+#             endstr = "*_out.e.*"
+#         else:
+#             endstr = "*.e.*"
+
+#     if cl_args.subdirs:
+#         for dir_n in glob.glob('*/', recursive=True):
+#             e_files_in_subdir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(dir_n + endstr)]
+#             # e_files_in_subdir = glob.glob(dir_n + '*.e*')
+#             if e_files_in_subdir:
+#                 first_file = e_files_in_subdir[0]
+#                 # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+#                 trimmed_file = first_file #+ '.e*'
+#                 e_names.append(trimmed_file)
+#     else:
+#         e_files_in_dir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(endstr)]
+#         if e_files_in_dir:
+#             first_file = e_files_in_dir[0]
+#             trimmed_file = first_file #.split('.e', 1)[0] + '.e*'
+#             e_names.append(trimmed_file)
+#     if not e_names:
+#         raise ValueError('No files found matching *.e*, make sure to specify subdirectories or not')
+#     e_names.sort(key=natural_sort_key)
+#     verb('Files to use: ')
+#     verb(e_names)
+#     verb(' ')
+#     return e_names
 def find_files():
     """
     Find files with extension '.e*' in the current directory or subdirectories.
+
 
     Returns:
         list: Sorted list of file names with '.e*' extension.
@@ -170,19 +219,35 @@ def find_files():
     e_names = []
     if cl_args.subdirs:
         for dir_n in glob.glob('*/', recursive=True):
-            e_files_in_subdir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(dir_n + "*.e.*")]
-            # e_files_in_subdir = glob.glob(dir_n + '*.e*')
+            if cl_args.exo:
+                e_files_in_subdir = glob.glob(dir_n + '*.e')
+                if e_files_in_subdir:
+                    first_file = e_files_in_subdir[0]
+                    # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+                    trimmed_file = first_file #+ '.e*'
+                    e_names.append(trimmed_file)
+            else:
+                e_files_in_subdir = [x.rsplit('.',1)[0]+"*" for x in glob.glob(dir_n + "*.e.*")]
+                # e_files_in_subdir = glob.glob(dir_n + '*.e*')
+                if e_files_in_subdir:
+                    first_file = e_files_in_subdir[0]
+                    # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
+                    trimmed_file = first_file #+ '.e*'
+                    e_names.append(trimmed_file)
+    else:
+        if cl_args.exo:
+            e_files_in_subdir = glob.glob('*.e')
             if e_files_in_subdir:
                 first_file = e_files_in_subdir[0]
                 # trimmed_file = first_file.split('.e', 1)[0] + '.e*'
                 trimmed_file = first_file #+ '.e*'
                 e_names.append(trimmed_file)
-    else:
-        e_files_in_dir = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
-        if e_files_in_dir:
-            first_file = e_files_in_dir[0]
-            trimmed_file = first_file #.split('.e', 1)[0] + '.e*'
-            e_names.append(trimmed_file)
+        else:
+            e_files_in_dir = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
+            if e_files_in_dir:
+                first_file = e_files_in_dir[0]
+                trimmed_file = first_file #.split('.e', 1)[0] + '.e*'
+                e_names.append(trimmed_file)
     if not e_names:
         raise ValueError('No files found matching *.e*, make sure to specify subdirectories or not')
     e_names.sort(key=natural_sort_key)
