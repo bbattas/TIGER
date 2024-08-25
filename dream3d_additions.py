@@ -52,6 +52,8 @@ def parseArgs():
                                 help='Do not add concentration columns (Adds them by default).')
     parser.add_argument('--nnn',type=int, default=None,
                                 help='Number of nearest neighbors for cGB. Default = 8 (2D) / 26 (3D)')
+    parser.add_argument("--round", action="store_false",
+                                help="Disable rounding of x,y,z columns to two decimal places before math. Enabled by default")
     cl_args = parser.parse_args()
     return cl_args
 
@@ -87,6 +89,7 @@ class header_vals:
         '''
         # x coordinates
         self.xu = np.unique(x)
+        print(self.xu)
         if len(self.xu) == 1:
             self.dim = self.dim - 1
             self.dx = 0.0
@@ -95,6 +98,9 @@ class header_vals:
             self.ctr_xmax = 0.0
         else:
             self.dx = self.xu[1] - self.xu[0]
+            print(self.xu[1])
+            print(self.xu[0])
+            print(self.dx)
             self.xmin = min(self.xu) - (0.5*self.dx)
             self.xmax = max(self.xu) + (0.5*self.dx)
             self.ctr_xmax = max(self.xu)
@@ -336,6 +342,12 @@ if __name__ == "__main__":
             body.append(row)
     # ['phi1', 'PHI', 'phi2', 'x', 'y', 'z', 'FeatureId', 'PhaseId', 'Symmetry']
     data = np.asarray(body,dtype=float)
+    # Round to two decimal places to avoid weird trailing float issues
+    if cl_args.round:
+        print('ROUNDING')
+        data[:, 3] = np.round(data[:, 3], 2)
+        data[:, 4] = np.round(data[:, 4], 2)
+        data[:, 5] = np.round(data[:, 5], 2)
     # Measure mesh coordinates:
     mesh = header_vals(data[:,3],data[:,4],data[:,5],data[:,6])
     # print(vars(mesh))
