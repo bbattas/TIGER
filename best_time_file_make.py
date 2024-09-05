@@ -17,8 +17,9 @@ from tqdm import tqdm
 import logging
 import argparse
 import dask
-from dask import delayed, compute
-from dask.diagnostics import ProgressBar
+# from dask import delayed, compute
+# from dask.diagnostics import ProgressBar
+from joblib import Parallel, delayed
 
 
 # You need the ulimit -n to be large enough for however many cpus you ran the job
@@ -119,8 +120,10 @@ if __name__ == "__main__":
     else:
         verb(f'Running in parallel with {n_cpu} CPUs')
         tasks = [delayed(para_time_build)(file, i) for i, file in enumerate(name_unq)]
-        with ProgressBar():
-            results = compute(*tasks, num_workers=n_cpu)
+        # with ProgressBar():
+        #     results = compute(*tasks, num_workers=n_cpu)
+        results = Parallel(n_jobs=n_cpu)(
+            delayed(para_time_build)(file, i) for i, file in enumerate(tqdm(name_unq)))
 
         verb("Total Pool Time: "+str(round(time.perf_counter()-loop_ti,2))+"s")
     # verb("Aggregating data...") # Restructuring
