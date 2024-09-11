@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
     if cl_args.out == None:
         cl_args.out = img_names[0].rsplit('.',1)[0]
-        pt('Output named: '+cl_args.out)
+    pt('Output named: '+cl_args.out)
 
     num_images = len(img_names)
 
