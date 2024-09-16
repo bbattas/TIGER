@@ -24,6 +24,9 @@ def parseArgs():
                                 help='Create a gif, default off')
     parser.add_argument('--video','-v', action='store_true',
                                 help='Create a video, default off')
+    parser.add_argument('--nonuniform_video','-n', action='store_true',
+                                help='''Rescale the image files to the same dimensions before'''
+                                '''creating a video, default off''')
     parser.add_argument('--frame','-f',type=int, default=10,
                                 help='Frames per second if you want to specify')
     parser.add_argument('--time', '-t', type=float,
@@ -126,6 +129,38 @@ if __name__ == "__main__":
             out.write(frame)
 
         #RELEASE VIDEO WRITER OBJECT (NOT NECESSARY BUT GOOD PRACTICE)
+        out.release()
+        verb('Video Made!')
+
+    if cl_args.nonuniform_video:
+        verb('Making a video')
+        frames = []
+        max_width = 0
+        max_height = 0
+
+        # First, find the maximum width and height among all images
+        for img_name in img_names:
+            img = cv2.imread(img_name)
+            height, width, channels = img.shape
+            if width > max_width:
+                max_width = width
+            if height > max_height:
+                max_height = height
+            frames.append(img)
+
+        verb(f'Max dimensions determined: width={max_width}, height={max_height}')
+
+        # Define the codec and create VideoWriter object
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        out = cv2.VideoWriter(cl_args.out + '.avi', fourcc, fps, (max_width, max_height))
+
+        # Write resized frames to the video file
+        for frame in frames:
+            # Resize frame to the max dimensions
+            resized_frame = cv2.resize(frame, (max_width, max_height))
+            out.write(resized_frame)
+
+        # Release the VideoWriter object
         out.release()
         verb('Video Made!')
 
