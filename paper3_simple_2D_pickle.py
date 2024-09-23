@@ -608,6 +608,8 @@ if __name__ == "__main__":
         # Parallel calculation
         elif cl_args.cpus > 1:
             total_frames = len(idx_frames)
+            print(t_frames)
+            print(idx_frames)
             # with mp.Pool(cl_args.cpus) as pool:
             #     jobs = [pool.apply_async(func=para_volume_calc, args=(frame, i, t_frames, dimcase, op_max)) for i, frame in enumerate(idx_frames)]
             #     pool.close()
