@@ -1,6 +1,9 @@
 from MultiExodusReader import MultiExodusReader
-import multiprocessing as mp
+# import multiprocessing as mp
 # from VolumeScripts import *
+
+import subprocess
+from joblib import Parallel, delayed
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
@@ -603,15 +606,16 @@ if __name__ == "__main__":
         # Parallel calculation
         elif cl_args.cpus > 1:
             total_frames = len(idx_frames)
-            with mp.Pool(cl_args.cpus) as pool:
-                jobs = [pool.apply_async(func=para_volume_calc, args=(frame, i, t_frames, dimcase, op_max)) for i, frame in enumerate(idx_frames)]
-                pool.close()
-                for job in tqdm(jobs):
-                    results.append(job.get())
+            # with mp.Pool(cl_args.cpus) as pool:
+            #     jobs = [pool.apply_async(func=para_volume_calc, args=(frame, i, t_frames, dimcase, op_max)) for i, frame in enumerate(idx_frames)]
+            #     pool.close()
+            #     for job in tqdm(jobs):
+            #         results.append(job.get())
+            results = Parallel(n_jobs=cl_args.cpus)(delayed(para_volume_calc)(frame, i, t_frames, dimcase, op_max) for i, frame in enumerate(tqdm(idx_frames)))
             pt("Total Pool Time: "+str(round(time.perf_counter()-loop_ti,2))+"s")
             verb("Aggregating data...")#Restructuring
         else:
-            maxCPU = mp.cpu_count()
+            maxCPU = 100#mp.cpu_count()
             raise ValueError('Number of CPUs needs to be an integer between 1 and '+str(maxCPU)+
                              ', not '+str(cl_args.cpus))
         # Compile the data and save it as a csv
