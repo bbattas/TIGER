@@ -494,7 +494,7 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,op_max,file_name):
         ValueError: If elemental calculations are not set up or the dimension case is unknown.
     """
     db("Calculating frame",i+1)
-    MF = MultiExodusReader(file_name[time_step,1])
+    MF = MultiExodusReader(file_name)#[time_step,1]
     x,y,z,c = MF.get_data_at_time(cl_args.var,t_frames[time_step])
     match dimension_case:
         case DimensionCase.D2_NODAL:
