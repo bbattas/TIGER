@@ -495,7 +495,7 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,op_max,file_name):
     """
     db("Calculating frame",i+1)
     MF = MultiExodusReader(file_name)#[time_step,1]
-    x,y,z,c = MF.get_data_at_time(cl_args.var,t_frames[time_step])
+    x,y,z,c = MF.get_data_at_time(cl_args.var,t_frames[i])#time_step
     match dimension_case:
         case DimensionCase.D2_NODAL:
             # db("Processing 2D Nodal case")
@@ -608,8 +608,6 @@ if __name__ == "__main__":
         # Parallel calculation
         elif cl_args.cpus > 1:
             total_frames = len(idx_frames)
-            print(t_frames)
-            print(idx_frames)
             # with mp.Pool(cl_args.cpus) as pool:
             #     jobs = [pool.apply_async(func=para_volume_calc, args=(frame, i, t_frames, dimcase, op_max)) for i, frame in enumerate(idx_frames)]
             #     pool.close()
