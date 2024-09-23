@@ -619,6 +619,7 @@ if __name__ == "__main__":
             raise ValueError('Number of CPUs needs to be an integer between 1 and '+str(maxCPU)+
                              ', not '+str(cl_args.cpus))
         # Compile the data and save it as a csv
+        results = [r for r in results if r != -1]
         out_volumes = np.asarray(results)
         # print(out_volumes)
         out_volumes = out_volumes[out_volumes[:, 0].astype(float).argsort()]
