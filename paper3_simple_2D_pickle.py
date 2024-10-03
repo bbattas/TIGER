@@ -28,6 +28,7 @@ import argparse
 import re
 from enum import Enum
 from tqdm import tqdm
+import fnmatch
 
 
 pt = logging.warning
@@ -76,7 +77,7 @@ parser.add_argument('--exo','-e',action='store_true',
                             help='Look for and use Exodus files instead of Nemesis, default=False')
 parser.add_argument('--ma',action='store_true',
                             help='Assumes a multiapps run, where the main file is *_out.e*, default=False')
-
+parser.add_argument('--skip', nargs='+', required=False, help='List of text flags to skip')
 cl_args = parser.parse_args()
 
 
@@ -146,6 +147,8 @@ def time_info(MF):
             t_frames =  np.linspace(0.0,t_max,cl_args.n_frames)
             idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(cl_args.n_frames) ]
             idx_frames = list( map(int, idx_frames) )
+            # For sequence output use the actual time of each frame not the seq time
+            t_frames = [times[n] for n in idx_frames]
         else:
             t_frames = times
             idx_frames = range(len(times))
@@ -163,6 +166,21 @@ def time_info(MF):
     t_frames_array = np.asarray(t_frames)
     # tot_frames = len(idx_frames)
     return idx_frames, t_frames_array
+
+
+def filter_filenames(filenames, skip_flags):
+    """Filter filenames based on the skip_flags and return the filtered list."""
+    if skip_flags is None:
+        # If no skip flags are provided, return the filenames as-is
+        return filenames
+
+    filtered_filenames = []
+    for filename in filenames:
+        # Check if any skip_flag is in the filename, if not, keep it
+        if not any(flag in filename for flag in skip_flags):
+            filtered_filenames.append(filename)
+    return filtered_filenames
+
 
 # def find_files():
 #     """
@@ -253,11 +271,15 @@ def find_files():
                 e_names.append(trimmed_file)
     if not e_names:
         raise ValueError('No files found matching *.e*, make sure to specify subdirectories or not')
+    # Skip if specified any flags for files to ignore
+    e_names = filter_filenames(e_names, cl_args.skip)
     e_names.sort(key=natural_sort_key)
     verb('Files to use: ')
     verb(e_names)
     verb(' ')
     return e_names
+
+
 
 
 def out_name(file_name):
@@ -520,8 +542,8 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,op_max,file_name):
             total_hull_vol_weighted = volumes[1] + internal_var_vol_weighted
             per_tdens = (total_hull_vol_weighted - internal_var_vol_weighted) / total_hull_vol_weighted
             # print(f'Frame {i}: updated progress')
-            return [t_frames[time_step], internal_var_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
-
+            return [t_frames[i], internal_var_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
+                # t_frames[time_step]
         case DimensionCase.D2_ELEM:
             db("Processing 2D Elemental case")
             raise ValueError('Elemental calculations not set up yet!')
@@ -601,7 +623,7 @@ if __name__ == "__main__":
         if cl_args.cpus == 1:
             verb('Running in serial')
             for i, frame in enumerate(tqdm(idx_frames, desc="Calculating")):
-                results.append(para_volume_calc(frame,i,t_frames,dimcase,op_max))
+                results.append(para_volume_calc(frame,i,t_frames,dimcase,op_max,file_name))
             # compile and save the data
             pt("Calculation Time: "+str(round(time.perf_counter()-loop_ti,2))+"s")
             verb("Aggregating data...")
