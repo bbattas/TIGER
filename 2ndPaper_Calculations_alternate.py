@@ -148,7 +148,7 @@ if __name__ == "__main__":
                 print(f'Compiling batch {i // batch_size}')
                 batch_results = para_results_async.get()
                 # Save each batch
-                batchloc = calc.outNameBase + '_calc_data_batch' + str(i).zfill(2) +'.csv'
+                batchloc = calc.outNameBase + '_calc_data_batch' + str(i // batch_size).zfill(2) +'.csv'
                 print('Saving Data: ',batchloc)
                 df = pd.DataFrame(batch_results, columns = csv_header)
                 df.sort_values(by="time").reset_index(drop=True, inplace=True)
