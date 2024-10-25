@@ -11,7 +11,9 @@ class MultiExodusReader:
         for file_name in self.file_names:
             er = ExodusReader.ExodusReader(file_name)
             times = er.times
-            global_times.update(times[:])
+            # global_times.update(times[:])
+            # changed to avoid unhashable MaskedConstant error
+            global_times.update(np.ma.compressed(times[:]))
             exodus_readers+= [er]
             file_times+=[ [min(times),max(times)] ]
         self.dim = exodus_readers[0].dim
