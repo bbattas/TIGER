@@ -406,7 +406,7 @@ class CalculationsV2:
         dom_min = min(vs_min)
         c_on_plane = ((planeval == vs_max) | (planeval == vs_min))
         if np.any(c_on_plane):
-            verb('MOVING Plane')
+            db('MOVING Plane')
             db('Plane slicing is on boundary between elements, moving...')
             if (planeval + tol) < dom_max:
                 db('Shifting plane + tol')
@@ -425,7 +425,7 @@ class CalculationsV2:
                 return
         else:
             db('Plane not on boundary, doesnt need moved')
-            verb('NOT MOVING Plane')
+            db('NOT MOVING Plane')
             return
 
 
