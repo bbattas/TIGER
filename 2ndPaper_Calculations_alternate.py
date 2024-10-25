@@ -145,7 +145,7 @@ if __name__ == "__main__":
             for i in range(0, len(calc.idx_frames), batch_size):
                 batch_args = [(j, idx, True) for j, idx in enumerate(calc.idx_frames[i:i+batch_size])]
                 para_results_async = cpu_pool.starmap_async(do_calculations, batch_args)
-                verb(f'Compiling batch {i // batch_size}')
+                print(f'Compiling batch {i // batch_size}')
                 batch_results = para_results_async.get()
                 # Save each batch
                 batchloc = calc.outNameBase + '_calc_data_batch' + str(i).zfill(2) +'.csv'
@@ -153,6 +153,8 @@ if __name__ == "__main__":
                 df = pd.DataFrame(batch_results, columns = csv_header)
                 df.sort_values(by="time").reset_index(drop=True, inplace=True)
                 df.to_csv(batchloc)
+                print(f'Finished saving batch {i // batch_size}')
+                print(' ')
             # Compile batches
             print('Compiling batch csv files')
             try:
