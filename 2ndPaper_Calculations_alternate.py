@@ -68,7 +68,17 @@ def do_calculations(i,idx_frame,all_op=False):
         print('  Finished calculating file '+str(i)+': '+str(round(time.perf_counter()-para_t0,2))+'s')
         return calc.times[idx_frame], gb_area, tot_mesh_area, cv, ctr_dist
 
-
+def format_elapsed_time(start_time):
+    # Get the current time
+    end_time = time.perf_counter()
+    # Calculate elapsed time in seconds
+    elapsed_time = end_time - start_time
+    # Convert elapsed time to hours, minutes, and seconds
+    hours = int(elapsed_time // 3600)
+    minutes = int((elapsed_time % 3600) // 60)
+    seconds = int(elapsed_time % 60)
+    # Return formatted elapsed time as a string
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
 
@@ -142,18 +152,22 @@ if __name__ == "__main__":
             # para_results_async = cpu_pool.starmap_async(do_calculations, args_list)
             # verb('Compiling results...')
             # para_results = para_results_async.get()
+            total_batches = math.ceil(len(calc.idx_frames) / batch_size)
             for i in range(0, len(calc.idx_frames), batch_size):
+                current_batch = (i // batch_size) + 1
+                batch_t0 = time.perf_counter()
+                print(f'Starting batch {current_batch}/{total_batches}')
                 batch_args = [(j, idx, True) for j, idx in enumerate(calc.idx_frames[i:i+batch_size])]
                 para_results_async = cpu_pool.starmap_async(do_calculations, batch_args)
-                print(f'Compiling batch {i // batch_size}')
+                print(f'Compiling batch {current_batch}/{total_batches}')
                 batch_results = para_results_async.get()
                 # Save each batch
-                batchloc = calc.outNameBase + '_calc_data_batch' + str(i // batch_size).zfill(2) +'.csv'
+                batchloc = calc.outNameBase + '_calc_data_batch' + str(current_batch).zfill(2) +'.csv'
                 print('Saving Data: ',batchloc)
                 df = pd.DataFrame(batch_results, columns = csv_header)
                 df.sort_values(by="time").reset_index(drop=True, inplace=True)
                 df.to_csv(batchloc)
-                print(f'Finished saving batch {i // batch_size}')
+                print(f'Finished saving batch {current_batch}/{total_batches} - {format_elapsed_time(batch_t0)}')
                 print(' ')
             # Compile batches
             print('Compiling batch csv files')
