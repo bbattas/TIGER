@@ -3,12 +3,13 @@ import multiprocessing as mp
 # from VolumeScripts import *
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
-from matplotlib.collections import PolyCollection
-from matplotlib.collections import PatchCollection
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib
+# from matplotlib.patches import Polygon
+# from matplotlib.collections import PolyCollection
+# from matplotlib.collections import PatchCollection
+# from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+# from mpl_toolkits.mplot3d import Axes3D
+# import matplotlib
 
 from scipy.spatial import ConvexHull, Delaunay
 import numpy as np
@@ -465,7 +466,7 @@ def calculate_cents_on_max_plane(xug, yug, zug, cug, axis):
         axis (str): The axis to use for the max plane calculation ('x', 'y', or 'z').
 
     Returns:
-        float: The tempVols calculation for the specified max plane.
+        list: The centroid coordinates from the specified max plane.
     """
     # Select the appropriate axis data
     axis_data = {'x': xug, 'y': yug, 'z': zug}[axis]
@@ -483,19 +484,26 @@ def calculate_cents_on_max_plane(xug, yug, zug, cug, axis):
     shortx = xug[max_plane_indices]
     shorty = yug[max_plane_indices]
     shortz = zug[max_plane_indices]
-    shortc = cug[max_plane_indices]
+    shortc = np.rint(cug[max_plane_indices])
 
-    print(len(xug[max_plane_indices]))
-    print(xug[max_plane_indices])
-    print(' ')
-    print(cug[max_plane_indices])
     short_ctr = mesh_center_dir_independent(shortx,shorty,shortz)
     short_vol = mesh_vol_dir_independent(shortx,shorty,shortz)
+    # tempVols = np.sum(np.where(np.rint(shortc)==(-1),short_vol,0.0))
+    centroid = [np.sum(np.where(shortc!=(-1),short_ctr[:,0] * short_vol,0.0)) / np.sum(np.where(shortc!=(-1),short_vol,0.0)),
+                np.sum(np.where(shortc!=(-1),short_ctr[:,1] * short_vol,0.0)) / np.sum(np.where(shortc!=(-1),short_vol,0.0)),
+                np.sum(np.where(shortc!=(-1),short_ctr[:,2] * short_vol,0.0)) / np.sum(np.where(shortc!=(-1),short_vol,0.0))]
 
-    # Perform tempVols calculation using the grain order parameters on the specified plane
-    tempVols = np.sum(cug[max_plane_indices])
+    # Set cent based on the specified axis
+    if axis == 'x':
+        cents = [[cl_args.max_xy, centroid[1], 0], [cl_args.max_xy, centroid[1], cl_args.max_z]]
+    elif axis == 'y':
+        cents = [[centroid[0], cl_args.max_xy, 0] , [centroid[0], cl_args.max_xy, cl_args.max_z]]
+    # elif axis == 'z':
+    #     cents = [0, clargs.maxxy, centroid[2]]
+    else:
+        raise ValueError("Invalid axis specified. Use 'x' or 'y'.")
 
-    return tempVols
+    return cents
 
 def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_max):
     """
@@ -632,37 +640,17 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_m
                 # Calculate the centroids of the grains from UG for only internal porosity
                 xug,yug,zug,cug = MF.get_data_at_time('unique_grains',t_frames[time_step])
                 c_int = np.rint(cug)
-                zeros = np.zeros_like(c_int)
-                # TESTING
+                # Calculate x max and y max plane grain centroids
+                xcents = calculate_cents_on_max_plane(xug, yug, zug, cug, 'x')
+                ycents = calculate_cents_on_max_plane(xug, yug, zug, cug, 'y')
 
-                calculate_cents_on_max_plane(xug, yug, zug, cug, 'x')
-                # Calculate individual UniqueGrains volumes and centroids
-                grain_centroids = []
-                for n in range(op_max):
-                    tempVols = np.sum(np.where(c_int==(n-1),mesh_vol,zeros))
-                    if tempVols > 0.0 and n > 0:
-                        grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
-                                                 np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
-                                                 np.sum(np.where(c_int==(n-1),mesh_ctr[:,2] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros))])
-                # If there is only 1 or 0 grain centroids then skip this timestep and return -1
-                if len(grain_centroids) < 2:
-                    return -1
-                # Alter grain centroids to account for quarter hull
-                for n in range(len(grain_centroids)):
-                    if grain_centroids[n][0] > grain_centroids[n][1]:
-                        grain_centroids[n][0] = cl_args.max_xy
-                    elif grain_centroids[n][1] > grain_centroids[n][0]:
-                        grain_centroids[n][1] = cl_args.max_xy
-                    else:
-                        print("Centroid X/Y Error")
-                    if grain_centroids[n][2] > cl_args.max_z/2:
-                        grain_centroids[n][2] = cl_args.max_z
-                    elif grain_centroids[n][2] < cl_args.max_z/2:
-                        grain_centroids[n][2] = 0
-                    else:
-                        print("Centroid Z Error")
-                # Temp ctr using centroids and corner
-                temp_ctr = np.append(grain_centroids,[[cl_args.max_xy,cl_args.max_xy,0],[cl_args.max_xy,cl_args.max_xy,cl_args.max_z]],axis=0)
+                # Define corner points based on cl_args
+                corner_points = np.array([[cl_args.max_xy, cl_args.max_xy, 0],
+                                        [cl_args.max_xy, cl_args.max_xy, cl_args.max_z]])
+
+                # Combine xcents, ycents, and corner points into temp_ctr
+                temp_ctr = np.vstack([xcents, ycents, corner_points])
+                # print(temp_ctr)
             else:
                 temp_ctr = np.append(other_ctr,[[cl_args.max_xy,cl_args.max_xy]],axis=0)
             internal_var_vol_weighted = np.sum(var_vol_weighted[pore_in_hull(temp_ctr,var_ctr)])
@@ -671,7 +659,7 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_m
             per_tdens = (total_hull_vol_weighted - internal_var_vol_weighted) / total_hull_vol_weighted
             # Debug plot on first frame if enabled
             if i == 0 and cl_args.plot:
-                debug_plot(temp_ctr,void_ctr)
+                debug_plot(temp_ctr,var_ctr)
             return [t_frames[time_step], internal_var_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
 
         case DimensionCase.D3_ELEM:
