@@ -505,6 +505,54 @@ def calculate_cents_on_max_plane(xug, yug, zug, cug, axis):
 
     return cents
 
+def calculate_cents_on_max_plane_2D(xug, yug, cug, axis):
+    """
+    2D version of Calculate area centroids based on the specified max plane in the unique_grain data.
+
+    Parameters:
+        xug (ndarray): x-coordinates of unique grain data.
+        yug (ndarray): y-coordinates of unique grain data.
+        cug (ndarray): grain order parameters corresponding to each point.
+        axis (str): The axis to use for the max plane calculation ('x', 'y', or 'z').
+
+    Returns:
+        list: The centroid coordinates from the specified max plane.
+    """
+    # Select the appropriate axis data
+    axis_data = {'x': xug, 'y': yug}[axis]
+
+    # Determine the overall max value along the chosen axis
+    overall_max_value = np.max(axis_data)
+
+    # Calculate the row-wise min and max along the chosen axis
+    row_min = np.min(axis_data, axis=1)
+    row_max = np.max(axis_data, axis=1)
+
+    # Use vectorized comparison to check if overall_max_value is within each row's range
+    max_plane_indices = (row_min <= overall_max_value) & (overall_max_value <= row_max)
+
+    shortx = xug[max_plane_indices]
+    shorty = yug[max_plane_indices]
+    shortc = np.rint(cug[max_plane_indices])
+
+    short_ctr = mesh_center_dir_independent(shortx,shorty)
+    short_vol = mesh_vol_dir_independent(shortx,shorty)
+    # tempVols = np.sum(np.where(np.rint(shortc)==(-1),short_vol,0.0))
+    centroid = [np.sum(np.where(shortc!=(-1),short_ctr[:,0] * short_vol,0.0)) / np.sum(np.where(shortc!=(-1),short_vol,0.0)),
+                np.sum(np.where(shortc!=(-1),short_ctr[:,1] * short_vol,0.0)) / np.sum(np.where(shortc!=(-1),short_vol,0.0))]
+
+    # Set cent based on the specified axis
+    if axis == 'x':
+        cents = [[cl_args.max_xy, centroid[1]]]
+    elif axis == 'y':
+        cents = [[centroid[0], cl_args.max_xy]]
+    # elif axis == 'z':
+    #     cents = [0, clargs.maxxy, centroid[2]]
+    else:
+        raise ValueError("Invalid axis specified. Use 'x' or 'y'.")
+
+    return cents
+
 def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_max):
     """
     Perform area/volume calculations for a given time step assuming a quarter hull.
@@ -544,25 +592,15 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_m
                 # Calculate the centroids of the grains from UG for only internal porosity
                 xug,yug,zug,cug = MF.get_data_at_time('unique_grains',t_frames[time_step])
                 c_int = np.rint(cug)
-                zeros = np.zeros_like(c_int)
-                # Calculate individual UniqueGrains volumes and centroids
-                grain_centroids = []
-                for n in range(op_max):
-                    tempVols = np.sum(np.where(c_int==(n-1),mesh_vol,zeros))
-                    if tempVols > 0.0 and n > 0:
-                        grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
-                                                    np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros))])
-                # If there is only 1 or 0 grain centroids then skip this timestep and return -1
-                if len(grain_centroids) < 2:
-                    return -1
-                # Alter grain centroids to account for quarter hull
-                for n in range(len(grain_centroids)):
-                    if grain_centroids[n][0] > grain_centroids[n][1]:
-                        grain_centroids[n][0] = cl_args.max_xy
-                    elif grain_centroids[n][1] > grain_centroids[n][0]:
-                        grain_centroids[n][1] = cl_args.max_xy
-                # Temp ctr using centroids and corner
-                temp_ctr = np.append(grain_centroids,[[cl_args.max_xy,cl_args.max_xy]],axis=0)
+                # Calculate x max and y max plane grain centroids
+                xcents = calculate_cents_on_max_plane_2D(xug, yug, cug, 'x')
+                ycents = calculate_cents_on_max_plane_2D(xug, yug, cug, 'y')
+
+                # Define corner points based on cl_args
+                corner_points = np.array([[cl_args.max_xy, cl_args.max_xy]])
+
+                # Combine xcents, ycents, and corner points into temp_ctr
+                temp_ctr = np.vstack([xcents, ycents, corner_points])
             else:
                 temp_ctr = np.append(other_ctr,[[cl_args.max_xy,cl_args.max_xy]],axis=0)
             # db('Only running on a manually defined box for hull!')
@@ -579,47 +617,49 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,times_files,prefix,op_m
 
 
         case DimensionCase.D2_ELEM:
-            # db("Processing 2D Elemental case")
-            c_int = np.rint(c)
-            mesh_ctr = mesh_center_dir_independent(x,y)
-            mesh_vol = mesh_vol_dir_independent(x,y)
-            # Empties
-            zeros = np.zeros_like(c_int)
-            volumes = []
-            grain_centroids = []
-            # Calculate individual UniqueGrains volumes and centroids
-            for n in range(op_max):
-                volumes.append(np.sum(np.where(c_int==(n-1),mesh_vol,zeros)))
-                if volumes[n] > 0.0 and n > 0:
-                    grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
-                                                np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros))])
-            # If there is only 1 or 0 grain centroids then skip this timestep and return -1
-            if len(grain_centroids) < 2:
-                return -1
-            # Alter grain centroids to account for quarter hull
-            for n in range(len(grain_centroids)):
-                if grain_centroids[n][0] > grain_centroids[n][1]:
-                    grain_centroids[n][0] = cl_args.max_xy
-                elif grain_centroids[n][1] > grain_centroids[n][0]:
-                    grain_centroids[n][1] = cl_args.max_xy
-            # Element centers for grains and voids
-            # grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
-            # For if not using centroids for the convex hull
-            # grain_vol = np.delete(mesh_vol, np.where((c_int<0.0))[0], axis=0)
-            void_ctr = np.delete(mesh_ctr, np.where((c_int>=0.0))[0], axis=0)
-            void_vol = np.delete(mesh_vol, np.where((c_int>=0.0))[0], axis=0)
-            # For quarter hull add the corner point
-            temp_ctr = np.append(grain_centroids,[[cl_args.max_xy,cl_args.max_xy]],axis=0)#grain_ctr
-            internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr)])
-            # For using whole grain and not centroids
-            # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
-            # Do other calcs
-            total_hull_vol = sum(volumes[1:]) + internal_pore_vol
-            per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
-            # Debug Plot
-            if i == 0 and cl_args.plot:
-                debug_plot(temp_ctr,void_ctr)
-            return [t_frames[time_step], internal_pore_vol, total_hull_vol, per_tdens] + volumes
+            db("Processing 2D Elemental case")
+            raise ValueError('Elemental calculations not set up yet!')
+            # # db("Processing 2D Elemental case")
+            # c_int = np.rint(c)
+            # mesh_ctr = mesh_center_dir_independent(x,y)
+            # mesh_vol = mesh_vol_dir_independent(x,y)
+            # # Empties
+            # zeros = np.zeros_like(c_int)
+            # volumes = []
+            # grain_centroids = []
+            # # Calculate individual UniqueGrains volumes and centroids
+            # for n in range(op_max):
+            #     volumes.append(np.sum(np.where(c_int==(n-1),mesh_vol,zeros)))
+            #     if volumes[n] > 0.0 and n > 0:
+            #         grain_centroids.append([ np.sum(np.where(c_int==(n-1),mesh_ctr[:,0] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros)),
+            #                                     np.sum(np.where(c_int==(n-1),mesh_ctr[:,1] * mesh_vol,zeros)) / np.sum(np.where(c_int==(n-1),mesh_vol,zeros))])
+            # # If there is only 1 or 0 grain centroids then skip this timestep and return -1
+            # if len(grain_centroids) < 2:
+            #     return -1
+            # # Alter grain centroids to account for quarter hull
+            # for n in range(len(grain_centroids)):
+            #     if grain_centroids[n][0] > grain_centroids[n][1]:
+            #         grain_centroids[n][0] = cl_args.max_xy
+            #     elif grain_centroids[n][1] > grain_centroids[n][0]:
+            #         grain_centroids[n][1] = cl_args.max_xy
+            # # Element centers for grains and voids
+            # # grain_ctr = np.delete(mesh_ctr, np.where((c_int<0.0))[0], axis=0)
+            # # For if not using centroids for the convex hull
+            # # grain_vol = np.delete(mesh_vol, np.where((c_int<0.0))[0], axis=0)
+            # void_ctr = np.delete(mesh_ctr, np.where((c_int>=0.0))[0], axis=0)
+            # void_vol = np.delete(mesh_vol, np.where((c_int>=0.0))[0], axis=0)
+            # # For quarter hull add the corner point
+            # temp_ctr = np.append(grain_centroids,[[cl_args.max_xy,cl_args.max_xy]],axis=0)#grain_ctr
+            # internal_pore_vol = np.sum(void_vol[pore_in_hull(temp_ctr,void_ctr)])
+            # # For using whole grain and not centroids
+            # # grain_hull = np.sum(grain_vol[pore_in_hull(grain_ctr,grain_ctr,1e-12,point_plot_TF=False)])
+            # # Do other calcs
+            # total_hull_vol = sum(volumes[1:]) + internal_pore_vol
+            # per_tdens = (total_hull_vol - internal_pore_vol) / total_hull_vol
+            # # Debug Plot
+            # if i == 0 and cl_args.plot:
+            #     debug_plot(temp_ctr,void_ctr)
+            # return [t_frames[time_step], internal_pore_vol, total_hull_vol, per_tdens] + volumes
 
 
         case DimensionCase.D3_NODAL:
