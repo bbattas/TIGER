@@ -572,7 +572,7 @@ def para_volume_calc(time_step,i,t_frames,dimension_case,op_max,file_name):
             # Final calcs for output and mostly for debugging/checking calcs are correct
             total_hull_vol_weighted = volumes[1] + internal_var_vol_weighted
             per_tdens = (total_hull_vol_weighted - internal_var_vol_weighted) / total_hull_vol_weighted
-            return [t_frames[time_step], internal_var_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
+            return [t_frames[i], internal_var_vol_weighted, total_hull_vol_weighted, per_tdens] + volumes
 
         case DimensionCase.D3_ELEM:
             db("Processing 3D Elemental case")
