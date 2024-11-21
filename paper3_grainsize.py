@@ -304,8 +304,8 @@ def unique_spacing(*coords):
             pt('\x1b[31;1m'+'WARNING:'+'\x1b[0m'+' dx/dy/dz not all equal.')
     return np.mean(du)
 
-def t0_setup(MF):
-    x,y,z,c = MF.get_opmax_at_time_alt(0)
+def t0_setup(MF,t_frames):
+    x,y,z,c = MF.get_opmax_at_time_alt(t_frames[0])
     dx = unique_spacing(x,y,z)
     distance_threshold = dx * 1.1 #1.41 is diag in 2D, 1.73 next diag in 3D
     num_grs = max(c)
@@ -479,7 +479,7 @@ if __name__ == "__main__":
         init_ti = time.perf_counter()
         MF = GrainMultiExodusReader(file_name)
         idx_frames, t_frames = time_info(MF) # frames and the time at each one
-        distance_threshold, dx, num_grs, num_feats = t0_setup(MF)
+        distance_threshold, dx, num_grs, num_feats = t0_setup(MF,t_frames)
         verb(f'Done Initializing: {format_elapsed_time(init_ti)}')
         # Calculaton
         calc_ti = time.perf_counter()
