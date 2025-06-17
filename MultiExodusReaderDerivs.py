@@ -100,8 +100,6 @@ class MultiExodusReaderDerivs:
                 return False
         return True
 
-    def get_vars_from_file_idx(self, read_time, i):
-        return
 
     def get_opmax_from_file_idx(self, read_time, i):
         er = self.exodus_readers[i]
@@ -198,3 +196,82 @@ class MultiExodusReaderDerivs:
         Z = np.concatenate(Z)
         C = np.concatenate(C)
         return (X, Y, Z, C)
+
+
+    # New functions for multiple c
+
+    def get_vars_from_file_idx(self, varlist, read_time: float, i: int, fullxy=True):
+        """
+        Return mean-per-element coordinates and *all* requested variable
+        values for the *i*-th Exodus file at the snapshot `read_time`.
+
+        Returns
+        -------
+        mean_x, mean_y, mean_z : 1-D np.ndarray  (n_points,)
+        vals                   : 2-D np.ndarray  (n_vars, n_points)
+                                 where row k corresponds to self.varlist[k]
+        """
+        er  = self.exodus_readers[i]            # typed: ExodusReader
+        idx = int(np.where(read_time == er.times)[0][0])
+
+        # Coordinates – average the element-node coordinates so that we
+        # have one (x,y,z) per element rather than per node
+        mean_x = np.mean(er.x, axis=1)
+        mean_y = np.mean(er.y, axis=1)
+        mean_z = np.mean(er.z, axis=1)
+
+        # Collect every variable’s mean value (same reduction you used)
+        vals = []
+        for var in varlist:
+            raw = er.get_var_values(var, idx, full_nodal=True)
+            if raw.ndim == 2:                  # nodal → average nodes
+                vals.append(raw.mean(axis=1))  # shape (n_elem,)
+            else:                              # element → already shape (n_elem,)
+                vals.append(raw)
+        vals = np.stack(vals, axis=0)
+
+        if fullxy:
+            return mean_x, mean_y, mean_z, vals, er.x, er.y, er.z
+        else:
+            return mean_x, mean_y, mean_z, vals
+
+    def get_vars_at_time(self, varlist, read_time: float, fullxy=True):
+        """
+        Query every Exodus fragment that spans `read_time` and concatenate
+        the results.
+
+        Returns
+        -------
+        X, Y, Z : 1-D np.ndarray                  (total_points,)
+        V       : 2-D np.ndarray                  (n_vars, total_points)
+        """
+        X, Y, Z  = [], [], []
+        V_blocks = []           # list of (n_vars, n_local_points) arrays
+        fx, fy, fz = [], [], []
+
+        for i, window in enumerate(self.file_times):
+            if window[0] <= read_time <= window[1]:
+                if fullxy:
+                    mx, my, mz, vals, xx, yy, zz = self.get_vars_from_file_idx(varlist, read_time, i, fullxy)
+                    fx.append(xx)
+                    fy.append(yy)
+                    fz.append(zz)
+                else:
+                    mx, my, mz, vals = self.get_vars_from_file_idx(varlist, read_time, i, fullxy)
+                X.append(mx)
+                Y.append(my)
+                Z.append(mz)
+                V_blocks.append(vals)
+
+        # Concatenate along the *point* axis
+        X = np.concatenate(X)
+        Y = np.concatenate(Y)
+        Z = np.concatenate(Z)
+        V = np.concatenate(V_blocks, axis=1)     # keep variable axis intact
+        if fullxy:
+            fx = np.concatenate(fx)
+            fy = np.concatenate(fy)
+            fz = np.concatenate(fz)
+            return X, Y, Z, V, fx, fy, fz
+        else:
+            return X, Y, Z, V

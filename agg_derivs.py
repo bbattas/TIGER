@@ -7,8 +7,8 @@ import subprocess
 from joblib import Parallel, delayed
 
 import matplotlib.pyplot as plt
-# from matplotlib.patches import Polygon
-# from matplotlib.collections import PolyCollection
+from matplotlib.patches import Polygon
+from matplotlib.collections import PolyCollection
 # from matplotlib.collections import PatchCollection
 # from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 # from mpl_toolkits.mplot3d import Axes3D
@@ -106,6 +106,10 @@ pt(' ')
 
 cwd = os.getcwd()
 
+imdir = 'pics'
+if not os.path.isdir(imdir):
+    db('Making picture directory: '+imdir)
+    os.makedirs(imdir)
 
 # times_files = np.load('times_files.npy')
 # times = times_files[:,0].astype(float)
@@ -279,6 +283,24 @@ def format_elapsed_time(start_time):
     # Return formatted elapsed time as a string
     # return f"{hours:02}:{minutes:02}:{seconds:02}"
     return f"{hours:02}:{minutes:02}:{seconds:05.2f}"
+
+def plotit(pltx, plty, pltc, cname, times,i):
+    coords = np.asarray([ np.asarray([x_val,y_val]).T for (x_val,y_val) in zip(pltx, plty) ])
+    fig, ax = plt.subplots()
+    p = PolyCollection(coords, cmap=matplotlib.cm.coolwarm, alpha=1)#,edgecolor='k'
+    p.set_array(np.array(pltc) )
+    ax.add_collection(p)
+    fig.colorbar(p, label=cname)
+    ax.set_xlim([np.amin(pltx),np.amax(pltx)])
+    ax.set_ylim([np.amin(plty),np.amax(plty)])
+    ax.set_aspect('equal')
+    timestring = 't = ' + str(times[i])
+    ax.set_title(timestring)
+    fig.savefig(imdir+'/'+str(cname)+'_'+str(i)+'.png',dpi=500,transparent=True )
+    if cl_args.verbose == 2:
+        plt.show()
+    else:
+        plt.close()
 
 def unique_spacing(*coords):
     du = []
@@ -459,6 +481,152 @@ def save_to_csv(volumes, output_filename):
     verb(f"Results saved to {output_filename}")
 
 
+
+def gradient_structured(x, y, f):
+    """
+    Compute ∂f/∂x and ∂f/∂y on a rectilinear element-centre grid.
+
+    Parameters
+    ----------
+    x, y : 1-D arrays (n_points,)
+        Element-centre coords (must be structured).
+    f    : 1-D array  (n_points,)
+        Scalar at each element centre.
+
+    Returns
+    -------
+    dfdx, dfdy : 1-D arrays (n_points,)
+    """
+    # ➊  Identify distinct grid lines
+    xu = np.unique(np.round(x, 12))
+    yu = np.unique(np.round(y, 12))
+    nx, ny = len(xu), len(yu)
+
+    # ➋  Reshape to (ny, nx) image using row-major ordering
+    #     (y changes fastest ⇒ sort-index trick)
+    idx_y = np.argsort(y)               # get rows together
+    x2d   = x[idx_y].reshape(ny, nx)
+    f2d   = f[idx_y].reshape(ny, nx)
+
+    # ➌  Finite differences (np.gradient order = rows, cols)
+    dy = np.diff(yu).mean()             # uniform spacing
+    dx = np.diff(xu).mean()
+    dfdy, dfdx = np.gradient(f2d, dy, dx)
+
+    # ➍  Flatten in the original element order
+    dfdx_flat = dfdx.ravel()[np.argsort(idx_y)]
+    dfdy_flat = dfdy.ravel()[np.argsort(idx_y)]
+    return dfdx_flat, dfdy_flat
+
+
+def gradient_unstructured_full(x, y, f, k=6):
+    """
+    Least-squares ∇f on an arbitrary point cloud.
+
+    Returns dfdx, dfdy as 1-D arrays the same size as x.
+    """
+    coords = np.column_stack((x, y))
+    tree   = cKDTree(coords)
+
+    grads  = np.empty((len(x), 2))
+    for i, (xi, yi, fi) in enumerate(zip(x, y, f)):
+        # first neighbour returned is the point itself → skip it
+        _, idx = tree.query([xi, yi], k=k+1)
+        nbrs   = idx[1:]
+
+        dx = x[nbrs] - xi
+        dy = y[nbrs] - yi
+        df = f[nbrs] - fi
+
+        # Solve [dx dy]·[a b]^T ≈ df  ⇒ [a b] = gradient
+        A         = np.column_stack((dx, dy))   # (k, 2)
+        g, *_     = np.linalg.lstsq(A, df, rcond=None)
+        grads[i]  = g
+
+    return grads[:, 0], grads[:, 1]
+
+
+def gradient_unstructured(x, y, f, *, k=6,
+                          exclude_value=None, atol=1e-12,
+                          external_mask=None, fill=np.nan):
+    """
+    Least-squares ∇f on an arbitrary point cloud *with optional exclusion*.
+
+    Parameters
+    ----------
+    x, y : 1-D arrays (n_points,)
+        Element-centre coordinates.
+    f    : 1-D array (n_points,)
+        Scalar at each point.
+    k    : int, default 6
+        Number of neighbours for the local plane fit.
+    exclude_value : float or None, default None
+        If not None, any point with |f - exclude_value| < atol
+        is ignored as a neighbour.  Its own gradient is returned
+        as *fill*.
+    atol : float, default 1e-12
+        Absolute tolerance when comparing to *exclude_value*.
+    external_mask : boolean array or None
+        Alternate way to specify “good” points.  Must be same
+        length as *x*.  If given, *exclude_value* is ignored.
+    fill : float, default np.nan
+        Value assigned to gradients of excluded points.
+
+    Returns
+    -------
+    dfdx, dfdy : 1-D arrays (n_points,)
+        Gradients at every input point; excluded locations hold *fill*.
+    """
+    n = len(x)
+    coords = np.column_stack((x, y))
+
+    # ------------------------------------------------------------
+    # 1)  Determine which points are "good"
+    # ------------------------------------------------------------
+    if external_mask is not None:
+        good = external_mask.astype(bool)
+    elif exclude_value is not None:
+        good = np.abs(f - exclude_value) > atol
+    else:
+        good = np.ones(n, dtype=bool)
+
+    if good.sum() < k + 1:
+        raise ValueError("Not enough good points to perform k-NN fits.")
+
+    # ------------------------------------------------------------
+    # 2)  Build KD-tree on *only* good points
+    # ------------------------------------------------------------
+    tree     = cKDTree(coords[good])
+    good_ids = np.flatnonzero(good)          # map local→global indices
+
+    # Prepare outputs
+    dfdx = np.full(n, fill, dtype=float)
+    dfdy = np.full(n, fill, dtype=float)
+
+    # ------------------------------------------------------------
+    # 3)  Loop over good points and fit local plane
+    # ------------------------------------------------------------
+    for local_i, global_i in enumerate(good_ids):
+        xi, yi, fi = x[global_i], y[global_i], f[global_i]
+
+        # query returns *k+1* because first neighbour is the point itself
+        _, loc_idx = tree.query([xi, yi], k=k+1)
+        nbr_idx    = loc_idx[1:]             # strip self
+
+        # Map local neighbour ids back to global
+        nbr_global = good_ids[nbr_idx]
+
+        dx = x[nbr_global] - xi
+        dy = y[nbr_global] - yi
+        df = f[nbr_global] - fi
+
+        A     = np.column_stack((dx, dy))    # (k, 2)
+        g, *_ = np.linalg.lstsq(A, df, rcond=None)
+        dfdx[global_i], dfdy[global_i] = g
+
+    return dfdx, dfdy
+
+
 # ███╗   ███╗ █████╗ ██╗███╗   ██╗
 # ████╗ ████║██╔══██╗██║████╗  ██║
 # ██╔████╔██║███████║██║██╔██╗ ██║
@@ -478,8 +646,57 @@ if __name__ == "__main__":
         verb('Initialization for file: '+str(file_name))
         init_ti = time.perf_counter()
         MF = MultiExodusReaderDerivs(file_name)
-        varnames = ['testout2','testoutgrad_x','testoutgrad_y']
+        idx_frames, t_frames = time_info(MF)
+        varnames = ['inclination_mat','testoutgrad_x','testoutgrad_y','gr0_x','gr0_y']
         MF.check_varlist(varnames)
+        for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
+            x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(varnames,ti,fullxy=True)
+            # normal gradient of inclination
+            # dfdx, dfdy = gradient_structured(x, y, clist[0])
+            dincdx, dincdy = gradient_unstructured(x, y, clist[0], k=8)
+            grad_mag   = np.hypot(dincdx, dincdy)
+
+            f   = clist[0]          # scalar field
+            gx  = clist[3]          # g_x component
+            gy  = clist[4]          # g_y component
+            fmask = f != 1.0
+            kn = 12
+            dfdx, dfdy   = gradient_unstructured(x, y, f,  k=kn, external_mask=fmask)# exclude_value=1.0, atol=1e-8)
+            dgxdx, dgxdy = gradient_unstructured(x, y, gx, k=kn, external_mask=fmask)# exclude_value=1.0, atol=1e-8)
+            dgydx, dgydy = gradient_unstructured(x, y, gy, k=kn, external_mask=fmask)# exclude_value=1.0, atol=1e-8)
+            det = dgxdx * dgydy - dgxdy * dgydx
+            # Avoid division by zero where the determinant vanishes
+            eps  = 1e-16
+            mask = np.abs(det) > eps
+            df_dgx = np.full_like(f, np.nan)   # prepare output arrays
+            df_dgy = np.full_like(f, np.nan)
+            # Closed-form inverse of a 2×2 matrix
+            df_dgx[mask] = ( dgydy[mask]*dfdx[mask] - dgxdy[mask]*dfdy[mask] ) / det[mask]
+            df_dgy[mask] = ( -dgydx[mask]*dfdx[mask] + dgxdx[mask]*dfdy[mask] ) / det[mask]
+            # num   = dfdx * dgdx + dfdy * dgdy                # ∇f · ∇g
+            # den   = dgdx**2 + dgdy**2                        # |∇g|²
+            # df_dg = np.divide(num, den, out=np.full_like(num, np.nan),
+            #                 where=den > 1e-16)             # avoid 0/0 → NaN
+            # RMSE
+            ref = clist[1]
+            pred = df_dgx
+            err  = pred - ref
+            # rmask  = np.isfinite(ref) & np.isfinite(pred)
+            # rmse  = np.sqrt(np.mean((ref[mask] - pred[mask])**2))
+            # print(f"RMSE = {rmse:.4e}")
+            # Plotting
+            fx = tx[:, :4]
+            fy = ty[:, :4]
+            plotit(fx,fy,clist[0],'IncMat',t_frames,i)
+            plotit(fx,fy,dincdx,'Inc_Grad_X',t_frames,i)
+            plotit(fx,fy,dincdy,'Inc_Grad_y',t_frames,i)
+            plotit(fx,fy,df_dgx,'dInc_dGradEta0_x_man',t_frames,i)
+            plotit(fx,fy,clist[1],'dInc_dGradEta0_x_moose',t_frames,i)
+            plotit(fx[fmask],fy[fmask],err[fmask],'dInc_dGradEta0_x_diff',t_frames,i)
+            # for n,vname in enumerate(varnames):
+            #     plotit(fx,fy,clist[n],vname,t_frames,i)
+            #     print(" "+str(n))
+
 
         # MF = GrainMultiExodusReader(file_name)
         # idx_frames, t_frames = time_info(MF) # frames and the time at each one
