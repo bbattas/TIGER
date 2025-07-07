@@ -86,7 +86,6 @@ class MultiExodusReaderDerivs:
         er = self.exodus_readers[0]
         # Combine nodal + element variable names and remove duplicates
         available = set(er.nodal_var_names) | set(er.elem_var_names)
-
         # List comprehension keeps original order in case you want it
         missing = [name for name in varlist if name not in available]
 
