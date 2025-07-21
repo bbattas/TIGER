@@ -719,17 +719,37 @@ if __name__ == "__main__":
         idx_frames, t_frames = time_info(MF)
         varnames = ['inclination_vector_x','inclination_vector_y','ang_dist']
         MF.check_varlist(varnames)
+        name_base = file_name.rsplit(".", 1)[0]
+        csv_rows = []
         for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
             x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(varnames,ti,fullxy=True)
             v0 = clist[0]
             v1 = clist[1]
             # mask = (v0 != 0) | (v1 != 0)
             mask = clist[2] >= 0.0 # != -1
-            clist_filtered = [arr[mask] for arr in clist]
+            clist_filtered1 = [arr[mask] for arr in clist]
+            # also check magnitude
+            ix, iy = clist_filtered1[:2]
+            mag = np.sqrt(ix**2 + iy**2)
+            mask2 = mag >= 0.75
+            clist_filtered = [arr[mask2] for arr in clist_filtered1]
             incx = clist_filtered[0]
             incy = clist_filtered[1]
             adist = clist_filtered[2]
             pplot(incx,incy,'Inclination',t_frames,i)
+
+            # Save a csv
+            for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
+                csv_rows.append({
+                    "time_step":  i,
+                    "time":       ti,
+                    "index":      j,
+                    "incx":       ix,
+                    "incy":       iy,
+                    "adist":      ad
+                })
+
+
         #     # Plotting
         #     fx = tx[:, :4]
         #     fy = ty[:, :4]
@@ -790,6 +810,11 @@ if __name__ == "__main__":
         # #         bbox_to_anchor=(.5 + np.cos(angle)/2, .5 + np.sin(angle)/2))
         # # plt.savefig('P03_voronoi_aniso_polar',transparent=True)
         # # plt.close('all')
+
+        # Save csv
+        odf = pd.DataFrame(csv_rows)
+        outcsv_name = name_base + "_inclination.csv"
+        odf.to_csv(outcsv_name, index=False)
 
         pt(f'Done File {cnt+1}: {format_elapsed_time(init_ti)}')
 
