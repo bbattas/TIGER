@@ -34,6 +34,9 @@ import fnmatch
 from scipy.spatial import cKDTree
 import networkx as nx
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 
 # Defaults for the variables
 # WARNING: manually listed nodal vs elemental options for now! should try to add that to MER later
@@ -720,7 +723,8 @@ if __name__ == "__main__":
         varnames = ['inclination_vector_x','inclination_vector_y','ang_dist']
         MF.check_varlist(varnames)
         name_base = file_name.rsplit(".", 1)[0]
-        csv_rows = []
+        output_dir = "inc_data"         # root folder for your Parquet dataset
+        os.makedirs(output_dir, exist_ok=True)
         for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
             x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(varnames,ti,fullxy=True)
             v0 = clist[0]
@@ -738,16 +742,31 @@ if __name__ == "__main__":
             adist = clist_filtered[2]
             pplot(incx,incy,'Inclination',t_frames,i)
 
-            # Save a csv
-            for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
-                csv_rows.append({
-                    "time_step":  i,
-                    "time":       ti,
-                    "index":      j,
-                    "incx":       ix,
-                    "incy":       iy,
-                    "adist":      ad
-                })
+            df = pd.DataFrame({
+                "time_step": i,
+                "time":      ti,
+                "index":     np.arange(len(incx)),
+                "incx":      incx,
+                "incy":      incy,
+                "adist":     adist
+            })
+            table = pa.Table.from_pandas(df)
+            pq.write_to_dataset(
+                table,
+                root_path=output_dir,
+                partition_cols=["time_step"],
+                compression="snappy"
+            )
+            # # Save a csv
+            # for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
+            #     csv_rows.append({
+            #         "time_step":  i,
+            #         "time":       ti,
+            #         "index":      j,
+            #         "incx":       ix,
+            #         "incy":       iy,
+            #         "adist":      ad
+            #     })
 
 
         #     # Plotting
@@ -812,9 +831,9 @@ if __name__ == "__main__":
         # # plt.close('all')
 
         # Save csv
-        odf = pd.DataFrame(csv_rows)
-        outcsv_name = name_base + "_inclination.csv"
-        odf.to_csv(outcsv_name, index=False)
+        # odf = pd.DataFrame(csv_rows)
+        # outcsv_name = name_base + "_inclination.csv"
+        # odf.to_csv(outcsv_name, index=False)
 
         pt(f'Done File {cnt+1}: {format_elapsed_time(init_ti)}')
 
