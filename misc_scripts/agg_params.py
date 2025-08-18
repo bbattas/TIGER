@@ -591,13 +591,18 @@ def main():
         # plot_max_a_heatmap_for_m(df_sweep, m_target=default_vals.m)
         # plt.tight_layout()
         # plt.show()
-        df_km = calculate_multi_km(args, oom=8, per_axis=333, method="bisect")
+        df_km = calculate_multi_km(args, oom=1, per_axis=333, method="bisect")
         #, outfile="gbe_km_sweep.csv")
         # plot_max_a_heatmap_km(df_km)
         plot_max_a_heatmap_km(df_km, gbe_base=args.gbe, km_base=args.kappa*args.m,
                            show_lines=True, show_box=True)
         plt.tight_layout()
-        plt.show()
+        # plt.show()
+        if args.save is not None:
+            plt.savefig(args.save+'_multi_paramSpace')
+        if args.plot:
+            plt.show()
+        plt.close('all')
 
     else:
         calculate_single_aniso(args)
