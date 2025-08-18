@@ -8,6 +8,8 @@ from typing import List, Tuple, Dict, Any
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from itertools import product
+from tqdm import tqdm
 
 
 class default_vals:
@@ -24,6 +26,7 @@ def base_parser() -> argparse.ArgumentParser:
     p.add_argument("--gbe", type=float, default=default_vals.gbe, help="Iso GB Energy.")
     p.add_argument("--kappa", type=float, default=default_vals.kappa, help="Kappa.")
     p.add_argument("--m","-m", type=float, default=default_vals.m, help="FE constant m.")
+    p.add_argument("--multi", action="store_true", help="Parametric analysis of max aniso ceneterd around input values.")
     # Make all options non-required here; we'll enforce presence after merging JSON+CLI.
     # p.add_argument("--input_pattern","-i", help="Substring or glob for the input file.")
     # p.add_argument("--max-x","-x", type=float, help="Maximum allowed x (inclusive).")
@@ -31,8 +34,8 @@ def base_parser() -> argparse.ArgumentParser:
     # p.add_argument("--min-x", type=float, default=None, help="Minimum allowed x (inclusive).")
     # p.add_argument("--min-y", type=float, default=None, help="Minimum allowed y (inclusive).")
     # p.add_argument("-o","--output", help="Output filename ('.txt' added automatically if omitted).")
-    p.add_argument("--plot", action="store_true", help="Show plot of original/kept points and bound lines.")
-    p.add_argument("--save-plot", metavar="PATH", help="Save plot to file (implies --plot).")
+    p.add_argument("--plot", action="store_true", help="Show plots.")
+    p.add_argument("--save", metavar="PATH", help="Save plots to file (implies --plot).")
     # p.add_argument("--json","-j", action="store_true",
     #                help=f"Use {JSON_NAME} if present; create it if missing. CLI values override JSON.")
     # p.add_argument("--decimals","-d", type=int, default=None,
@@ -93,7 +96,8 @@ def base_parser() -> argparse.ArgumentParser:
 #         sys.exit(f"[error] Missing required option(s): {', '.join(missing)} "
 #                  f"(provide via CLI or {JSON_NAME})")
 
-def poly_g(g2):
+def poly_g(g):
+    g2 = g * g
     a1 = -3.0944
     a2 = -1.8169
     a3 = 10.323
@@ -102,23 +106,72 @@ def poly_g(g2):
     poly = (((a1 * g2 + a2) * g2 + a3) * g2 + a4) * g2 + a5
     return poly
 
-def main():
-    p = base_parser()
-    args = p.parse_args()
+def f0(g):
+    g2 = g * g
+    pol = poly_g(g)
+    f = (((((0.0788 * pol - 0.4955) * pol + 1.2244) * pol - 1.5281) * pol + 1.0686) * pol - 0.5563) * pol + 0.2907
+    return f
 
-    a_range = np.linspace(0,1,100)
+def solve_poly(poly_val):
+    a1, a2, a3, a4, a5 = -3.0944, -1.8169, 10.323, -8.1819, 2.0033
+    coeffs = [a1, a2, a3, a4, a5 - poly_val]
+    roots = np.roots(coeffs)
+    # Filter real solutions
+    real_roots = [r.real for r in roots if abs(r.imag) < 1e-8]
+    return real_roots
+
+G_MIN = 0.098546
+G_MAX = 0.765691
+GAMMA_MIN = 0.5
+GAMMA_MAX = 40.0
+
+def clip_gamma_by_g(gamma, g,
+                    gmin=G_MIN, gmax=G_MAX,
+                    gamma_min=GAMMA_MIN, gamma_max=GAMMA_MAX):
+    """
+    Clamp gamma ONLY where g is out of [gmin, gmax].
+    Returns: gamma_clipped, mask_out, mask_low, mask_high
+    """
+    g = np.asarray(g)
+    gamma = np.asarray(gamma)
+    mask_low  = (g < gmin)
+    mask_high = (g > gmax)
+    mask_out  = mask_low | mask_high
+
+    gamma_clipped = gamma.copy()
+    gamma_clipped[mask_low]  = gamma_min   # <-- set to lower limit
+    gamma_clipped[mask_high] = gamma_max   # <-- set to upper limit
+
+    return gamma_clipped, mask_out, mask_low, mask_high
+
+def contiguous_runs(mask):
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0:
+        return []
+    idx = np.flatnonzero(mask)
+    if idx.size == 0:
+        return []
+    # breaks where the index jumps by > 1
+    breaks = np.where(np.diff(idx) > 1)[0]
+    starts = np.r_[0, breaks + 1]
+    ends   = np.r_[breaks, idx.size - 1]
+    return [(idx[s], idx[e]) for s, e in zip(starts, ends)]
+
+
+def calculate_single_aniso(args):
+    a_range = np.linspace(0,1,1000)
     anis = np.stack([1 - a_range, 1 + a_range], axis=-1)
     MIN, MAX = 0, 1
 
     gbe = args.gbe * anis # (n,2)
     g = gbe / (np.sqrt(args.kappa * args.m))
     g2 = g * g
-    polyg = poly_g(g2)
+    polyg = poly_g(g)
     gamma = 1 / polyg
-    # gamma_limit_min = 0.5
-    # gamma_limit_max = 40
+    f0_int = f0(g)
+    iw = (np.sqrt(args.kappa / args.m)) * (np.sqrt(1 / f0_int))
 
-
+    # Put it in a DF
     df = pd.DataFrame({
         "a": a_range,
         "gbe_min": gbe[:, MIN], "gbe_max": gbe[:, MAX],
@@ -126,25 +179,430 @@ def main():
         "g2_min": g2[:, MIN], "g2_max": g2[:, MAX],
         "polyg_min": polyg[:, MIN], "polyg_max": polyg[:, MAX],
         "gamma_min": gamma[:, MIN], "gamma_max": gamma[:, MAX],
-        # "k_min":   k_band[:, MIN],   "k_max":   k_band[:, MAX],
-        # "sig_min": sigma_band[:, MIN],"sig_max": sigma_band[:, MAX],
+        "iw_min": iw[:, MIN], "iw_max": iw[:, MAX],
     })
+    # Valid parameter space
+    ok = (
+        (df["g_min"] >= G_MIN) & (df["g_max"] <= G_MAX) &
+        (df["gamma_min"] > GAMMA_MIN) & (df["gamma_max"] < GAMMA_MAX)
+    )
+    bad = ~ok
+    max_valid_a = 0
+    if ok.any():
+        max_valid_a = df.loc[ok, "a"].max()
+        print(f"Maximum anisotropy with valid g & gamma: {max_valid_a:.4f}")
+    else:
+        print("No anisotropy values are fully valid within the specified ranges.")
 
-    # fig, ax = plt.subplots()
-    # ax.fill_between(df["a"], df["gbe_min"], df["gbe_max"], alpha=0.3, label="GBE band")
-    # ax.plot(df["a"], 0.5*(df["gbe_min"]+df["gbe_max"]), label="GBE center")
-    # ax.set_xlabel("Anisotropy Magnitude +/-")
-    # ax.set_ylabel("GBE")
-    # ax.legend()
-    # plt.show()
+    # Plots
+    # My own version simpler
     fig, ax = plt.subplots()
-    ax.fill_between(df["a"], df["gamma_min"], df["gamma_max"], alpha=0.3, label="Gamma band")
-    ax.plot(df["a"], 0.5*(df["gamma_min"]+df["gamma_max"]), label="Gamma center")
+    ax.fill_between(df["a"][ok], df["gamma_min"][ok], df["gamma_max"][ok],
+                alpha=0.3, label="Gamma band (in-bounds)")
+    ax.fill_between(df["a"][bad], 0.5,40,#df["gamma_min"][bad], df["gamma_max"][bad],
+                alpha=0.3,color="red", label="Gamma band (out-bounds)")
+    ax.plot(df["a"][ok], 0.5*(df["gamma_min"][ok]+df["gamma_max"][ok]), label="Gamma center")
+
+    ax.axhline(0.5,  ls="--", lw=1, color="k", alpha=0.4)
+    ax.axhline(40.,  ls="--", lw=1, color="k", alpha=0.4)
 
     ax.set_xlabel("Anisotropy Magnitude +/-")
     ax.set_ylabel("Gamma")
     ax.legend()
-    plt.show()
+    plt.tight_layout()
+    if args.save is not None:
+        plt.savefig(args.save+'_gamma_valid_single')
+    if args.plot:
+        plt.show()
+    plt.close('all')
+
+    # IW my way
+    fig, ax = plt.subplots()
+    ax.fill_between(df["a"][ok], df["iw_min"][ok], df["iw_max"][ok],
+                alpha=0.3, label="IW band (in-bounds)")
+    ax.fill_between(df["a"][bad], df["iw_min"][bad], df["iw_max"][bad],
+                alpha=0.3,color="red", label="IW band (out-bounds)")
+    ax.plot(df["a"], 0.5*(df["iw_min"]+df["iw_max"]), label="IW center")
+
+    ax.set_xlabel("Anisotropy Magnitude +/-")
+    ax.set_ylabel("IW")
+    ax.legend()
+    plt.tight_layout()
+    if args.save is not None:
+        plt.savefig(args.save+'_IW_valid_single')
+    if args.plot:
+        plt.show()
+    plt.close('all')
+
+    return max_valid_a
+
+
+def minimal_a_calc(gbe,kappa,m,n=100):
+    a_range = np.linspace(0,1,n)
+    anis = np.stack([1 - a_range, 1 + a_range], axis=-1)
+    MIN, MAX = 0, 1
+
+    gbe = gbe * anis # (n,2)
+    g = gbe / (np.sqrt(kappa * m))
+    # g2 = g * g
+    polyg = poly_g(g)
+    gamma = 1 / polyg
+    f0_int = f0(g)
+    iw = (np.sqrt(kappa / m)) * (np.sqrt(1 / f0_int))
+
+    # Put it in a DF
+    df = pd.DataFrame({
+        "a": a_range,
+        # "gbe_min": gbe[:, MIN], "gbe_max": gbe[:, MAX],
+        "g_min": g[:, MIN], "g_max": g[:, MAX],
+        # "g2_min": g2[:, MIN], "g2_max": g2[:, MAX],
+        # "polyg_min": polyg[:, MIN], "polyg_max": polyg[:, MAX],
+        "gamma_min": gamma[:, MIN], "gamma_max": gamma[:, MAX],
+        # "iw_min": iw[:, MIN], "iw_max": iw[:, MAX],
+    })
+    # Valid parameter space
+    ok = (
+        (df["g_min"] >= G_MIN) & (df["g_max"] <= G_MAX) &
+        (df["gamma_min"] > GAMMA_MIN) & (df["gamma_max"] < GAMMA_MAX)
+    )
+    max_valid_a = 0
+    if ok.any():
+        max_valid_a = df.loc[ok, "a"].max()
+
+    return max_valid_a
+
+def _valid_at_a(gbe, kappa, m, a):
+    """
+    Return True/False if BOTH min/max branches at this 'a' are within g and gamma bounds.
+    """
+    # aniso multipliers for min/max branches
+    anis = np.array([1 - a, 1 + a])  # shape (2,)
+    gbepm = gbe * anis               # (2,)
+    g = gbepm / np.sqrt(kappa * m)   # (2,)
+
+    # g bounds must hold on both branches
+    if not (g[0] >= G_MIN and g[1] <= G_MAX):
+        return False
+
+    # gamma from poly_g(g) = 1 / P(g)
+    polyg = poly_g(g)
+    gamma = 1.0 / polyg              # (2,)
+
+    # gamma bounds must hold on both branches
+    if not (gamma[0] > GAMMA_MIN and gamma[1] < GAMMA_MAX):
+        return False
+
+    return True
+
+def minimal_a_bisect(gbe, kappa, m, tol=1e-4, max_iter=128):
+    lo, hi = 0.0, 1.0
+
+    # If even a=0 is invalid, return 0 right away
+    if not _valid_at_a(gbe, kappa, m, 0.0):
+        return 0.0
+
+    # If a=1 is valid (unlikely), then 1.0 is the answer
+    if _valid_at_a(gbe, kappa, m, 1.0):
+        return 1.0
+
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        if _valid_at_a(gbe, kappa, m, mid):
+            lo = mid  # mid is valid; push upward
+        else:
+            hi = mid  # mid invalid; move down
+        if (hi - lo) <= tol:
+            break
+    return lo
+
+# def calculate_multi_aniso(args, oom=2):
+def calculate_multi_aniso(args, oom=2, per_axis=9, method="bisect", outfile=None):
+    """
+    Sweep gbe, kappa, m over ±oom orders of magnitude around args.* values.
+    per_axis: number of points per parameter (>=2 recommended).
+    method: "bisect" (fast) or "grid" (uses minimal_a_calc).
+    """
+    # Base values
+    base_gbe   = float(getattr(args, "gbe",   default_vals.gbe))
+    base_kappa = float(getattr(args, "kappa", default_vals.kappa))
+    base_m     = float(getattr(args, "m",     default_vals.m))
+
+    factors = np.logspace(-oom, +oom, per_axis)  # multiplicative factors
+    total   = len(factors) ** 3   # total combos
+
+    rows = []
+    use_bisect = (method.lower() == "bisect")
+    for fg, fk, fm in tqdm(product(factors, factors, factors), total=total, desc='Sweeping parameter space'):
+        gbe   = base_gbe   * fg
+        kappa = base_kappa * fk
+        m     = base_m     * fm
+
+        if use_bisect:
+            max_a = minimal_a_bisect(gbe, kappa, m)
+        else:
+            max_a = minimal_a_calc(gbe, kappa, m, n=600)  # smaller n to start
+
+        rows.append({
+            "gbe": gbe, "kappa": kappa, "m": m,
+            "f_gbe": fg, "f_kappa": fk, "f_m": fm,
+            "max_valid_a": max_a,
+        })
+
+    df = pd.DataFrame(rows)
+
+    if outfile:
+        Path(outfile).parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(outfile, index=False)
+
+    return df
+
+
+# PLOTTING
+def _edges_from_centers(v):
+    """Log-safe bin edges from positive center points v (ascending)."""
+    v = np.asarray(v, float)
+    assert np.all(v > 0), "All centers must be positive for log edges."
+    logv = np.log(v)
+    edges = np.empty(v.size + 1)
+    edges[1:-1] = np.exp(0.5 * (logv[1:] + logv[:-1]))
+    edges[0]    = np.exp(logv[0] - (logv[1] - logv[0]) / 2)
+    edges[-1]   = np.exp(logv[-1] + (logv[-1] - logv[-2]) / 2)
+    return edges
+
+def plot_max_a_heatmap_for_m(df_sweep, m_target, ax=None):
+    """
+    df_sweep: output of calculate_multi_aniso(...), with columns:
+              ['gbe','kappa','m','max_valid_a', ...]
+    m_target: the m value you'd like to slice at (choose nearest in log space)
+    """
+    # choose nearest m (log distance)
+    m_unique = np.array(sorted(df_sweep["m"].unique()))
+    i = np.argmin(np.abs(np.log(m_unique / m_target)))
+    m_sel = m_unique[i]
+
+    sub = df_sweep[df_sweep["m"] == m_sel].copy()
+
+    # pivot to 2D grid (kappa x gbe)
+    gbe_vals   = np.array(sorted(sub["gbe"].unique()))
+    kappa_vals = np.array(sorted(sub["kappa"].unique()))
+    P = sub.pivot(index="kappa", columns="gbe", values="max_valid_a")
+    P = P.reindex(index=kappa_vals, columns=gbe_vals)  # ensure sorted axes
+
+    Z = P.values  # shape (len(kappa_vals), len(gbe_vals))
+
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    # build log-space cell edges for pcolormesh
+    xe = _edges_from_centers(gbe_vals)
+    ye = _edges_from_centers(kappa_vals)
+
+    # mask NaNs (no valid result for that cell)
+    Zm = np.ma.masked_invalid(Z)
+
+    pcm = ax.pcolormesh(xe, ye, Zm, shading="auto")
+    cbar = plt.colorbar(pcm, ax=ax)
+    cbar.set_label("Max valid anisotropy (a*)")
+
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlabel("gbe")
+    ax.set_ylabel("kappa")
+    ax.set_title(f"Max valid a* at m ≈ {m_sel:.3e} (target {m_target:.3e})")
+
+    # optional: mark cells with zero (no valid anisotropy) as red dots
+    # r, c = np.where(np.nan_to_num(Z, nan=-1.0) == 0.0)
+    # ax.plot(gbe_vals[c], kappa_vals[r], 'o', ms=3, color='red', alpha=0.7)
+
+    return ax
+
+
+
+# COMBINED K and M
+def _valid_at_a_km(gbe, km, a):
+    """
+    True if BOTH min/max branches are within g & gamma bounds at this 'a'.
+    """
+    anis = np.array([1 - a, 1 + a])     # (2,)
+    g = (gbe * anis) / np.sqrt(km)      # (2,)
+
+    if not (g[0] >= G_MIN and g[1] <= G_MAX):
+        return False
+
+    polyg = poly_g(g)                   # expects vectorized input
+    gamma = 1.0 / polyg
+
+    if not (gamma[0] > GAMMA_MIN and gamma[1] < GAMMA_MAX):
+        return False
+
+    return True
+
+
+def minimal_a_bisect_km(gbe, km, tol=1e-4, max_iter=128):
+    """
+    Fast: find the largest a in [0,1] that remains valid, using bisection.
+    """
+    lo, hi = 0.0, 1.0
+    if not _valid_at_a_km(gbe, km, 0.0):
+        return 0.0
+    if _valid_at_a_km(gbe, km, 1.0):
+        return 1.0
+
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        if _valid_at_a_km(gbe, km, mid):
+            lo = mid
+        else:
+            hi = mid
+        if (hi - lo) <= tol:
+            break
+    return lo
+
+def calculate_multi_km(args, oom=2, per_axis=9, method="bisect", outfile=None):
+    """
+    Sweep gbe and km over ±oom orders around base values.
+    km base = args.kappa * args.m
+
+    Returns a DataFrame with columns:
+      ['gbe','km','f_gbe','f_km','max_valid_a']
+    """
+    base_gbe = float(getattr(args, "gbe",   default_vals.gbe))
+    base_k   = float(getattr(args, "kappa", default_vals.kappa))
+    base_m   = float(getattr(args, "m",     default_vals.m))
+    base_km  = base_k * base_m
+
+    f = np.logspace(-oom, +oom, per_axis)
+    total = len(f) ** 2
+
+    rows = []
+    use_bisect = (method.lower() == "bisect")
+
+    for fg, fkm in tqdm(product(f, f), total=total, desc="Sweep gbe×km"):
+        gbe = base_gbe * fg
+        km  = base_km  * fkm
+
+        if use_bisect:
+            max_a = minimal_a_bisect_km(gbe, km)
+        else:
+            raise ValueError("calculate_multi_km: Not setup to hadle the calculation instead of bisect")
+            max_a = minimal_a_calc_km(gbe, km, n=600)
+
+        rows.append({
+            "gbe": gbe, "km": km,
+            "f_gbe": fg, "f_km": fkm,
+            "max_valid_a": max_a,
+        })
+
+    df = pd.DataFrame(rows)
+    if outfile:
+        Path(outfile).parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(outfile, index=False)
+    return df
+
+
+# def plot_max_a_heatmap_km(df, ax=None):
+#     """
+#     df: output of calculate_multi_km with columns ['gbe','km','max_valid_a']
+#     """
+#     gbe_vals = np.array(sorted(df["gbe"].unique()))
+#     km_vals  = np.array(sorted(df["km"].unique()))
+#     P = df.pivot(index="km", columns="gbe", values="max_valid_a")
+#     P = P.reindex(index=km_vals, columns=gbe_vals)
+
+#     Z = P.values
+#     xe = _edges_from_centers(gbe_vals)
+#     ye = _edges_from_centers(km_vals)
+
+#     if ax is None:
+#         fig, ax = plt.subplots()
+
+#     pcm = ax.pcolormesh(xe, ye, np.ma.masked_invalid(Z), shading="auto")
+#     cbar = plt.colorbar(pcm, ax=ax)
+#     cbar.set_label("Max valid anisotropy (a*)")
+
+#     ax.set_xscale("log"); ax.set_yscale("log")
+#     ax.set_xlabel("gbe")
+#     ax.set_ylabel("km = kappa·m")
+#     ax.set_title("Max valid a* over (gbe, kappa*m)")
+
+#     return ax
+
+def plot_max_a_heatmap_km(df, gbe_base=None, km_base=None, ax=None, show_lines=True, show_box=False):
+    """
+    df: output of calculate_multi_km with ['gbe','km','max_valid_a']
+    gbe_base, km_base: base values to highlight
+    show_lines: if True, draw dotted hline/vline at base values
+    show_box:  if True, draw a rectangle (±half a grid step) around base point
+    """
+    gbe_vals = np.array(sorted(df["gbe"].unique()))
+    km_vals  = np.array(sorted(df["km"].unique()))
+    P = df.pivot(index="km", columns="gbe", values="max_valid_a")
+    P = P.reindex(index=km_vals, columns=gbe_vals)
+
+    Z = P.values
+    xe = _edges_from_centers(gbe_vals)
+    ye = _edges_from_centers(km_vals)
+
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    pcm = ax.pcolormesh(xe, ye, np.ma.masked_invalid(Z), shading="auto")
+    cbar = plt.colorbar(pcm, ax=ax)
+    cbar.set_label("Max valid anisotropy (a*)")
+
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlabel("gbe")
+    ax.set_ylabel("km = kappa·m")
+    ax.set_title("Max valid a* over (gbe, km)")
+
+    # --- Highlight base values ---
+    if gbe_base and km_base:
+        if show_lines:
+            ax.axvline(gbe_base, ls="--", lw=1, color="k", alpha=0.7)
+            ax.axhline(km_base, ls="--", lw=1, color="k", alpha=0.7)
+        if show_box:
+            # compute nearest grid spacing in log space
+            import matplotlib.patches as patches
+            dx = np.min(np.diff(np.log(gbe_vals))) / 2
+            dy = np.min(np.diff(np.log(km_vals))) / 2
+            rect = patches.Rectangle(
+                (gbe_base * np.exp(-dx), km_base * np.exp(-dy)),
+                gbe_base * (np.exp(dx) - np.exp(-dx)),
+                km_base * (np.exp(dy) - np.exp(-dy)),
+                linewidth=1.5, edgecolor="red", facecolor="none", ls="--"
+            )
+            ax.add_patch(rect)
+
+    return ax
+
+
+
+def main():
+    p = base_parser()
+    args = p.parse_args()
+
+    # Valid g(gamma) range:
+    # Gamma = 0.52 - 40
+    # g(gamma) = 0.098546 - 0.765691
+    # f0 is 0.004921 - 0.281913
+    # g for gamma 0.5 is about 0.0201 (round it up to be safe)
+    if args.multi:
+        # df_sweep = calculate_multi_aniso(args, oom=2, per_axis=30, method="bisect")
+        # #, outfile="multi_aniso.csv")
+        # plot_max_a_heatmap_for_m(df_sweep, m_target=default_vals.m)
+        # plt.tight_layout()
+        # plt.show()
+        df_km = calculate_multi_km(args, oom=8, per_axis=333, method="bisect")
+        #, outfile="gbe_km_sweep.csv")
+        # plot_max_a_heatmap_km(df_km)
+        plot_max_a_heatmap_km(df_km, gbe_base=args.gbe, km_base=args.kappa*args.m,
+                           show_lines=True, show_box=True)
+        plt.tight_layout()
+        plt.show()
+
+    else:
+        calculate_single_aniso(args)
+
+
 
 
 
