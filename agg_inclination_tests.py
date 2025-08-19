@@ -61,6 +61,8 @@ parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
                             help='Dimensions for grain size calculation (Default=2)')
 parser.add_argument('--subdirs','-s',action='store_true',
                             help='Run in all subdirectories (vs CWD), default=False')
+parser.add_argument('--save',action='store_true',
+                            help='Save the inclination data, default=False')
 parser.add_argument('--esd',action='store_true',
                             help='''Return ESD (vol or area based if 3D/2D) instead of grain
                             area/volume, default=False''')
@@ -636,7 +638,7 @@ def gradient_unstructured(x, y, f, *, k=6,
 def inc_f(theta,delta,theta0,thetapre=4):
     return 1 + delta * np.cos(thetapre*(theta + theta0))
 
-def rose_curve(theta, n_bins=180, mode='probability'):
+def rose_curve(theta, n_bins=180, mode='probability', weights=None):
     """
     Return bin centres (rad) and bin heights for a rose diagram.
 
@@ -646,9 +648,9 @@ def rose_curve(theta, n_bins=180, mode='probability'):
            'max'          → heights in [0,1] (divide by max)
     """
     theta = np.mod(theta, 2*np.pi)
-
     edges   = np.linspace(0, 2*np.pi, n_bins + 1)
-    counts, _ = np.histogram(theta, bins=edges)
+
+    counts, _ = np.histogram(theta, bins=edges, weights=weights)
 
     if mode == 'probability':
         heights = counts / counts.sum()
@@ -668,7 +670,7 @@ def rose_curve(theta, n_bins=180, mode='probability'):
     return centres, heights
 
 
-def pplot(incx,incy,lbl,t_frames,i):
+def pplot(incx,incy,lbl,t_frames,i,iw=None):
     # Anisotropy Function
     full_deg = np.linspace(0, 360, 361)
     full_rad = np.deg2rad(full_deg)
@@ -677,14 +679,25 @@ def pplot(incx,incy,lbl,t_frames,i):
     # Inclination
     theta = np.arctan2(incy, incx)
     theta = np.mod(theta, 2*np.pi)
-    ang, rad = rose_curve(theta, n_bins=cl_args.bins, mode='probability')
+    # Weight each element by 1/int_width (no scaling of the vectors themselves)
+    weights = None
+    if iw is not None:
+        iw = np.asarray(iw)
+        valid = np.isfinite(iw) & (iw > 0)          # guard against zeros/NaNs
+        safe_iw = np.where(valid, iw, np.nan)
+        weights = np.zeros_like(theta, dtype=float)
+        weights[valid] = 1.0 / safe_iw[valid]
+        if not np.any(valid):                       # fallback if everything invalid
+            weights = None
+    # Use probability so areas are comparable across timesteps
+    ang, rad = rose_curve(theta, n_bins=cl_args.bins, mode='probability', weights=weights)
     # Weight aniso function
     ref_inc = ref_inc * ((max(rad) - min(rad))/2)
     iso_inc = iso_inc * ((max(rad) - min(rad))/2)
     # Plot
     fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-    ax.plot(full_rad, iso_inc, label='Isotropic Dist')
-    ax.plot(full_rad, ref_inc, label='Aniso Function')
+    # ax.plot(full_rad, iso_inc, label='Isotropic Dist')
+    # ax.plot(full_rad, ref_inc, label='Aniso Function')
     ax.plot(ang, rad, label='Inclination Dist')
     ax.set_theta_zero_location('E')
     ax.set_theta_direction(1)
@@ -720,11 +733,12 @@ if __name__ == "__main__":
         init_ti = time.perf_counter()
         MF = MultiExodusReaderDerivs(file_name)
         idx_frames, t_frames = time_info(MF)
-        varnames = ['inclination_vector_x','inclination_vector_y','ang_dist']
+        varnames = ['inclination_vector_x','inclination_vector_y','ang_dist','int_width']
         MF.check_varlist(varnames)
         name_base = file_name.rsplit(".", 1)[0]
-        output_dir = "inc_data"         # root folder for your Parquet dataset
-        os.makedirs(output_dir, exist_ok=True)
+        if cl_args.save:
+            output_dir = "inc_data"         # root folder for your Parquet dataset
+            os.makedirs(output_dir, exist_ok=True)
         for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
             x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(varnames,ti,fullxy=True)
             v0 = clist[0]
@@ -735,28 +749,30 @@ if __name__ == "__main__":
             # also check magnitude
             ix, iy = clist_filtered1[:2]
             mag = np.sqrt(ix**2 + iy**2)
-            mask2 = mag >= 0.75
+            mask2 = mag >= 0.9
             clist_filtered = [arr[mask2] for arr in clist_filtered1]
             incx = clist_filtered[0]
             incy = clist_filtered[1]
             adist = clist_filtered[2]
-            pplot(incx,incy,'Inclination',t_frames,i)
+            iw = clist_filtered[3]
+            pplot(incx,incy,'Inclination',t_frames,i,iw)
 
-            df = pd.DataFrame({
-                "time_step": i,
-                "time":      ti,
-                "index":     np.arange(len(incx)),
-                "incx":      incx,
-                "incy":      incy,
-                "adist":     adist
-            })
-            table = pa.Table.from_pandas(df)
-            pq.write_to_dataset(
-                table,
-                root_path=output_dir,
-                partition_cols=["time_step"],
-                compression="snappy"
-            )
+            if cl_args.save:
+                df = pd.DataFrame({
+                    "time_step": i,
+                    "time":      ti,
+                    "index":     np.arange(len(incx)),
+                    "incx":      incx,
+                    "incy":      incy,
+                    "adist":     adist
+                })
+                table = pa.Table.from_pandas(df)
+                pq.write_to_dataset(
+                    table,
+                    root_path=output_dir,
+                    partition_cols=["time_step"],
+                    compression="snappy"
+                )
             # # Save a csv
             # for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
             #     csv_rows.append({
