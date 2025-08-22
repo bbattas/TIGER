@@ -27,6 +27,7 @@ def base_parser() -> argparse.ArgumentParser:
     p.add_argument("--kappa", type=float, default=default_vals.kappa, help="Kappa.")
     p.add_argument("--m","-m", type=float, default=default_vals.m, help="FE constant m.")
     p.add_argument("--multi", action="store_true", help="Parametric analysis of max aniso ceneterd around input values.")
+    p.add_argument("--maxm", action="store_true", help="Find the m value(s) for maximum aniso for given kappa and GBE.")
     # Make all options non-required here; we'll enforce presence after merging JSON+CLI.
     # p.add_argument("--input_pattern","-i", help="Substring or glob for the input file.")
     # p.add_argument("--max-x","-x", type=float, help="Maximum allowed x (inclusive).")
@@ -574,6 +575,93 @@ def plot_max_a_heatmap_km(df, gbe_base=None, km_base=None, ax=None, show_lines=T
 
     return ax
 
+# For calculating the best m value to use
+def _max_a_at_m(gbe, kappa, m):
+    # Objective for maximization: max valid anisotropy at this m
+    return float(minimal_a_bisect(gbe, kappa, m))
+
+def _golden_section_max_logm(gbe, kappa, logm_lo, logm_hi, tol=1e-4, max_iter=64):
+    """
+    Maximize f(log m) := max_a(m) over logm in [logm_lo, logm_hi] using golden-section.
+    Returns (logm_star, f_star).
+    """
+    phi = (1 + np.sqrt(5)) / 2
+    invphi = 1 / phi
+
+    a, b = logm_lo, logm_hi
+    c = b - invphi * (b - a)
+    d = a + invphi * (b - a)
+
+    fc = _max_a_at_m(gbe, kappa, np.exp(c))
+    fd = _max_a_at_m(gbe, kappa, np.exp(d))
+
+    for _ in range(max_iter):
+        if (b - a) <= tol:
+            break
+        if fc < fd:
+            a, c, fc = c, d, fd
+            d = a + invphi * (b - a)
+            fd = _max_a_at_m(gbe, kappa, np.exp(d))
+        else:
+            b, d, fd = d, c, fc
+            c = b - invphi * (b - a)
+            fc = _max_a_at_m(gbe, kappa, np.exp(c))
+
+    # pick best endpoint
+    if fc > fd:
+        return c, fc
+    else:
+        return d, fd
+
+def find_best_m(gbe, kappa, m_base, coarse_pts=41, coarse_oom=3, refine_tol=1e-4):
+    """
+    1) Coarse scan m in [m_base/10^coarse_oom, m_base*10^coarse_oom] (logspace)
+    2) Bracket the max using the best coarse point and its neighbors
+    3) Golden-section refine on log(m)
+    Returns (m_star, a_star)
+    """
+    # 1) coarse scan
+    m_lo = m_base / (10 ** coarse_oom)
+    m_hi = m_base * (10 ** coarse_oom)
+    logm_grid = np.linspace(np.log(m_lo), np.log(m_hi), coarse_pts)
+    vals = np.array([_max_a_at_m(gbe, kappa, np.exp(Lm)) for Lm in logm_grid])
+
+    best_idx = int(np.nanargmax(vals))
+    a_star0 = float(vals[best_idx])
+
+    # If best is at an endpoint, expand a bit (or just refine over the whole interval)
+    i0 = max(0, best_idx - 1)
+    i1 = min(coarse_pts - 1, best_idx + 1)
+    logm_lo = logm_grid[i0]
+    logm_hi = logm_grid[i1]
+    if logm_hi - logm_lo < 1e-9:  # degenerate (e.g., flat or endpoint)
+        logm_lo, logm_hi = logm_grid[0], logm_grid[-1]
+
+    # 2) refine with golden-section on log m
+    logm_star, a_star = _golden_section_max_logm(
+        gbe, kappa, logm_lo, logm_hi, tol=refine_tol, max_iter=64
+    )
+    return float(np.exp(logm_star)), float(a_star)
+
+def plot_max_a_vs_m_around(gbe, kappa, m_star, span_oom=1.0, n=61, ax=None):
+    """
+    Plot max_valid_a vs m over a logspace window around m_star:
+    m in [m_star/10^span_oom, m_star*10^span_oom].
+    """
+    m_vals = np.logspace(np.log10(m_star) - span_oom,
+                         np.log10(m_star) + span_oom, n)
+    a_vals = [ _max_a_at_m(gbe, kappa, m) for m in tqdm(m_vals, desc="a*(m) line") ]
+
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    ax.plot(m_vals, a_vals, lw=2)
+    ax.axvline(m_star, ls="--", lw=1, color="k", alpha=0.7)
+    ax.set_xscale("log")
+    ax.set_xlabel("m")
+    ax.set_ylabel("Max valid anisotropy a*")
+    ax.set_title(f"a*(m) around m* ≈ {m_star:.3e}")
+    return ax, m_vals, a_vals
 
 
 def main():
@@ -604,8 +692,35 @@ def main():
             plt.show()
         plt.close('all')
 
-    else:
-        calculate_single_aniso(args)
+    # else:
+    #     calculate_single_aniso(args)
+
+    if args.maxm:
+        # Find the m value that corresponds to the maximum anisotropy for the input kappa and gbe
+        # Plot a small range of m around that value to show the anisotropy as a function of m
+        gbe = float(args.gbe)
+        kappa = float(args.kappa)
+        m_base = float(args.m)
+
+        # 1) Find the argmax m*
+        m_star, a_star = find_best_m(gbe, kappa, m_base,
+                                     coarse_pts=41,  # adjust if you want
+                                     coarse_oom=3,   # ±3 orders to search broadly
+                                     refine_tol=1e-4)
+        print(f"Best m ≈ {m_star:.6e} yields a* ≈ {a_star:.6f}")
+
+        # 2) Plot a*(m) over ±1 OOM around m*
+        ax, m_vals, a_vals = plot_max_a_vs_m_around(
+            gbe, kappa, m_star, span_oom=1.0, n=301
+        )
+        plt.tight_layout()
+        if args.save is not None:
+            plt.savefig(args.save + "_amax_vs_m")
+        if args.plot:
+            plt.show()
+        plt.close('all')
+
+
 
 
 

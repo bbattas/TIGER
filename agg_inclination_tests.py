@@ -53,6 +53,8 @@ var = 'unique_grains'
 parser = argparse.ArgumentParser()
 parser.add_argument('--verbose', '-v', action='count', default=0,
                     help='Increase verbosity: -v for INFO, -vv for DEBUG.')
+parser.add_argument('--out','-o',type=str, default='Inclination',
+                                help='Name of output')
 parser.add_argument('--cpus','-n',type=int, default=default_vals.cpus,
                             help='How many cpus, default='+str(default_vals.cpus))
 parser.add_argument('--bins','-b',type=int, default=default_vals.bins,
@@ -63,6 +65,8 @@ parser.add_argument('--subdirs','-s',action='store_true',
                             help='Run in all subdirectories (vs CWD), default=False')
 parser.add_argument('--save',action='store_true',
                             help='Save the inclination data, default=False')
+parser.add_argument('--savename',type=str, default='inc_data',
+                                help='If saving to Parquet, save dir name')
 parser.add_argument('--esd',action='store_true',
                             help='''Return ESD (vol or area based if 3D/2D) instead of grain
                             area/volume, default=False''')
@@ -737,7 +741,7 @@ if __name__ == "__main__":
         MF.check_varlist(varnames)
         name_base = file_name.rsplit(".", 1)[0]
         if cl_args.save:
-            output_dir = "inc_data"         # root folder for your Parquet dataset
+            output_dir = cl_args.savename        # root folder for your Parquet dataset
             os.makedirs(output_dir, exist_ok=True)
         for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
             x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(varnames,ti,fullxy=True)
@@ -755,7 +759,7 @@ if __name__ == "__main__":
             incy = clist_filtered[1]
             adist = clist_filtered[2]
             iw = clist_filtered[3]
-            pplot(incx,incy,'Inclination',t_frames,i,iw)
+            pplot(incx,incy,cl_args.out,t_frames,i,None)
 
             if cl_args.save:
                 df = pd.DataFrame({
@@ -764,7 +768,8 @@ if __name__ == "__main__":
                     "index":     np.arange(len(incx)),
                     "incx":      incx,
                     "incy":      incy,
-                    "adist":     adist
+                    "adist":     adist,
+                    "iw":        iw
                 })
                 table = pa.Table.from_pandas(df)
                 pq.write_to_dataset(
