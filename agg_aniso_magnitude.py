@@ -72,6 +72,10 @@ parser.add_argument('--subdirs','-s',action='store_true',
                             help='Run in all subdirectories (vs CWD), default=False')
 parser.add_argument('--plot','-p',action='store_true',
                             help='Save the contours as a plot in pics/, default=False')
+parser.add_argument('--plotonly',action='store_true',
+                            help='Skip the calculations and just plot gr0 with the overlaid contour, default=False')
+parser.add_argument('--label',action='store_true',
+                            help='Include the colorbar and label on the --plotonly plots, default=False')
 # parser.add_argument('--save',action='store_true',
 #                             help='Save the inclination data, default=False')
 # parser.add_argument('--savename',type=str, default='inc_data',
@@ -117,7 +121,7 @@ verb('Verbose Logging Enabled')
 db('Debug Logging Enabled')
 db('''INFO: Recreating the single time plots of anisotropy magnitude from
    Lin's paper.''')
-# db('''WARNING: This script assumes elements are the same size in x/y(/z).''')
+db('''WARNING: This script assumes elements are quad4.''')
 db(' ')
 # pt('This is a warning.')
 db(f'Command-line arguments: {args}')
@@ -133,7 +137,7 @@ pt(' ')
 cwd = os.getcwd()
 
 imdir = 'pics'
-if args.plot:
+if args.plot or args.plotonly:
     if not os.path.isdir(imdir):
         verb('Making picture directory: '+imdir)
         os.makedirs(imdir)
@@ -724,6 +728,51 @@ def plot_field_with_contour(x4, y4, c4, contours, outname, level, tris=None):
     plt.close()
 
 
+def plot_gr0_with_diff_contour_overlay(x4, y4, clist, outname, lvl=0.0, cmap='binary', add_bar=False):
+
+    c4 = clist[1] - clist[0]
+    gr0 = clist[0]
+    # First calculate the contour
+    contours = extract_iso_contour_from_quads(x4, y4, c4, level=lvl)  # adjust level
+    main = max(contours, key=polygon_area)
+    contours=[main]
+
+    # Setup the triangulation plot for gr0
+    XY, idx4 = _dedupe_nodes(x4, y4)
+    tris = quads_to_tris(idx4)
+    # average gr0 values onto nodes
+    n_nodes = XY.shape[0]
+    acc_c = np.zeros(n_nodes)
+    acc_w = np.zeros(n_nodes)
+    np.add.at(acc_c, idx4.ravel(), gr0.ravel())
+    np.add.at(acc_w, idx4.ravel(), 1.0)
+    c_nodes = acc_c / np.maximum(acc_w, 1)
+    # Build triangle mesh thing
+    tri = mtri.Triangulation(XY[:,0], XY[:,1], triangles=tris)
+
+    # Now setup the plot
+    fig, ax = plt.subplots()
+    tpc = ax.tripcolor(tri, c_nodes, shading="gouraud", cmap=cmap)
+    tpc.set_clim(0.0, 1.0) #force plot range 0 - 1 for niceness
+    if add_bar:
+        fig.colorbar(tpc, ax=ax, label="GR0")
+    # Overlay the contour
+    for poly in contours:
+        ax.plot(poly[:,0], poly[:,1], lw=2, c='red')
+    # No axis labels or extra space
+    ax.set_xlim([np.amin(x4),np.amax(x4)])
+    ax.set_ylim([np.amin(y4),np.amax(y4)])
+    ax.set_aspect("equal")#, adjustable="box")
+    plt.tick_params(left = False, right = False , labelleft = False ,
+                labelbottom = False, bottom = False)
+    # ax.set_xlabel("x")
+    # ax.set_ylabel("y")
+    plt.tight_layout()
+    plt.savefig(imdir+'/'+outname+'_gr0_contourOverlay.png',transparent=True,dpi=500)
+    plt.close()
+
+
+
 
 # ███╗   ███╗ █████╗ ██╗███╗   ██╗
 # ████╗ ████║██╔══██╗██║████╗  ██║
@@ -752,39 +801,43 @@ if __name__ == "__main__":
         # x4, y4, z, c4 = MF.get_data_at_time('gr0',ti,full_nodal=True)
         c4 = clist[1]-clist[0] # gr1-gr0
 
-        if args.plot:
-            plot_slice_forCurvature(idx,x4,y4,z,clist[0],outbase,cb_label=None)
-        # 1) Extract
-        if args.level is not None:
-            levels = [args.level]
-        else:
-            levels = [0.1,0.5,0.9]
-        for lvl in levels:
-            contours = extract_iso_contour_from_quads(x4, y4, c4, level=lvl)  # adjust level
-            main = max(contours, key=polygon_area)
-
-            # 2) Center & radii (optional)
-            center = polygon_centroid(main)
-            radii  = np.sqrt(((main - center)**2).sum(axis=1))
-            # print(f"mean radius = {radii.mean():.4f}")
-            r_avg = radii.mean()
-            n_sites = len(radii)
-
-            metric = np.sum(np.abs(radii - r_avg)) / (r_avg * n_sites)
-            # print("Normalized deviation:", metric)
-
-            results.append({
-                "file_name": outbase,   # or use fname if you want full path/name
-                "file_num":  cnt + 1,
-                "time":      ti,
-                "contour":   lvl,
-                "r_avg":     r_avg,
-                "amag":      metric
-            })
-
-            # 4) Or overlay on the scalar field
+        # GR0 plot with gr1-gr0 contour overlaid only, skip calculations:
+        if args.plotonly:
+            plot_gr0_with_diff_contour_overlay(x4, y4, clist, outbase, lvl=0.0, cmap='binary', add_bar=args.label)
+        else: # Do the calculations and plots
             if args.plot:
-                plot_field_with_contour(x4, y4, c4, contours=[main], outname=outbase, level=lvl)
+                plot_slice_forCurvature(idx,x4,y4,z,clist[0],outbase,cb_label=None)
+            # 1) Extract
+            if args.level is not None:
+                levels = [args.level]
+            else:
+                levels = [0.1,0.5,0.9]
+            for lvl in levels:
+                contours = extract_iso_contour_from_quads(x4, y4, c4, level=lvl)  # adjust level
+                main = max(contours, key=polygon_area)
+
+                # 2) Center & radii (optional)
+                center = polygon_centroid(main)
+                radii  = np.sqrt(((main - center)**2).sum(axis=1))
+                # print(f"mean radius = {radii.mean():.4f}")
+                r_avg = radii.mean()
+                n_sites = len(radii)
+
+                metric = np.sum(np.abs(radii - r_avg)) / (r_avg * n_sites)
+                # print("Normalized deviation:", metric)
+
+                results.append({
+                    "file_name": outbase,   # or use fname if you want full path/name
+                    "file_num":  cnt + 1,
+                    "time":      ti,
+                    "contour":   lvl,
+                    "r_avg":     r_avg,
+                    "amag":      metric
+                })
+
+                # 4) Or overlay on the scalar field
+                if args.plot:
+                    plot_field_with_contour(x4, y4, c4, contours=[main], outname=outbase, level=lvl)
 
 
         pt(f'Done File {cnt+1}: {format_elapsed_time(init_ti)}')
