@@ -58,7 +58,7 @@ parser.add_argument('--verbose', '-v', action='count', default=0,
                     help='Increase verbosity: -v for INFO, -vv for DEBUG.')
 parser.add_argument('--time','-t',type=float,default=15,
                     help='Time to use for the single frame comparison.')
-parser.add_argument('--level','-c',type=float,default=None,
+parser.add_argument('--level','-c',type=float,default=0.0,
                     help='Contour value for gr0 contour.')
 # parser.add_argument('--out','-o',type=str, default='Inclination',
 #                                 help='Name of output')
@@ -121,7 +121,13 @@ db('''INFO: Recreating the single time plots of anisotropy magnitude from
 db(' ')
 # pt('This is a warning.')
 db(f'Command-line arguments: {args}')
+db(' ')
+if args.level is None:
+    pt('Contour threshold not specified, using [0.1, 0.5, 0.9]')
+if not args.plot:
+    verb('--plot not enabled, may cause errors if anything is wrongly saved to pics/')
 pt(' ')
+
 
 
 cwd = os.getcwd()
@@ -709,11 +715,12 @@ def plot_field_with_contour(x4, y4, c4, contours, outname, level, tris=None):
     ax.set_aspect('equal', adjustable='box')
     ax.set_xlabel('x')
     ax.set_ylabel('y')
-    ax.set_title('Field with isocontour overlay')
+    ax.set_title('gr1 - gr0 with isocontour at 0.0')
     fig.colorbar(cf, ax=ax, label='gr0')
     plt.tight_layout()
     # plt.show()
-    plt.savefig(imdir+'/'+outname+'_contour_gr0_'+str(level)+'.png',transparent=True)
+    # plt.savefig(imdir+'/'+outname+'_contour_gr0_'+str(level)+'.png',transparent=True,dpi=500)
+    plt.savefig(imdir+'/'+outname+'_contour_gr1-gr0_'+str(level)+'level.png',transparent=True,dpi=500)
     plt.close()
 
 
@@ -739,12 +746,14 @@ if __name__ == "__main__":
         outbase = out_name(file_name)
         init_ti = time.perf_counter()
         MF = MultiExodusReaderDerivs(file_name)
-        # print(MF.global_times)
         ti, idx = closest_frame(MF)
-        # x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(['gr0'],ti,fullxy=True)
-        x4, y4, z, c4 = MF.get_data_at_time('gr0',ti,full_nodal=True)
+        # Read in the full data for gr0 and gr1
+        x4, y4, z, clist = MF.get_full_vars_at_time(['gr0','gr1'],ti)
+        # x4, y4, z, c4 = MF.get_data_at_time('gr0',ti,full_nodal=True)
+        c4 = clist[1]-clist[0] # gr1-gr0
+
         if args.plot:
-            plot_slice_forCurvature(idx,x4,y4,z,c4,outbase,cb_label=None)
+            plot_slice_forCurvature(idx,x4,y4,z,clist[0],outbase,cb_label=None)
         # 1) Extract
         if args.level is not None:
             levels = [args.level]
