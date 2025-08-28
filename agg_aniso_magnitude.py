@@ -842,10 +842,11 @@ if __name__ == "__main__":
 
         pt(f'Done File {cnt+1}: {format_elapsed_time(init_ti)}')
 
-    # Save to csv
-    df = pd.DataFrame(results)
-    df.to_csv("aniso_magnitude.csv", index=False)
-    # print("Saved", len(df), "rows to aniso_magnitude.csv")
+    if not args.plotonly:
+        # Save to csv
+        df = pd.DataFrame(results)
+        df.to_csv("aniso_magnitude.csv", index=False)
+        # print("Saved", len(df), "rows to aniso_magnitude.csv")
 
     pt(' ')
     pt(f'Done Everything: {format_elapsed_time(all_ti)}')
