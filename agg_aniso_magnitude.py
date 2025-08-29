@@ -7,6 +7,7 @@ import subprocess
 from joblib import Parallel, delayed
 
 import matplotlib.tri as mtri
+from matplotlib.tri import Triangulation, LinearTriInterpolator
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 from matplotlib.collections import PolyCollection
@@ -95,6 +96,17 @@ parser.add_argument('--exo','-e',action='store_false',
                             help='Look for and use Exodus files instead of Nemesis, default=True')
 parser.add_argument('--skip', nargs='+', required=False, help='List of text flags to skip')
 parser.add_argument('--only', nargs='+', required=False, help='List of text flags to use')
+#
+parser.add_argument('--inc', nargs='?', const='normal', choices=['normal','field'],
+                    help='Measure GB inclination along the gr1-gr0=level contour. '
+                         'Default is "normal" (unit normal from contour). '
+                         'Use "field" to sample inclination_vector_x/y on the contour.')
+parser.add_argument('--inc-n', type=int, default=360,
+                    help='Resample the contour uniformly to this many points before measuring inclination (default=360).')
+parser.add_argument('--inc-level', type=float, default=0.0,
+                    help='Contour level for gr1-gr0 interface (default=0.0).')
+# parser.add_argument('--inc-out', type=str, default='inclination.parquet',
+#                     help='Output Parquet file for inclination samples (default=inclination.parquet).')
 args = parser.parse_args()
 
 
@@ -772,6 +784,205 @@ def plot_gr0_with_diff_contour_overlay(x4, y4, clist, outname, lvl=0.0, cmap='bi
     plt.close()
 
 
+###########################################################################
+###########################################################################
+# INCLINATION
+def _poly_arclength(P):
+    d = np.linalg.norm(np.diff(np.vstack([P, P[0]]), axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(d[:-1])])
+    return s, d.sum()
+
+def resample_closed_polyline(P, n):
+    """
+    Uniform-arclength resample of closed polyline P (Nx2) to n points.
+    """
+    s, L = _poly_arclength(P)
+    t = np.linspace(0, L, n+1)[:-1]  # n points on [0,L)
+    # segment indices for each t
+    seg = np.searchsorted(s[1:], t, side='right')
+    # local parameter
+    s0 = s[seg]
+    s1 = s[seg+1]
+    alpha = (t - s0) / np.maximum(s1 - s0, 1e-16)
+    P0 = P[seg]
+    P1 = P[(seg+1) % len(P)]
+    Q = (1 - alpha)[:, None] * P0 + alpha[:, None] * P1
+    return Q
+
+def ensure_ccw(P):
+    x, y = P[:,0], P[:,1]
+    A2 = np.dot(x, np.roll(y,-1)) - np.dot(y, np.roll(x,-1))
+    return P if A2 > 0 else P[::-1]
+
+def polygon_centroid(P):
+    x, y = P[:,0], P[:,1]
+    x1, y1 = np.roll(x,-1), np.roll(y,-1)
+    cross = x*y1 - y*x1
+    A = 0.5*np.sum(cross)
+    Cx = np.sum((x + x1)*cross) / (6*A)
+    Cy = np.sum((y + y1)*cross) / (6*A)
+    return np.array([Cx, Cy])
+
+def normalize(V, eps=1e-16):
+    n = np.linalg.norm(V, axis=1, keepdims=True)
+    return V / np.maximum(n, eps)
+
+def outward_normals_bisector(P):
+    """
+    Stable outward unit normals on closed polyline P (Nx2).
+    - ensures CCW
+    - tangent from *angle bisector* of adjacent edges (smooth)
+    - rotates CW (-90°) for outward normal
+    - flips any normals pointing inward (dot<0 with radial)
+    """
+    P = ensure_ccw(P)
+    C = polygon_centroid(P)
+
+    # edges: prev and next
+    Eprev = P - np.roll(P, 1, axis=0)
+    Enext = np.roll(P, -1, axis=0) - P
+    eprev = normalize(Eprev)
+    enext = normalize(Enext)
+
+    # angle-bisector tangent (handles corners well)
+    T = eprev + enext
+    # if nearly 180° (T ~ 0), fall back to next edge direction
+    mask = (np.linalg.norm(T, axis=1) < 1e-12)
+    T[mask] = enext[mask]
+    T = normalize(T)
+
+    # rotate CW (-90°): [tx,ty] -> [ty, -tx]
+    N = np.column_stack([T[:,1], -T[:,0]])
+
+    # enforce outward
+    radial = P - C
+    flip = (np.einsum('ij,ij->i', N, radial) < 0)
+    N[flip] *= -1.0
+    return N
+
+def contour_unit_normals(P):
+    """
+    Unit outward normals along closed polyline P (Nx2), assuming CCW order.
+    Tangent ~ forward difference; normal = rotate(tangent) by +90deg.
+    """
+    # P = ensure_ccw(P)
+    # forward difference tangent
+    T = np.roll(P, -1, axis=0) - P
+    # avoid zero-length
+    lens = np.linalg.norm(T, axis=1, keepdims=True)
+    T = T / np.maximum(lens, 1e-16)
+    # rotate CCW tangent by +90° to get outward normal for CCW polygon
+    N = np.column_stack([-T[:,1], T[:,0]])
+    # already unit-length since T was unit
+    return N
+
+def contour_unit_normals_outward(P):
+    """
+    Unit **outward** normals along closed polyline P (Nx2),
+    independent of whether P comes in CW or CCW.
+    """
+    P = ensure_ccw(P)                    # now P is CCW
+    # unit tangent via forward difference
+    T = np.roll(P, -1, axis=0) - P
+    T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-16)
+
+    # rotate CW (-90°) to get outward normal for CCW contour:
+    # rot_cw([tx,ty]) = [ty, -tx]
+    N = np.column_stack([T[:,1], -T[:,0]])
+
+    # make absolutely sure it's outward: flip if pointing toward centroid
+    C = polygon_centroid(P)
+    outward_check = np.einsum('ij,ij->i', N, P - C)  # dot(N, radial)
+    N[outward_check < 0] *= -1.0
+
+    return N
+
+
+def outward_normals(P):
+    """
+    Unit outward normals for a *closed* polyline P (Nx2).
+    Uses central-difference tangent and guarantees 'outward'
+    by dotting with the centroid radial vector.
+    """
+    P = ensure_ccw(P)
+    # central-difference tangent
+    T = np.roll(P, -1, axis=0) - np.roll(P, 1, axis=0)
+    T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-16)
+    # rotate CW (-90°): [tx,ty] -> [ty, -tx]
+    N = np.column_stack([T[:,1], -T[:,0]])
+    # flip to make sure it's truly outward
+    C = polygon_centroid(P)
+    radial = P - C
+    flip = (np.einsum('ij,ij->i', N, radial) < 0)
+    N[flip] *= -1.0
+    return N
+
+
+def angles_0_2pi(V):
+    """
+    Return angles in [0, 2π) from vectors V (Nx2), using atan2(y,x) mod 2π.
+    """
+    th = np.arctan2(V[:,1], V[:,0])
+    th = np.mod(th, 2*np.pi)
+    return th
+
+def make_triangulation_from_quads(x4, y4):
+    XY, idx4 = _dedupe_nodes(x4, y4)
+    tris = quads_to_tris(idx4)
+    tri = Triangulation(XY[:,0], XY[:,1], triangles=tris)
+    return tri, XY, idx4
+
+def sample_field_on_polyline(tri, nodal_vals, P):
+    """
+    Sample a nodal field (length = tri.x.size) on polyline points P (Nx2)
+    using linear interpolation on the triangulation.
+    """
+    interp = LinearTriInterpolator(tri, nodal_vals)
+    vals = interp(P[:,0], P[:,1])
+    return np.asarray(vals)
+
+def nodal_average_from_quads(idx4, c4):
+    n_nodes = int(idx4.max())+1
+    acc_c = np.zeros(n_nodes)
+    acc_w = np.zeros(n_nodes)
+    np.add.at(acc_c, idx4.ravel(), c4.ravel())
+    np.add.at(acc_w, idx4.ravel(), 1.0)
+    return acc_c / np.maximum(acc_w, 1)
+
+def get_inclination_nodal_fields(x4, y4, ti, MF):
+    """
+    Returns: tri, nx_nodes, ny_nodes
+    where nx_nodes, ny_nodes are nodal averages of inclination_vector_x/y.
+    """
+    # triangulation
+    tri, XY, idx4 = make_triangulation_from_quads(x4, y4)
+    # read inclination vectors at the same time
+    # we pull full nodal arrays per element corner, then average to unique nodes
+    _, _, _, V = MF.get_full_vars_at_time(['inclination_vector_x','inclination_vector_y'], ti)
+    incx4 = V[0]  # shape (n_elem, 4)
+    incy4 = V[1]  # shape (n_elem, 4)
+    nx_nodes = nodal_average_from_quads(idx4, incx4)
+    ny_nodes = nodal_average_from_quads(idx4, incy4)
+    return tri, nx_nodes, ny_nodes
+
+
+
+def debug_quiver(P, N, title="Contour with OUTWARD normals"):
+    step = max(len(P)//32, 1)
+    Q = P[::step]
+    U = N[::step]
+
+    fig, ax = plt.subplots()
+    ax.plot(P[:,0], P[:,1], lw=2)
+
+    # Key: make arrows big enough: scale < 1 makes longer arrows.
+    ax.quiver(Q[:,0], Q[:,1], U[:,0], U[:,1],
+              angles='xy', scale_units='xy', scale=0.1,  # ← long arrows
+              width=0.004)
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_title(title)
+    plt.show()
 
 
 # ███╗   ███╗ █████╗ ██╗███╗   ██╗
@@ -839,6 +1050,60 @@ if __name__ == "__main__":
                 if args.plot:
                     plot_field_with_contour(x4, y4, c4, contours=[main], outname=outbase, level=lvl)
 
+
+            # --- Inclination measurement (if requested) ---
+            if args.inc:
+                # Use level for gr1-gr0 from args.inc_level (separate from args.level you use elsewhere)
+                lvl_inc = args.inc_level
+                # we already computed c4 = gr1-gr0 above; if not, do it
+                # contours for inclination are computed at lvl_inc
+                inc_contours = extract_iso_contour_from_quads(x4, y4, c4, level=lvl_inc)
+                if not inc_contours:
+                    pt('No interface contour found for inclination; skipping.')
+                else:
+                    P = max(inc_contours, key=polygon_area)   # (M,2)
+                    # resample to uniform arclength to avoid clustering bias
+                    P = resample_closed_polyline(P, args.inc_n)
+                    if args.inc == 'normal':
+                        N = contour_unit_normals(P)          # (M,2), CCW outward
+                        theta = angles_0_2pi(N)
+                        inc_df = pd.DataFrame({
+                            'theta': theta,
+                            'nx':    N[:,0],
+                            'ny':    N[:,1],
+                            'x':     P[:,0],
+                            'y':     P[:,1],
+                            'file_name': outbase,
+                            'time':  ti,
+                            'contour': lvl_inc,
+                            'source': 'normal'
+                        })
+                        # TEST PLOT
+                        # debug_quiver(P, N)
+                    else:  # args.inc == 'field'
+                        tri, nx_nodes, ny_nodes = get_inclination_nodal_fields(x4, y4, ti, MF)
+                        nx = sample_field_on_polyline(tri, nx_nodes, P)
+                        ny = sample_field_on_polyline(tri, ny_nodes, P)
+                        # normalize just in case the stored vectors aren’t exactly unit
+                        mag = np.maximum(np.sqrt(nx**2 + ny**2), 1e-16)
+                        nxu, nyu = nx/mag, ny/mag
+                        theta = angles_0_2pi(np.column_stack([nxu, nyu]))
+                        inc_df = pd.DataFrame({
+                            'theta': theta,
+                            'nx':    nxu,
+                            'ny':    nyu,
+                            'x':     P[:,0],
+                            'y':     P[:,1],
+                            'file_name': outbase,
+                            'time':  ti,
+                            'contour': lvl_inc,
+                            'source': 'field'
+                        })
+
+                    # --- Write one CSV per file/time ---
+                    inc_outfile = f"{outbase}_inc_t{args.time}.csv" #ti for exact frame time
+                    inc_df.to_csv(inc_outfile, index=False)
+                    # pt(f"Wrote inclination CSV: {inc_outfile} ({len(inc_df)} rows)")
 
         pt(f'Done File {cnt+1}: {format_elapsed_time(init_ti)}')
 
