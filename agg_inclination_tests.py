@@ -737,7 +737,7 @@ def out_name(file_name):
     """
     # suffix = '_grainsize.csv'
     # Beginning based on subdir
-    if args.subdirs:
+    if cl_args.subdirs:
         outBase = file_name.split('/')[0]
     else:
         outBase = os.path.split(os.getcwd())[-1]
