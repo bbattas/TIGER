@@ -82,6 +82,8 @@ parser.add_argument('--exo','-e',action='store_false',
                             help='Look for and use Exodus files instead of Nemesis, default=True')
 parser.add_argument('--skip', nargs='+', required=False, help='List of text flags to skip')
 parser.add_argument('--only', nargs='+', required=False, help='List of text flags to use')
+parser.add_argument('--singletime', type=float, default=None,
+                    help='Single frame time value to measure at.')
 cl_args = parser.parse_args()
 
 
@@ -255,6 +257,11 @@ def time_info(MF):
         t_frames: List of time values associated with each frame (idx_frames)
     '''
     times = MF.global_times
+    if cl_args.singletime is not None:
+        t_list = MF.global_times
+        idx = min(range(len(t_list)), key=lambda i: abs(t_list[i] - cl_args.singletime))
+        closest_time = t_list[idx]
+        return [idx], [closest_time]
     if cl_args.sequence == True:
         # if cl_args.n_frames < len(times):
         t_max = times[-1]
@@ -759,7 +766,7 @@ if __name__ == "__main__":
             incy = clist_filtered[1]
             adist = clist_filtered[2]
             iw = clist_filtered[3]
-            pplot(incx,incy,cl_args.out,t_frames,i,None)
+            pplot(incx,incy,cl_args.out,t_frames,i,iw)
 
             if cl_args.save:
                 df = pd.DataFrame({
