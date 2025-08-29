@@ -681,7 +681,7 @@ def rose_curve(theta, n_bins=180, mode='probability', weights=None):
     return centres, heights
 
 
-def pplot(incx,incy,lbl,t_frames,i,iw=None):
+def pplot(incx,incy,outname_base,lbl,t_frames,i,iw=None):
     # Anisotropy Function
     full_deg = np.linspace(0, 360, 361)
     full_rad = np.deg2rad(full_deg)
@@ -718,7 +718,7 @@ def pplot(incx,incy,lbl,t_frames,i,iw=None):
     ax.legend(loc='upper right', bbox_to_anchor=(1.1, 1.15))
     timestring = 't = ' + str(t_frames[i])
     ax.set_title(timestring)
-    fig.savefig(imdir+'/'+str(lbl)+'_'+str(i)+'.png',dpi=500,transparent=True )
+    fig.savefig(imdir+'/'+outname_base + '_'+str(lbl)+'_'+str(i)+'.png',dpi=500,transparent=True )
     plt.close()
 
 
@@ -766,7 +766,7 @@ if __name__ == "__main__":
             incy = clist_filtered[1]
             adist = clist_filtered[2]
             iw = clist_filtered[3]
-            pplot(incx,incy,cl_args.out,t_frames,i,iw)
+            pplot(incx,incy,name_base,cl_args.out,t_frames,i,iw)
 
             if cl_args.save:
                 df = pd.DataFrame({
