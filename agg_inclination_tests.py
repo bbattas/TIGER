@@ -722,6 +722,28 @@ def pplot(incx,incy,outname_base,lbl,t_frames,i,iw=None):
     plt.close()
 
 
+def out_name(file_name):
+    """
+    Generate an output file name based on the input file name and dimensionality.
+
+    Args:
+        file_name (str): The input file name.
+
+    Returns:
+        str: The generated output file name.
+
+    Raises:
+        ValueError: If the dimension is not 2 or 3.
+    """
+    # suffix = '_grainsize.csv'
+    # Beginning based on subdir
+    if args.subdirs:
+        outBase = file_name.split('/')[0]
+    else:
+        outBase = os.path.split(os.getcwd())[-1]
+    return outBase
+
+
 
 
 # ███╗   ███╗ █████╗ ██╗███╗   ██╗
@@ -741,6 +763,7 @@ if __name__ == "__main__":
         pt(' ')#\x1b[31;1m
         pt('\033[1m\033[96m'+'File '+str(cnt+1)+'/'+str(num_files)+': '+'\x1b[0m'+str(file_name))
         verb('Initialization for file: '+str(file_name))
+        outbase = out_name(file_name)
         init_ti = time.perf_counter()
         MF = MultiExodusReaderDerivs(file_name)
         idx_frames, t_frames = time_info(MF)
@@ -766,7 +789,7 @@ if __name__ == "__main__":
             incy = clist_filtered[1]
             adist = clist_filtered[2]
             iw = clist_filtered[3]
-            pplot(incx,incy,name_base,cl_args.out,t_frames,i,iw)
+            pplot(incx,incy,outbase,cl_args.out,t_frames,i,iw)
 
             if cl_args.save:
                 df = pd.DataFrame({
