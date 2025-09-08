@@ -61,6 +61,8 @@ parser.add_argument('--time','-t',type=float,default=15,
                     help='Time to use for the single frame comparison.')
 parser.add_argument('--level','-c',type=float,default=0.0,
                     help='Contour value for gr0 contour.')
+parser.add_argument('--moelans',action='store_true',
+                    help='Use moelans gr0^2/(gr0^2 * gr1^2) for contour, default=False')
 # parser.add_argument('--out','-o',type=str, default='Inclination',
 #                                 help='Name of output')
 # parser.add_argument('--cpus','-n',type=int, default=default_vals.cpus,
@@ -107,6 +109,25 @@ parser.add_argument('--inc-level', type=float, default=0.0,
                     help='Contour level for gr1-gr0 interface (default=0.0).')
 # parser.add_argument('--inc-out', type=str, default='inclination.parquet',
 #                     help='Output Parquet file for inclination samples (default=inclination.parquet).')
+#
+parser.add_argument(
+    '--curve',
+    action='store_true',
+    help='Extra plotting: draw multi-level contours colored by level value.'
+)
+# Optional: customize levels
+parser.add_argument(
+    '--curve-min', type=float, default=0.1,
+    help='Minimum contour level for --curve heatmap (default=0.1).'
+)
+parser.add_argument(
+    '--curve-max', type=float, default=0.9,
+    help='Maximum contour level for --curve heatmap (default=0.9).'
+)
+parser.add_argument(
+    '--curve-n', type=int, default=9,
+    help='Number of contour levels between min/max (default=9).'
+)
 args = parser.parse_args()
 
 
@@ -985,6 +1006,53 @@ def debug_quiver(P, N, title="Contour with OUTWARD normals"):
     plt.show()
 
 
+
+# CONTOUR STACK
+def _nodal_average_from_quads(idx4, c4):
+    n_nodes = int(idx4.max()) + 1
+    acc_c = np.zeros(n_nodes)
+    acc_w = np.zeros(n_nodes)
+    np.add.at(acc_c, idx4.ravel(), c4.ravel())
+    np.add.at(acc_w, idx4.ravel(), 1.0)
+    return acc_c / np.maximum(acc_w, 1)
+
+def plot_multi_level_contours(x4, y4, c4, outname, title, levels, add_colorbar=True):
+    """
+    Draw a single plot with many contour levels, colored by the level value (viridis).
+    Saves to pics/<outname>_<title>_curve_heatmap.png
+    """
+    # Build triangulation once from quads
+    XY, idx4 = _dedupe_nodes(x4, y4)
+    tris = quads_to_tris(idx4)
+    tri = mtri.Triangulation(XY[:,0], XY[:,1], triangles=tris)
+
+    # Average c4 from element corners to unique nodes
+    c_nodes = _nodal_average_from_quads(idx4, c4)
+
+    fig, ax = plt.subplots()
+    # Draw contours; the colormap maps the contour *level* to color
+    cs = ax.tricontour(tri, c_nodes, levels=levels, cmap='viridis')
+
+    if add_colorbar:
+        # Colorbar with ticks at the level values
+        cbar = fig.colorbar(cs, ax=ax)
+        cbar.set_label('Contour value')
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlim([np.amin(x4), np.amax(x4)])
+    ax.set_ylim([np.amin(y4), np.amax(y4)])
+    ax.set_title(title)
+    plt.tight_layout()
+
+    # Ensure pics/ exists
+    if not os.path.isdir(imdir):
+        os.makedirs(imdir)
+    fig.savefig(os.path.join(imdir, f'{outname}_{title}_curve_heatmap.png'),
+                dpi=500, transparent=True)
+    plt.close(fig)
+
+
+
 # ███╗   ███╗ █████╗ ██╗███╗   ██╗
 # ████╗ ████║██╔══██╗██║████╗  ██║
 # ██╔████╔██║███████║██║██╔██╗ ██║
@@ -1010,11 +1078,39 @@ if __name__ == "__main__":
         # Read in the full data for gr0 and gr1
         x4, y4, z, clist = MF.get_full_vars_at_time(['gr0','gr1'],ti)
         # x4, y4, z, c4 = MF.get_data_at_time('gr0',ti,full_nodal=True)
-        c4 = clist[1]-clist[0] # gr1-gr0
+        if args.moelans:
+            c0 = clist[0]
+            c1 = clist[1]
+            c4 = c0 * c0 / (c0 * c0 + c1 * c1)
+            args.level = 0.5
+        else:
+            c4 = clist[1]-clist[0] # gr1-gr0
+
+        # --- Optional curve heatmap (multi-level contours) ---
+        if args.curve:
+            levels = np.linspace(args.curve_min, args.curve_max, args.curve_n)
+
+            # Plot for gr0
+            plot_multi_level_contours(
+                x4, y4, clist[0],
+                outname=outbase,
+                title='gr0',
+                levels=levels,
+                add_colorbar=True
+            )
+
+            # Plot for gr1
+            plot_multi_level_contours(
+                x4, y4, clist[1],
+                outname=outbase,
+                title='gr1',
+                levels=levels,
+                add_colorbar=True
+            )
 
         # GR0 plot with gr1-gr0 contour overlaid only, skip calculations:
         if args.plotonly:
-            plot_gr0_with_diff_contour_overlay(x4, y4, clist, outbase, lvl=0.0, cmap='binary', add_bar=args.label)
+            plot_gr0_with_diff_contour_overlay(x4, y4, clist, outbase, lvl=args.level, cmap='binary', add_bar=args.label)
         else: # Do the calculations and plots
             if args.plot:
                 plot_slice_forCurvature(idx,x4,y4,z,clist[0],outbase,cb_label=None)
@@ -1048,6 +1144,7 @@ if __name__ == "__main__":
 
                 # 4) Or overlay on the scalar field
                 if args.plot:
+                    # plot_contour_only(contours=[main], center=center, radii_sample_step=max(len(main)//24,1))
                     plot_field_with_contour(x4, y4, c4, contours=[main], outname=outbase, level=lvl)
 
 
