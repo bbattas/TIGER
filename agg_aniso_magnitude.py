@@ -63,6 +63,8 @@ parser.add_argument('--level','-c',type=float,default=0.0,
                     help='Contour value for gr0 contour.')
 parser.add_argument('--moelans',action='store_true',
                     help='Use moelans gr0^2/(gr0^2 * gr1^2) for contour, default=False')
+parser.add_argument('--gr0',action='store_true',
+                    help='Use gr0 for contour, default=False')
 # parser.add_argument('--out','-o',type=str, default='Inclination',
 #                                 help='Name of output')
 # parser.add_argument('--cpus','-n',type=int, default=default_vals.cpus,
@@ -1083,6 +1085,8 @@ if __name__ == "__main__":
             c1 = clist[1]
             c4 = c0 * c0 / (c0 * c0 + c1 * c1)
             args.level = 0.5
+        elif args.gr0:
+            c4 = clist[0]
         else:
             c4 = clist[1]-clist[0] # gr1-gr0
 
