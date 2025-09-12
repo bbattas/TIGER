@@ -763,9 +763,7 @@ def plot_field_with_contour(x4, y4, c4, contours, outname, level, tris=None):
     plt.close()
 
 
-def plot_gr0_with_diff_contour_overlay(x4, y4, clist, outname, lvl=0.0, cmap='binary', add_bar=False):
-
-    c4 = clist[1] - clist[0]
+def plot_gr0_with_diff_contour_overlay(x4, y4, clist, c4, outname, lvl=0.0, cmap='binary', add_bar=False):
     gr0 = clist[0]
     # First calculate the contour
     contours = extract_iso_contour_from_quads(x4, y4, c4, level=lvl)  # adjust level
@@ -1114,7 +1112,7 @@ if __name__ == "__main__":
 
         # GR0 plot with gr1-gr0 contour overlaid only, skip calculations:
         if args.plotonly:
-            plot_gr0_with_diff_contour_overlay(x4, y4, clist, outbase, lvl=args.level, cmap='binary', add_bar=args.label)
+            plot_gr0_with_diff_contour_overlay(x4, y4, clist, c4, outbase, lvl=args.level, cmap='binary', add_bar=args.label)
         else: # Do the calculations and plots
             if args.plot:
                 plot_slice_forCurvature(idx,x4,y4,z,clist[0],outbase,cb_label=None)
