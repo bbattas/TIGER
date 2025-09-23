@@ -313,6 +313,97 @@ def polygon_area(coords):
     x, y = coords[:,0], coords[:,1]
     return 0.5*np.abs(np.dot(x, np.roll(y,-1)) - np.dot(y, np.roll(x,-1)))
 
+
+# Make sure exodus is in quad4 if it isnt already
+def element_order(xk):
+    """
+    Infer per-element node count from xk shape (n_elem, k).
+    Returns k (e.g., 4, 8, 9, ...).
+    """
+    if xk.ndim != 2:
+        raise ValueError(f"xk must be (n_elem, k); got shape {xk.shape}")
+    return xk.shape[1]
+
+def _corners_by_extremes(px, py):
+    """
+    Given all nodes of one element (px,py) shape (k,), pick 4 corner indices
+    using diagonal extremes and return them ordered [LL, LR, UR, UL].
+    Robust for convex quads incl. second-order (8/9 node) quads.
+    """
+    s1 = px + py           # diagonal NE<->SW
+    s2 = px - py           # diagonal SE<->NW
+
+    i_ll = int(np.argmin(s1))  # lower-left  (min x+y)
+    i_ur = int(np.argmax(s1))  # upper-right (max x+y)
+    i_lr = int(np.argmax(s2))  # lower-right (max x-y)
+    i_ul = int(np.argmin(s2))  # upper-left  (min x-y)
+
+    idx = np.array([i_ll, i_lr, i_ur, i_ul], dtype=int)
+
+    # If any duplicates (degenerate/ties), fall back to angle sort around centroid
+    if len(np.unique(idx)) < 4:
+        cx, cy = px.mean(), py.mean()
+        ang = np.arctan2(py - cy, px - cx)
+        # unique points only (keep first occurrence)
+        pts = np.column_stack((px, py))
+        _, uniq_idx = np.unique(pts, axis=0, return_index=True)
+        ux, uy = px[uniq_idx], py[uniq_idx]
+        uang = np.arctan2(uy - cy, ux - cx)
+        order = np.argsort(uang)                   # CCW
+        if order.size < 4:
+            raise ValueError("Cannot identify 4 unique corners for this element.")
+        cand = uniq_idx[order][:4]                 # take 4 hull-ish extremes
+        # rotate so first is LL (min x+y), and ensure CCW
+        start = np.argmin((px[cand] + py[cand]))
+        idx = np.roll(cand, -start)
+        # enforce CCW
+        area = 0.5*np.sum(
+            px[idx]*py[np.roll(idx,-1)] - py[idx]*px[np.roll(idx,-1)]
+        )
+        if area < 0:
+            idx = idx[[0,3,2,1]]                   # reverse to make CCW
+
+    return idx  # [LL, LR, UR, UL]
+
+def ensure_quad4(xk, yk, ck):
+    """
+    Coerce any per-element node list to QUAD4 corners in [LL, LR, UR, UL] order.
+
+    Parameters
+    ----------
+    xk, yk, ck : (n_elem, k) arrays
+        Node coordinates/values for each element. k may be 4, 8, 9, ...
+
+    Returns
+    -------
+    x4, y4, c4 : (n_elem, 4) arrays
+        Corner-only arrays in consistent order [LL, LR, UR, UL].
+    """
+    if not (xk.shape == yk.shape == ck.shape):
+        raise ValueError("xk, yk, ck must have identical shape (n_elem, k)")
+
+    nE, k = xk.shape
+    if k == 4:
+        # Optionally re-order to [LL,LR,UR,UL] for safety:
+        idxs = np.zeros((nE, 4), dtype=int)
+        for e in range(nE):
+            idxs[e] = _corners_by_extremes(xk[e], yk[e])
+        x4 = np.take_along_axis(xk, idxs, axis=1)
+        y4 = np.take_along_axis(yk, idxs, axis=1)
+        c4 = np.take_along_axis(ck, idxs, axis=1)
+        return x4, y4, c4
+
+    # k != 4 → pick corners
+    idxs = np.zeros((nE, 4), dtype=int)
+    for e in range(nE):
+        idxs[e] = _corners_by_extremes(xk[e], yk[e])
+
+    x4 = np.take_along_axis(xk, idxs, axis=1)
+    y4 = np.take_along_axis(yk, idxs, axis=1)
+    c4 = np.take_along_axis(ck, idxs, axis=1)
+    return x4, y4, c4
+
+
 def _dedupe_nodes(x4, y4, tol=1e-12):
     """
     x4, y4: (n_elem, 4) arrays of quad corner coordinates
@@ -375,67 +466,6 @@ def extract_iso_contour_from_quads(x4, y4, c4, level):
     contours = [np.column_stack([seg[:,0], seg[:,1]]) for seg in paths if len(seg) >= 3]
     return contours
 
-# def plotting_helper(x4, y4, c4, c_level):
-#     # First calculate the contour
-#     contours = extract_iso_contour_from_quads(x4, y4, c4, level=c_level)  # adjust level
-#     main = max(contours, key=polygon_area)
-#     contours=[main]
-#     # Setup the triangulation plot for gr0
-#     XY, idx4 = _dedupe_nodes(x4, y4)
-#     tris = quads_to_tris(idx4)
-#     # average gr0 values onto nodes
-#     n_nodes = XY.shape[0]
-#     acc_c = np.zeros(n_nodes)
-#     acc_w = np.zeros(n_nodes)
-#     np.add.at(acc_c, idx4.ravel(), c4.ravel())
-#     np.add.at(acc_w, idx4.ravel(), 1.0)
-#     c_nodes = acc_c / np.maximum(acc_w, 1)
-#     # Build triangle mesh thing
-#     tri = mtri.Triangulation(XY[:,0], XY[:,1], triangles=tris)
-#     return contours, c_nodes, tri
-
-# def plot_combined(i,m_name,e_name,c_level=args.level):
-#     for t_val in [15,20]:
-#         # Now setup the plot
-#         fig, ax = plt.subplots(nrows=2)
-#         # Read Exodus
-#         MF = MultiExodusReaderDerivs(e_name)
-#         ti, idx = closest_frame(MF,t_val)
-#         # Read in the full data for gr0 and gr1
-#         xe, ye, ze, clist = MF.get_full_vars_at_time(['gr0'],ti) #,'gr1'
-#         c4e = clist[0]
-#         contours_e, c_nodes_e, tri_e = plotting_helper(xe, ye, c4e, c_level)
-#         # And plot
-#         # fig, ax = plt.subplots(nrows=2, sharex=True, sharey=True, figsize=(6, 8))
-#         tpc = ax[0].tripcolor(tri_e, c_nodes_e, shading="gouraud", cmap='viridis', vmin=0, vmax=1)
-#         fig.colorbar(tpc, ax=ax[0], label=r"$\eta_0$")
-#         # Overlay the contour
-#         for poly in contours_e:
-#             ax[0].plot(poly[:,0], poly[:,1], lw=2, c='red')
-#         # No axis labels or extra space
-#         ax[0].set_xlim([np.amin(xe),np.amax(xe)])
-#         ax[0].set_ylim([np.amin(ye),np.amax(ye)])
-#         ax[0].set_aspect("equal")#, adjustable="box")
-
-#         # Read MATLAB
-#         xm, ym, cm, _ = read_matlab(m_name)   # your function
-#         x4m, y4m, c4m   = grid_to_quads(xm, ym, cm)
-#         contours_m, c_nodes_m, tri_m = plotting_helper(x4m, y4m, c4m, c_level)
-#         # Now add to the plot
-#         tpcm = ax[1].tripcolor(tri_m, c_nodes_m, shading="gouraud", cmap='viridis', vmin=0, vmax=1)
-#         fig.colorbar(tpcm, ax=ax[1], label=r"$\eta_0$")
-#         # Overlay the contour
-#         for poly in contours_m:
-#             ax[1].plot(poly[:,0], poly[:,1], lw=2, c='red')
-#         # No axis labels or extra space
-#         ax[1].set_xlim([np.amin(x4m),np.amax(x4m)])
-#         ax[1].set_ylim([np.amin(y4m),np.amax(y4m)])
-#         ax[1].set_aspect("equal")
-
-#         plt.tight_layout()
-#         plt.show()
-#         plt.savefig(imdir+'/P0'+str(i+1)+'_combined_gr0_contour_'+str(t_val)+'s.png',transparent=True,dpi=500)
-#         plt.close()
 
 
 def plotting_helper(x4, y4, c4):
@@ -466,8 +496,9 @@ def plot_combined(i, e_name, c_level=args.level, t_vals=(5, 10, 15, 20),
 
         # ---- Exodus ----
         xe, ye, ze, clist = MF.get_full_vars_at_time(['gr0'], ti)
-        c4e = clist[0]
-        XY_e, tri_e, c_nodes_e = plotting_helper(xe, ye, c4e)
+        ck = clist[0]                # (n_elem, k) with k = 4 or 8 or 9
+        x4e, y4e, c4e = ensure_quad4(xe, ye, ck)   # <-- coerce to QUAD4
+        XY_e, tri_e, c_nodes_e = plotting_helper(x4e, y4e, c4e)
         verb(f"Exodus NaN ratio: {np.isnan(c_nodes_e).mean():.3f}")
 
         # ---- MATLAB ----
@@ -629,7 +660,7 @@ if __name__ == "__main__":
     for i,e_name in enumerate(exodus_paths):
         pt(' ')#\x1b[31;1m
         pt('\033[1m\033[96m'+'File '+str(i+1)+'/3: '+'\x1b[0m'+str(printnames[i]))
-        plot_combined(i,e_name,c_level=args.level)
+        plot_combined(i,e_name,c_level=args.level,t_vals=(5, 10, 15))
     #
     pt(' ')
     pt(f'Done Everything: {format_elapsed_time(all_ti)}')
