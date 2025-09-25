@@ -557,6 +557,18 @@ def plot_combined(i, e_name, c_level=args.level, t_vals=(5, 10, 15, 20),
             out=imdir + f'/P0{i+1}b_stacked_gr0_contour_{t_val:02d}s.png'
             )
 
+        out2c = plot_two_level_contours(
+            i=i,
+            tri_e=tri_e, c_nodes_e=c_nodes_e,
+            tri_m=tri_m, c_nodes_m=c_nodes_m,
+            levels=(0.01, 0.99),
+            extent=extent,
+            t_val=t_val,
+            out_dir=imdir,
+            fname_stub="gr0"
+        )
+        verb(f"Wrote {out2c}")
+
 
 def plot_contour_overlay(series, level, labels=None, colors=None,
                          extent=None, title=None, out=None, ax=None):
@@ -629,6 +641,87 @@ def plot_contour_overlay(series, level, labels=None, colors=None,
         fig.savefig(out, dpi=500, transparent=True)  # avoid transparency while debugging
     return fig, ax
 
+
+def plot_two_level_contours(i,
+                            tri_e, c_nodes_e,
+                            tri_m, c_nodes_m,
+                            levels=(0.01, 0.99),
+                            extent=None,
+                            t_val=None,
+                            out_dir="pics",
+                            fname_stub="gr0"):
+    """
+    Make a 2-column figure (Exodus | MATLAB) showing only two iso-contours.
+
+    Parameters
+    ----------
+    i : int
+        Index for output naming (P0{i+1}...).
+    tri_e, c_nodes_e : Triangulation, ndarray
+        Exodus triangulation and nodal field.
+    tri_m, c_nodes_m : Triangulation, ndarray
+        MATLAB triangulation and nodal field.
+    levels : tuple(float, float)
+        Two contour levels to draw (default: (0.01, 0.99)).
+    extent : (xmin, xmax, ymin, ymax) or None
+        Axes limits. If None, inferred from both triangulations.
+    t_val : int or float or None
+        Time value for titles/filename tag. If None, no time in title.
+    out_dir : str
+        Directory to save the figure.
+    fname_stub : str
+        Text to include in filename (e.g., 'gr0', 'gr1').
+
+    Returns
+    -------
+    out_path : str
+        Saved file path.
+    """
+    # Colors (level 0.01, level 0.99)
+    lvl_colors = ("dodgerblue", "crimson")
+    lvl_labels = (rf"$\eta_0={levels[0]}$", rf"$\eta_0={levels[1]}$")
+
+    # Create 2-column figure
+    fig, ax = plt.subplots(ncols=2, sharex=True, sharey=True, figsize=(8, 3.5))
+
+    # Exodus (left)
+    ax[0].tricontour(tri_e, c_nodes_e, levels=levels, colors=lvl_colors, linewidths=2)
+    ax[0].set_title(f"Exodus{'' if t_val is None else f' @ {t_val}s'}")
+
+    # MATLAB (right)
+    ax[1].tricontour(tri_m, c_nodes_m, levels=levels, colors=lvl_colors, linewidths=2)
+    ax[1].set_title(f"MATLAB{'' if t_val is None else f' @ {t_val}s'}")
+
+    # Limits/aspect
+    if extent is None:
+        xs = np.concatenate([tri_e.x, tri_m.x])
+        ys = np.concatenate([tri_e.y, tri_m.y])
+        extent = (xs.min(), xs.max(), ys.min(), ys.max())
+    for a in ax:
+        a.set_xlim(extent[0], extent[1])
+        a.set_ylim(extent[2], extent[3])
+        a.set_aspect("equal")
+        a.set_xlabel("x")
+    ax[0].set_ylabel("y")
+    ax[1].set_ylabel("y")
+
+    # Legend: two colored lines (one per level)
+    handles = [Line2D([0], [0], color=c, lw=2, label=lab)
+               for c, lab in zip(lvl_colors, lvl_labels)]
+    ax[1].legend(handles=handles, loc="best", frameon=True)
+
+    fig.tight_layout()
+
+    # Filename like: P0{i+1}c_twoContours_gr0_05s.png
+    if t_val is None:
+        ttag = "NA"
+    else:
+        # zero-pad ints; for floats you can adjust as needed
+        ttag = f"{int(round(float(t_val))):02d}"
+    out_path = os.path.join(out_dir, f"P0{i+1}c_IW_{fname_stub}_{ttag}s.png")
+    fig.savefig(out_path, dpi=500, transparent=True)
+    plt.close(fig)
+    return out_path
 
 
 
