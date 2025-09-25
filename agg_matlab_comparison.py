@@ -210,12 +210,12 @@ def read_matlab(filename):
 
     Notes
     -----
-    This function assumes a square grid of size N x N with N = 161
+    This function assumes a square grid of size N x N with N = 801 (was 161)
     and reshapes using column-major order ('F') so that the data
     matches MATLAB's memory layout.
     """
     df = pd.read_csv(filename)
-    N = 161
+    N = 801#161
     eta1_grid = df['eta1'].to_numpy().reshape(N, N, order='F')  # MATLAB is column-major
     eta2_grid = df['eta2'].to_numpy().reshape(N, N, order='F')
     x = df['x'].to_numpy().reshape(N, N, order='F')
