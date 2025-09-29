@@ -753,7 +753,7 @@ if __name__ == "__main__":
     for i,e_name in enumerate(exodus_paths):
         pt(' ')#\x1b[31;1m
         pt('\033[1m\033[96m'+'File '+str(i+1)+'/3: '+'\x1b[0m'+str(printnames[i]))
-        plot_combined(i,e_name,c_level=args.level,t_vals=(5, 10, 15))
+        plot_combined(i,e_name,c_level=args.level,t_vals=(5, 10, 15, 20, 25, 30, 40))
     #
     pt(' ')
     pt(f'Done Everything: {format_elapsed_time(all_ti)}')
