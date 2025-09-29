@@ -28,6 +28,7 @@ def base_parser() -> argparse.ArgumentParser:
     p.add_argument("--m","-m", type=float, default=default_vals.m, help="FE constant m.")
     p.add_argument("--multi", action="store_true", help="Parametric analysis of max aniso ceneterd around input values.")
     p.add_argument("--maxm", action="store_true", help="Find the m value(s) for maximum aniso for given kappa and GBE.")
+    p.add_argument("--predict", action="store_true", help="Print parameter values for specified kappa/m/gbe.")
     # Make all options non-required here; we'll enforce presence after merging JSON+CLI.
     # p.add_argument("--input_pattern","-i", help="Substring or glob for the input file.")
     # p.add_argument("--max-x","-x", type=float, help="Maximum allowed x (inclusive).")
@@ -123,7 +124,7 @@ def solve_poly(poly_val):
 
 G_MIN = 0.098546
 G_MAX = 0.765691
-GAMMA_MIN = 0.5
+GAMMA_MIN = 0.53
 GAMMA_MAX = 40.0
 
 def clip_gamma_by_g(gamma, g,
@@ -691,6 +692,7 @@ def main():
         if args.plot:
             plt.show()
         plt.close('all')
+        print(f'Max a for specified kappa/m/gbe = {_max_a_at_m(args.gbe, args.kappa, args.m)}')
 
     # else:
     #     calculate_single_aniso(args)
@@ -711,7 +713,7 @@ def main():
 
         # 2) Plot a*(m) over ±1 OOM around m*
         ax, m_vals, a_vals = plot_max_a_vs_m_around(
-            gbe, kappa, m_star, span_oom=1.0, n=301
+            gbe, kappa, m_star, span_oom=10.0, n=301
         )
         plt.tight_layout()
         if args.save is not None:
@@ -719,6 +721,40 @@ def main():
         if args.plot:
             plt.show()
         plt.close('all')
+
+
+    if args.predict:
+        # Output all the properties based on the kappa/m/gbe input for reference
+        gbe = float(args.gbe)
+        kappa = float(args.kappa)
+        m_base = float(args.m)
+        print(f'GBE = {gbe}')
+        print(f'Kappa = {kappa}')
+        print(f'm (or mu) = {m_base}')
+        print(f'Max a* for specified kappa/m/gbe = {_max_a_at_m(gbe, kappa, m_base):.4f}')
+        # Max possible amag based on changing m
+        m_star, a_star = find_best_m(gbe, kappa, m_base,
+                                     coarse_pts=41,  # adjust if you want
+                                     coarse_oom=3,   # ±3 orders to search broadly
+                                     refine_tol=1e-4)
+        print(f"Best m ≈ {m_star:.6e} yields a* ≈ {a_star:.4f}")
+
+        # Other values
+        g = gbe / (np.sqrt(kappa * m_base))
+        g2 = g * g
+        alist = [-3.0944, -1.8169, 10.323, -8.1819, 2.0033]
+        poly_g = (((alist[0] * g2 + alist[1]) * g2 + alist[2]) * g2 + alist[3]) * g2 + alist[4]
+        gamma_ctr = 1 / poly_g
+        f0_iw = (((((0.0788 * poly_g - 0.4955) * poly_g + 1.2244) * poly_g - 1.5281) * poly_g + 1.0686) * poly_g - 0.5563) * poly_g + 0.2907
+        iw = (np.sqrt(kappa / m_base)) * (np.sqrt(1 / f0_iw))
+
+        print(f'g = {g:.4f}')
+        print(f'g^2 = {g2:.4f}')
+        print(f'gamma = {gamma_ctr:.4f}')
+        print(f'iw = {iw:.4f}')
+
+
+
 
 
 
