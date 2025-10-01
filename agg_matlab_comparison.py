@@ -42,13 +42,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 # CL Argument Parser
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(
+    description="Plotting matlab and pf comparison of bicrystal "
+                "(pf/ex/agg/02_matlab_comparison)",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter
+)
 parser.add_argument('--verbose', '-v', action='count', default=0,
                     help='Increase verbosity: -v for INFO, -vv for DEBUG.')
-parser.add_argument('--plot','-p',action='store_true',
-                            help='Save the plots in pics/, default=False')
-parser.add_argument('--level','-c',type=float,default=0.99,
+plot_group = parser.add_argument_group("Plotting options")
+plot_group.add_argument('--plot','-p',action='store_true',
+                            help='Save the plots in pics/')
+plot_group.add_argument('--level','-c',type=float,default=0.99,
                     help='Contour value for plotting single contours.')
+plot_group.add_argument("--contour", choices=["gr0", "gr1", "moelans"], default="gr0",
+                    help="Choose which contour to plot")
 args = parser.parse_args()
 
 
@@ -489,21 +496,43 @@ def draw_iso_contour(ax, tri, c_nodes, level):
 
 
 def plot_combined(i, e_name, c_level=args.level, t_vals=(5, 10, 15, 20),
-                  matlab_base="01_matlab/results"):
+                  matlab_base="01_matlab/results",cont_type=args.contour):
     for t_val in t_vals:
         MF = MultiExodusReaderDerivs(e_name)
         ti, idx = closest_frame(MF, t_val)
 
         # ---- Exodus ----
-        xe, ye, ze, clist = MF.get_full_vars_at_time(['gr0'], ti)
-        ck = clist[0]                # (n_elem, k) with k = 4 or 8 or 9
+        xe, ye, ze, clist = MF.get_full_vars_at_time(['gr0','gr1'], ti)
+        # ck = clist[0]                # (n_elem, k) with k = 4 or 8 or 9
+        c0 = clist[0].astype(float, copy=False)  # (n_elem, k)
+        c1 = clist[1].astype(float, copy=False)
+        if cont_type == "gr0":
+            ck = c0  # gr0
+        elif cont_type == "gr1":
+            ck = c1  # gr1
+        else:  # moelans
+            num = c0 * c0
+            den = num + c1 * c1
+            ck = np.divide(num, den, out=np.zeros_like(num, dtype=float), where=den > 0)
         x4e, y4e, c4e = ensure_quad4(xe, ye, ck)   # <-- coerce to QUAD4
         XY_e, tri_e, c_nodes_e = plotting_helper(x4e, y4e, c4e)
         verb(f"Exodus NaN ratio: {np.isnan(c_nodes_e).mean():.3f}")
 
         # ---- MATLAB ----
         m_path = matlab_csv_for(e_name, t_val, base_dir=matlab_base)
-        xm, ym, cm, _ = read_matlab(m_path)
+        xm, ym, eta1, eta2 = read_matlab(m_path)
+        eta1 = eta1.astype(float, copy=False)
+        eta2 = eta2.astype(float, copy=False)
+        if cont_type == "gr0":
+            cm = eta1
+        elif cont_type == "gr1":
+            cm = eta2
+        else:  # moelans
+            # cm = eta1 * eta1 / (eta1 * eta1 + eta2 * eta2)
+            num = eta1 * eta1
+            den = num + eta2 * eta2
+            cm = np.divide(num, den, out=np.zeros_like(num, dtype=float), where=den > 0)
+
         x4m, y4m, c4m = grid_to_quads(xm, ym, cm)
         XY_m, tri_m, c_nodes_m = plotting_helper(x4m, y4m, c4m)
         verb(f"Matlab NaN ratio: {np.isnan(c_nodes_m).mean():.3f}")
@@ -511,15 +540,21 @@ def plot_combined(i, e_name, c_level=args.level, t_vals=(5, 10, 15, 20),
         # ---- Plot ----
         fig, ax = plt.subplots(ncols=2, sharex=True, sharey=True, figsize=(8, 3.5))
 
+        if cont_type == "gr0":
+            cbar_label = r"$\eta_0$"
+        elif cont_type == "gr1":
+            cbar_label = r"$\eta_1$"
+        else:
+            cbar_label = r"$\phi=\eta_0^2/(\eta_0^2+\eta_1^2)$"
         tpc = ax[0].tripcolor(tri_e, c_nodes_e, shading="gouraud",
                               cmap='viridis', vmin=0, vmax=1)
-        fig.colorbar(tpc, ax=ax[0], label=r"$\eta_0$")
+        fig.colorbar(tpc, ax=ax[0], label=cbar_label)
         draw_iso_contour(ax[0], tri_e, c_nodes_e, c_level)
         ax[0].set_title(f"Exodus @ {t_val}s")
 
         tpcm = ax[1].tripcolor(tri_m, c_nodes_m, shading="gouraud",
                                cmap='viridis', vmin=0, vmax=1)
-        fig.colorbar(tpcm, ax=ax[1], label=r"$\eta_0$")
+        fig.colorbar(tpcm, ax=ax[1], label=cbar_label)
         draw_iso_contour(ax[1], tri_m, c_nodes_m, c_level)
         ax[1].set_title(f"MATLAB @ {t_val}s")
 
@@ -537,7 +572,7 @@ def plot_combined(i, e_name, c_level=args.level, t_vals=(5, 10, 15, 20),
         ax[1].set_ylabel("y")
 
         fig.tight_layout()
-        out = imdir + f'/P0{i+1}a_combined_gr0_contour_{t_val:02d}s.png'
+        out = imdir + f'/P0{i+1}a_combined_contour_{t_val:02d}s.png'
         plt.savefig(out, dpi=500, transparent=True)  # no transparency while debugging
         plt.close(fig)
         verb(f"Wrote {out}")
@@ -554,7 +589,7 @@ def plot_combined(i, e_name, c_level=args.level, t_vals=(5, 10, 15, 20),
             colors=["crimson", "dodgerblue"],
             extent=extent,
             title=None,#f"gr0 contour @ {t_val}s (Exodus vs MATLAB)",
-            out=imdir + f'/P0{i+1}b_stacked_gr0_contour_{t_val:02d}s.png'
+            out=imdir + f'/P0{i+1}b_stacked_contour_{t_val:02d}s.png'
             )
 
         out2c = plot_two_level_contours(
@@ -718,7 +753,8 @@ def plot_two_level_contours(i,
     else:
         # zero-pad ints; for floats you can adjust as needed
         ttag = f"{int(round(float(t_val))):02d}"
-    out_path = os.path.join(out_dir, f"P0{i+1}c_IW_{fname_stub}_{ttag}s.png")
+    # out_path = os.path.join(out_dir, f"P0{i+1}c_IW_{fname_stub}_{ttag}s.png")
+    out_path = os.path.join(out_dir, f"P0{i+1}c_IW_{ttag}s.png")
     fig.savefig(out_path, dpi=500, transparent=True)
     plt.close(fig)
     return out_path
