@@ -179,9 +179,12 @@ def find_files():
         os.path.join("01_matlab", "results", "matlab_m6_15s.csv"),
     ]
     exodus_files = [
-        os.path.join("02_pf_m2", "02_pf_m2_out.e"),
-        os.path.join("03_pf_m4", "03_pf_m4_out.e"),
-        os.path.join("04_pf_m6", "04_pf_m6_out.e"),
+        # os.path.join("02_pf_m2", "02_pf_m2_out.e"),
+        # os.path.join("03_pf_m4", "03_pf_m4_out.e"),
+        # os.path.join("04_pf_m6", "04_pf_m6_out.e"),
+        os.path.join("05_pf_m2_new", "05_pf_m2_new_out.e"),
+        os.path.join("06_pf_m4_new", "06_pf_m4_new_out.e"),
+        os.path.join("07_pf_m6_new", "07_pf_m6_new_out.e"),
     ]
 
     # --- Check for missing files ---
@@ -789,7 +792,7 @@ if __name__ == "__main__":
     for i,e_name in enumerate(exodus_paths):
         pt(' ')#\x1b[31;1m
         pt('\033[1m\033[96m'+'File '+str(i+1)+'/3: '+'\x1b[0m'+str(printnames[i]))
-        plot_combined(i,e_name,c_level=args.level,t_vals=(5, 10, 15, 20, 25, 30, 40))
+        plot_combined(i,e_name,c_level=args.level,t_vals=(5, 10, 15, 20))#, 25, 30, 40))
     #
     pt(' ')
     pt(f'Done Everything: {format_elapsed_time(all_ti)}')
