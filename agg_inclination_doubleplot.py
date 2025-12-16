@@ -53,7 +53,7 @@ var = 'unique_grains'
 parser = argparse.ArgumentParser()
 parser.add_argument('--verbose', '-v', action='count', default=0,
                     help='Increase verbosity: -v for INFO, -vv for DEBUG.')
-parser.add_argument('--out','-o',type=str, default='Inclination',
+parser.add_argument('--out','-o',type=str, default='inclination',
                                 help='Name of output')
 parser.add_argument('--double', action='store_true',
                     help='Make a 1x2 subplot: [unique_grains map, inclination polar plot].')
@@ -683,45 +683,91 @@ def rose_curve(theta, n_bins=180, mode='probability', weights=None):
     return centres, heights
 
 
-def pplot(incx,incy,outname_base,lbl,t_frames,i,iw=None):
-    # Anisotropy Function
-    full_deg = np.linspace(0, 360, 361)
-    full_rad = np.deg2rad(full_deg)
-    ref_inc = inc_f(full_rad,0.05,0,2)
-    iso_inc = np.ones_like(ref_inc)
-    # Inclination
+
+def plot_inclination_polar(ax, incx, incy, iw=None, *, label='Inclination Dist'):
+    """Plot inclination vectors (incx, incy) as a rose diagram on a polar axis."""
+    # Inclination angles
     theta = np.arctan2(incy, incx)
     theta = np.mod(theta, 2*np.pi)
-    # Weight each element by 1/int_width (no scaling of the vectors themselves)
+
+    # Optional weights: 1/int_width (no scaling of vectors)
     weights = None
     if iw is not None:
         iw = np.asarray(iw)
-        valid = np.isfinite(iw) & (iw > 0)          # guard against zeros/NaNs
+        valid = np.isfinite(iw) & (iw > 0)  # guard against zeros/NaNs
         safe_iw = np.where(valid, iw, np.nan)
         weights = np.zeros_like(theta, dtype=float)
         weights[valid] = 1.0 / safe_iw[valid]
-        if not np.any(valid):                       # fallback if everything invalid
+        if not np.any(valid):               # fallback if everything invalid
             weights = None
+
     # Use probability so areas are comparable across timesteps
     ang, rad = rose_curve(theta, n_bins=cl_args.bins, mode='probability', weights=weights)
-    # Weight aniso function
-    ref_inc = ref_inc * ((max(rad) - min(rad))/2)
-    iso_inc = iso_inc * ((max(rad) - min(rad))/2)
-    # Plot
-    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-    # ax.plot(full_rad, iso_inc, label='Isotropic Dist')
-    # ax.plot(full_rad, ref_inc, label='Aniso Function')
-    ax.plot(ang, rad, label='Inclination Dist')
+
+    # Keep label for optional downstream use, but don't show a legend by default
+    ax.plot(ang, rad, label=label)
     ax.set_theta_zero_location('E')
     ax.set_theta_direction(1)
     ax.set_rlim(0)
     ax.set_rlabel_position(22.5)
     ax.grid(True)
-    ax.legend(loc='upper right', bbox_to_anchor=(1.1, 1.15))
-    timestring = 't = ' + str(t_frames[i])
+    # No legend (per user preference)
+    # Remove radial tick labels (per user preference)
+    ax.set_yticklabels([])
+    return ang, rad
+
+
+def plot_unique_grains_map(ax, tx, ty, values, *, cname='unique_grains', cmap=None, alpha=1.0, clim=None):
+    """Plot a polygon/element map using element corner coords (tx, ty) and one value per element."""
+    tx = np.asarray(tx)
+    ty = np.asarray(ty)
+    values = np.asarray(values)
+
+    # coords: (n_elems, n_vertices(=4), 2)
+    coords = np.stack((tx, ty), axis=-1)
+
+    if cmap is None:
+        cmap = matplotlib.cm.viridis
+
+    pc = PolyCollection(coords, cmap=cmap, alpha=alpha)
+    pc.set_array(values.astype(float, copy=False))
+    if clim is not None:
+        vmin, vmax = clim
+        pc.set_clim(vmin, vmax)
+    ax.add_collection(pc)
+
+    ax.set_xlim([np.nanmin(tx), np.nanmax(tx)])
+    ax.set_ylim([np.nanmin(ty), np.nanmax(ty)])
+    ax.set_aspect('equal')
+    # No title on the map (per user preference)
+    return pc
+
+
+def dplot(tx, ty, unique_vals, incx, incy, outname_base, lbl, t_frames, i, iw=None, *, cname='unique_grains', clim=None):
+    """Double plot: [unique-grains map, inclination polar plot] saved to the normal filename."""
+    fig = plt.figure(figsize=(10, 4))
+    ax0 = fig.add_subplot(1, 2, 1)
+    ax1 = fig.add_subplot(1, 2, 2, projection='polar')
+
+    pc = plot_unique_grains_map(ax0, tx, ty, unique_vals, cname=cname, clim=clim)
+    fig.colorbar(pc, ax=ax0, label=cname)
+
+    plot_inclination_polar(ax1, incx, incy, iw)
+    timestring = f't = {t_frames[i]:.2f} s'# + str(t_frames[i])
+    ax1.set_title(timestring)
+
+    fig.tight_layout()
+    fig.savefig(imdir + '/' + outname_base + '_' + str(lbl) + '_' + str(i) + '.png',
+                dpi=500, transparent=True)
+    plt.close(fig)
+
+def pplot(incx,incy,outname_base,lbl,t_frames,i,iw=None):
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+    plot_inclination_polar(ax, incx, incy, iw)
+    timestring = f't = {t_frames[i]:.2f} s'# + str(t_frames[i])
     ax.set_title(timestring)
     fig.savefig(imdir+'/'+outname_base + '_'+str(lbl)+'_'+str(i)+'.png',dpi=500,transparent=True )
-    plt.close()
+    plt.close(fig)
 
 
 def out_name(file_name):
@@ -775,6 +821,10 @@ if __name__ == "__main__":
         if cl_args.save:
             output_dir = cl_args.savename        # root folder for your Parquet dataset
             os.makedirs(output_dir, exist_ok=True)
+
+        # For --double mode, we want a consistent colorbar range across frames.
+        # Per request: lock the color limits based on the *first* frame.
+        map_clim = None
         for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
             x, y, z, clist, tx, ty, tz = MF.get_vars_at_time(varnames,ti,fullxy=True)
             v0 = clist[0]
@@ -791,7 +841,24 @@ if __name__ == "__main__":
             incy = clist_filtered[1]
             adist = clist_filtered[2]
             iw = clist_filtered[3]
-            pplot(incx,incy,outbase,cl_args.out,t_frames,i,iw)
+
+            if cl_args.double:
+                # Establish fixed color limits from the first frame
+                if map_clim is None:
+                    vals = np.asarray(clist[4], dtype=float)
+                    if np.all(~np.isfinite(vals)):
+                        map_clim = (0.0, 1.0)
+                    else:
+                        vmin = float(np.nanmin(vals))
+                        vmax = float(np.nanmax(vals))
+                        if vmin == vmax:
+                            vmax = vmin + 1.0
+                        map_clim = (vmin, vmax)
+
+                dplot(tx, ty, clist[4], incx, incy, outbase, cl_args.out, t_frames, i, iw,
+                      cname=var, clim=map_clim)
+            else:
+                pplot(incx, incy, outbase, cl_args.out, t_frames, i, iw)
 
             if cl_args.save:
                 df = pd.DataFrame({
