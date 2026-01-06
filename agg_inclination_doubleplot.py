@@ -46,17 +46,22 @@ class default_vals:
     cutoff = 0.0
     bins = 30
 
-var = 'unique_grains'
+# var = 'unique_grains'
 
 
 # CL Argument Parser
 parser = argparse.ArgumentParser()
 parser.add_argument('--verbose', '-v', action='count', default=0,
                     help='Increase verbosity: -v for INFO, -vv for DEBUG.')
-parser.add_argument('--out','-o',type=str, default='inclination',
+parser.add_argument('--out','-o',type=str, default='dplot',
                                 help='Name of output')
-parser.add_argument('--double', action='store_true',
-                    help='Make a 1x2 subplot: [unique_grains map, inclination polar plot].')
+parser.add_argument('--mode','-m', type=str, default='inc', choices=['inc','double','var'],
+                    help=('Plot mode: '
+                          'inc = inclination polar plot only; '
+                          'double = [unique_grains map, inclination polar plot]; '
+                          'var = unique_grains map only.'))
+parser.add_argument('--var',type=str, default='unique_grains',
+                                help='Variable to plot, default = unique_grains')
 # parser.add_argument('--cpus','-n',type=int, default=default_vals.cpus,
 #                             help='How many cpus, default='+str(default_vals.cpus))
 parser.add_argument('--bins','-b',type=int, default=default_vals.bins,
@@ -717,7 +722,7 @@ def plot_inclination_polar(ax, incx, incy, iw=None, *, label='Inclination Dist')
     return ang, rad
 
 
-def plot_unique_grains_map(ax, tx, ty, values, *, cname='unique_grains', cmap=None, alpha=1.0, clim=None):
+def plot_unique_grains_map(ax, tx, ty, values, *, cname=cl_args.var, cmap=None, alpha=1.0, clim=None):
     """Plot a polygon/element map using element corner coords (tx, ty) and one value per element."""
     tx = np.asarray(tx)
     ty = np.asarray(ty)
@@ -743,7 +748,7 @@ def plot_unique_grains_map(ax, tx, ty, values, *, cname='unique_grains', cmap=No
     return pc
 
 
-def dplot(tx, ty, unique_vals, incx, incy, outname_base, lbl, t_frames, i, iw=None, *, cname='unique_grains', clim=None):
+def dplot(tx, ty, unique_vals, incx, incy, outname_base, lbl, t_frames, i, iw=None, *, cname=cl_args.var, clim=None):
     """Double plot: [unique-grains map, inclination polar plot] saved to the normal filename."""
     fig = plt.figure(figsize=(10, 4))
     ax0 = fig.add_subplot(1, 2, 1)
@@ -755,6 +760,22 @@ def dplot(tx, ty, unique_vals, incx, incy, outname_base, lbl, t_frames, i, iw=No
     plot_inclination_polar(ax1, incx, incy, iw)
     timestring = f't = {t_frames[i]:.2f} s'# + str(t_frames[i])
     ax1.set_title(timestring)
+
+    fig.tight_layout()
+    fig.savefig(imdir + '/' + outname_base + '_' + str(lbl) + '_' + str(i) + '.png',
+                dpi=500, transparent=True)
+    plt.close(fig)
+
+
+def vplot(tx, ty, unique_vals, outname_base, lbl, t_frames, i, *, cname=cl_args.var, clim=None):
+    """Var-only plot: [unique_grains (or other var) map] with a consistent colorbar across frames."""
+    fig, ax = plt.subplots(figsize=(6, 5))
+    pc = plot_unique_grains_map(ax, tx, ty, unique_vals, cname=cname, clim=clim)
+    fig.colorbar(pc, ax=ax, label=cname)
+
+    # Keep the map axis untitled (matches the double-plot styling), but still show time.
+    timestring = f't = {t_frames[i]:.2f} s'
+    fig.suptitle(timestring)
 
     fig.tight_layout()
     fig.savefig(imdir + '/' + outname_base + '_' + str(lbl) + '_' + str(i) + '.png',
@@ -807,6 +828,7 @@ if __name__ == "__main__":
     file_names = find_files()
     num_files = len(file_names)
     all_ti = time.perf_counter()
+    var = cl_args.var
     for cnt,file_name in enumerate(file_names):
         pt(' ')#\x1b[31;1m
         pt('\033[1m\033[96m'+'File '+str(cnt+1)+'/'+str(num_files)+': '+'\x1b[0m'+str(file_name))
@@ -822,7 +844,7 @@ if __name__ == "__main__":
             output_dir = cl_args.savename        # root folder for your Parquet dataset
             os.makedirs(output_dir, exist_ok=True)
 
-        # For --double mode, we want a consistent colorbar range across frames.
+        # For map-based modes (double/var), we want a consistent colorbar range across frames.
         # Per request: lock the color limits based on the *first* frame.
         map_clim = None
         for i,ti in enumerate(tqdm(t_frames, desc='Timestepping')):
@@ -842,8 +864,9 @@ if __name__ == "__main__":
             adist = clist_filtered[2]
             iw = clist_filtered[3]
 
-            if cl_args.double:
-                # Establish fixed color limits from the first frame
+            # For map-based modes, use a consistent colorbar range across frames.
+            if cl_args.mode in ('double', 'var'):
+                # Lock the color limits based on the *first* frame (per request)
                 if map_clim is None:
                     vals = np.asarray(clist[4], dtype=float)
                     if np.all(~np.isfinite(vals)):
@@ -855,9 +878,13 @@ if __name__ == "__main__":
                             vmax = vmin + 1.0
                         map_clim = (vmin, vmax)
 
+            if cl_args.mode == 'double':
                 dplot(tx, ty, clist[4], incx, incy, outbase, cl_args.out, t_frames, i, iw,
                       cname=var, clim=map_clim)
-            else:
+            elif cl_args.mode == 'var':
+                vplot(tx, ty, clist[4], outbase, cl_args.out, t_frames, i,
+                      cname=var, clim=map_clim)
+            else:  # 'inc'
                 pplot(incx, incy, outbase, cl_args.out, t_frames, i, iw)
 
             if cl_args.save:
