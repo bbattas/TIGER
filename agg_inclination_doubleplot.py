@@ -45,6 +45,7 @@ class default_vals:
     n_frames = 40
     cutoff = 0.0
     bins = 30
+    tf = 0.0
 
 # var = 'unique_grains'
 
@@ -83,8 +84,11 @@ parser.add_argument('--n_frames','-f',type=int, default=default_vals.n_frames,
                             help='''How many frames for if sequence is true, '''
                             '''default='''+str(default_vals.n_frames))
 parser.add_argument('--cutoff','-c',type=int, default=default_vals.cutoff,
-                            help='''What time to stop at, if 0.0 uses all data. '''
+                            help='''What time to truncate at, if 0.0 uses all data. '''
                             '''default='''+str(default_vals.cutoff))
+parser.add_argument('--tf',type=float, default=default_vals.tf,
+                            help='''End time (seq or not), if 0.0 uses all data. '''
+                            '''default='''+str(default_vals.tf))
 parser.add_argument('--exo','-e',action='store_false',
                             help='Look for and use Exodus files instead of Nemesis, default=True')
 parser.add_argument('--skip', nargs='+', required=False, help='List of text flags to skip')
@@ -264,6 +268,13 @@ def time_info(MF):
         t_frames: List of time values associated with each frame (idx_frames)
     '''
     times = MF.global_times
+    # adjust final time if needed
+    if cl_args.tf != 0:
+        tf = cl_args.tf
+        times_tf = times[times <= tf]
+        if times_tf.size == 0:
+            raise ValueError(f"--tf={tf} is earlier than the first time ({times[0]}).")
+        times = times_tf
     if cl_args.singletime is not None:
         t_list = MF.global_times
         idx = min(range(len(t_list)), key=lambda i: abs(t_list[i] - cl_args.singletime))
@@ -272,6 +283,8 @@ def time_info(MF):
     if cl_args.sequence == True:
         # if cl_args.n_frames < len(times):
         t_max = times[-1]
+        if cl_args.tf != 0:
+            t_max = cl_args.tf
         # t_max = max(times)
         t_frames =  np.linspace(0.0,t_max,cl_args.n_frames)
         idx_frames = [ np.where(times-t_frames[i] == min(times-t_frames[i],key=abs) )[0][0] for i in range(cl_args.n_frames) ]
