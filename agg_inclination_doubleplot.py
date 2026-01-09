@@ -72,7 +72,9 @@ parser.add_argument('--dim','-d',type=int,default=2, choices=[2,3],
 parser.add_argument('--subdirs','-s',action='store_true',
                             help='Run in all subdirectories (vs CWD), default=False')
 parser.add_argument('--save',action='store_true',
-                            help='Save the inclination data, default=False')
+                            help='Save the inclination data to parquet, default=False')
+parser.add_argument('--csv',action='store_true',
+                            help='Save the inclination data to csv file, default=False')
 parser.add_argument('--savename',type=str, default='inc_data',
                                 help='If saving to Parquet, save dir name')
 parser.add_argument('--esd',action='store_true',
@@ -917,21 +919,23 @@ if __name__ == "__main__":
                     partition_cols=["time_step"],
                     compression="snappy"
                 )
-            # # Save a csv
-            # for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
-            #     csv_rows.append({
-            #         "time_step":  i,
-            #         "time":       ti,
-            #         "index":      j,
-            #         "incx":       ix,
-            #         "incy":       iy,
-            #         "adist":      ad
-            #     })
+            if cl_args.csv:
+                # Save a csv
+                csv_rows = []
+                for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
+                    csv_rows.append({
+                        "time_step":  i,
+                        "time":       ti,
+                        "index":      j,
+                        "incx":       ix,
+                        "incy":       iy,
+                        "adist":      ad
+                    })
 
-        # Save csv
-        # odf = pd.DataFrame(csv_rows)
-        # outcsv_name = name_base + "_inclination.csv"
-        # odf.to_csv(outcsv_name, index=False)
+                # Save csv
+                odf = pd.DataFrame(csv_rows)
+                outcsv_name = name_base + "_inclination.csv"
+                odf.to_csv(outcsv_name, index=False)
 
         pt(f'Done File {cnt+1}: {format_elapsed_time(init_ti)}')
 
