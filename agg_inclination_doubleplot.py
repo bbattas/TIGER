@@ -275,7 +275,7 @@ def time_info(MF):
         tf = cl_args.tf
         # times_tf = times[times <= tf]
         times_tf = [x for x in times if x <= cl_args.tf]
-        if times_tf.size == 0:
+        if len(times_tf) == 0:
             raise ValueError(f"--tf={tf} is earlier than the first time ({times[0]}).")
         times = times_tf
     if cl_args.singletime is not None:
