@@ -930,7 +930,8 @@ if __name__ == "__main__":
                         "index":      j,
                         "incx":       ix,
                         "incy":       iy,
-                        "adist":      ad
+                        "adist":      ad,
+                        "iw":        iw
                     })
 
                 # Save csv
