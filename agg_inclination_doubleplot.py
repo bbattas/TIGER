@@ -923,7 +923,7 @@ if __name__ == "__main__":
             if cl_args.csv:
                 # Save a csv
                 csv_rows = []
-                for j, (ix, iy, ad) in enumerate(zip(incx, incy, adist)):
+                for j, (ix, iy, ad, intw) in enumerate(zip(incx, incy, adist, iw)):
                     csv_rows.append({
                         "time_step":  i,
                         "time":       ti,
@@ -931,7 +931,7 @@ if __name__ == "__main__":
                         "incx":       ix,
                         "incy":       iy,
                         "adist":      ad,
-                        "iw":        iw
+                        "iw":        intw
                     })
 
                 # Save csv
