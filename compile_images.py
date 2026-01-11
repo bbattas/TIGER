@@ -103,8 +103,11 @@ if __name__ == "__main__":
     if cl_args.gif:
         verb('Making a gif')
         frames =[]
-        for img in img_names:
-            frames += [Image.open(img)]
+        # for img in img_names:
+        #     frames += [Image.open(img)]
+        for fn in img_names:
+            with Image.open(fn) as im:
+                frames.append(im.convert("RGBA").copy())
         #EACH FRAME LASTS 1000/FPS MILLISECONDS
         frame_duration = 1000/fps
         #SAVE PIL.IMAGE SEQUENCE INTO A GIF --> TURN ON OPTIMIZE FOR SMALLER FILE SIZE
