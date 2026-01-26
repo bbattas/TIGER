@@ -25,7 +25,7 @@ def parse_args():
                     "This code assumes uniform mesh elements.")
 
     # ---- General ----
-    log = p.add_argument_group("General:")
+    log = p.add_argument_group("General")
     log.add_argument("-v", "--verbose", action="count", default=0,
                    help="Increase verbosity (-v, -vv, -vvv).")
     log.add_argument('-n','--cpus',type=int,default=4, choices=VALID_CPUS,
@@ -36,7 +36,7 @@ def parse_args():
 
 
     # ---- Time selection ----
-    tim = p.add_argument_group("Time (choose one):")
+    tim = p.add_argument_group("Time (choose one)")
     grp = tim.add_mutually_exclusive_group(required=True)
     grp.add_argument("-g", "--grains", type=int,
                      help="Target grain count; chooses timestep with grain_tracker closest to this value.")
@@ -44,14 +44,14 @@ def parse_args():
                      help="Target time; chooses timestep with time_whole closest to this value.")
 
     # ---- CSV options ----
-    cs = p.add_argument_group("CSV:")
+    cs = p.add_argument_group("CSV")
     cs.add_argument("--skip-csv", action="store_true",
                help="Skip computing/writing the polar histogram CSV output.")
     cs.add_argument("--csv-up", action="store_true",
                help="Write csv output up one directory from current (../file.csv).")
 
     # ---- Plot options ----
-    plot = p.add_argument_group("Plotting:")
+    plot = p.add_argument_group("Plotting")
     plot.add_argument('--plot','-p',action='store_true',
                             help='Save a polar plot of inclination, default=False')
     plot.add_argument('--debug-plot','-d',action='store_true',
