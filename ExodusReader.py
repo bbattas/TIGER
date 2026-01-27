@@ -4,7 +4,7 @@ import os
 # from mpi4py import MPI
 
 class ExodusReader:
-    def __init__(self,file_name):
+    def __init__(self,file_name,global_var=None):
         if os.path.exists(file_name):
             self.file_name = file_name
             self.mesh = Dataset(self.file_name,'r') #,parallel=parallel_flag
@@ -13,6 +13,8 @@ class ExodusReader:
             self.get_xyz()
             self.get_nodal_names()
             self.get_elem_names()
+            if global_var is not None:
+                self.glo_var_series(global_var)
         else:
             print("File path does not exist. Please check if file path and name are correct.")
             exit()
@@ -112,3 +114,24 @@ class ExodusReader:
             return -1
 
         return var_vals
+
+    # OPTIONAL Global Variables
+    def get_global_names(self):
+        names = self.mesh.variables["name_glo_var"]
+        names.set_auto_mask(False)
+        self.global_var_names = [b"".join(c).decode("latin1") for c in names[:]]
+        return self.global_var_names
+
+    def glo_var_series(self, name: str) -> np.ndarray:
+        """
+        Read full time series of global variable `name`.
+        Returns array shape (num_timesteps,).
+        """
+        # names = self.global_var_names
+        names = self.get_global_names()
+        if name not in names:
+            raise KeyError(f"'{name}' not a global var. Available: {names}")
+
+        idx = names.index(name)
+        self.glob_var = self.mesh.variables["vals_glo_var"][:, idx]
+        return self.glob_var

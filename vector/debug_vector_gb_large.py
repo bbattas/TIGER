@@ -96,7 +96,8 @@ def plot_overlay(P0, mask, out_png, title):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="AI Generated debugging script for problems with vector_inclination.py. " \
+    "GB identification was selecting too many random points, was an int vs float issue in UG.")
     ap.add_argument("exo", help="Path to .e Exodus file")
     ap.add_argument("--eb", type=int, default=1, help="Element block id (default 1)")
     ap.add_argument("--var", default="unique_grains", help="Element variable name (default unique_grains)")

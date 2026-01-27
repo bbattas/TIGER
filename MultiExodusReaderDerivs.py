@@ -3,25 +3,53 @@ import glob
 import numpy as np
 
 class MultiExodusReaderDerivs:
-    def __init__(self,file_names):
+    def __init__(self,file_names,global_var=None):
         self.file_names = glob.glob(file_names)
         global_times = set()
         file_times = []
         exodus_readers = []
+        time_to_gvar = {} if global_var is not None else None
         for file_name in self.file_names:
-            er = ExodusReader.ExodusReader(file_name)
+            er = ExodusReader.ExodusReader(file_name,global_var=global_var)
             times = er.times
             # global_times.update(times[:])
             # changed to avoid unhashable MaskedConstant error
             global_times.update(np.ma.compressed(times[:]))
             exodus_readers+= [er]
             file_times+=[ [min(times),max(times)] ]
+            if global_var is not None:
+                gvar = np.ma.compressed(er.glob_var[:])  # expect same length/order as times
+
+                if len(gvar) != len(times):
+                    raise ValueError(
+                        f"{file_name}: glob_var length {len(gvar)} != times length {len(times)}"
+                    )
+
+                # store pairs
+                for t, gv in zip(times, gvar):
+                    # if duplicates occur, keep first (or replace; your choice)
+                    if t not in time_to_gvar:
+                        time_to_gvar[t] = gv
+                    # else: time_to_gvar[t] = gv  # <- use this if you want "last wins"
+
         self.dim = exodus_readers[0].dim
         global_times = list(global_times)
         global_times.sort()
         self.global_times = global_times
         self.exodus_readers = exodus_readers
         self.file_times = np.asarray(file_times)
+        # Global Variable
+        if global_var is not None:
+            # build gvar array aligned with sorted global_times
+            missing = [t for t in self.global_times if t not in time_to_gvar]
+            if missing:
+                raise ValueError(
+                    f"Missing global_var values for {len(missing)} time(s), e.g. {missing[:5]}"
+                )
+
+            self.global_var_out = np.array([time_to_gvar[t] for t in self.global_times])
+        else:
+            self.global_var_out = None
         # self.get_grlist()
         # self.check_varlist()
 

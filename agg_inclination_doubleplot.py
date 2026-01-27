@@ -97,6 +97,8 @@ parser.add_argument('--skip', nargs='+', required=False, help='List of text flag
 parser.add_argument('--only', nargs='+', required=False, help='List of text flags to use')
 parser.add_argument('--singletime', type=float, default=None,
                     help='Single frame time value to measure at.')
+parser.add_argument('--graincount',action='store_true',
+                            help='--singletime value is instead a grain number, default=False')
 cl_args = parser.parse_args()
 
 
@@ -255,6 +257,11 @@ def find_files():
     verb(' ')
     return e_names
 
+def closest_index(values: np.ndarray, target: float) -> int:
+    """Return index of entry closest to target. Ties -> first occurrence."""
+    values = np.asarray(values)
+    return int(np.argmin(np.abs(values - target)))
+
 
 def time_info(MF):
     '''Returns list of times for each frame from MultiExodusReader object
@@ -280,7 +287,14 @@ def time_info(MF):
         times = times_tf
     if cl_args.singletime is not None:
         t_list = MF.global_times
-        idx = min(range(len(t_list)), key=lambda i: abs(t_list[i] - cl_args.singletime))
+        if cl_args.graincount:
+            gt = MF.global_var_out
+            gt_counts = np.rint(gt).astype(np.int64)
+            idx = closest_index(gt_counts, int(cl_args.singletime))
+            verb(f'Grains = {cl_args.singletime} at frame {idx}, t = {t_list[idx]}')
+        else:
+            idx = min(range(len(t_list)), key=lambda i: abs(t_list[i] - cl_args.singletime))
+            verb(f'Time = {cl_args.singletime} at frame {idx}, t = {t_list[idx]}')
         closest_time = t_list[idx]
         return [idx], [closest_time]
     if cl_args.sequence == True:
@@ -851,7 +865,10 @@ if __name__ == "__main__":
         verb('Initialization for file: '+str(file_name))
         outbase = out_name(file_name)
         init_ti = time.perf_counter()
-        MF = MultiExodusReaderDerivs(file_name)
+        if cl_args.graincount:
+            MF = MultiExodusReaderDerivs(file_name,"grain_tracker")
+        else:
+            MF = MultiExodusReaderDerivs(file_name)
         idx_frames, t_frames = time_info(MF)
         varnames = ['inclination_vector_x','inclination_vector_y','ang_dist','int_width',var]
         MF.check_varlist(varnames)
