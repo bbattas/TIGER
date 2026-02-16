@@ -11,8 +11,8 @@ def four_grains(X, Y, L=120.0):
     # Example mapping (yours)
     out[(~d1) & (~d2)] = 2
     out[(~d1) & ( d2)] = 1
-    out[( d1) & (~d2)] = 1
-    out[( d1) & ( d2)] = 2
+    out[( d1) & (~d2)] = 3#1
+    out[( d1) & ( d2)] = 4#2
     return out
 
 def circle_field(X, Y, cx=60.0, cy=60.0, r=30.0, inside_value=0, outside_value=-1):
@@ -23,9 +23,9 @@ def feat_to_euler(featID):
     # Example mapping (yours)
     if featID == 0:
         return 0.116174, 2.359454, 3.775561
-    elif featID == 1:
+    elif featID == 1 or featID == 3:
         return 5.333997, 1.028163, 5.158241
-    elif featID == 2:
+    elif featID == 2 or featID == 4:
         return 4.757033, 0.755838, 1.956608
     else:
         # fallback (or raise)
