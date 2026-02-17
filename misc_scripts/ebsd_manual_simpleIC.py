@@ -11,8 +11,8 @@ def four_grains(X, Y, L=120.0):
     # Example mapping (yours)
     out[(~d1) & (~d2)] = 2
     out[(~d1) & ( d2)] = 1
-    out[( d1) & (~d2)] = 3#1
-    out[( d1) & ( d2)] = 4#2
+    out[( d1) & (~d2)] = 1 #3
+    out[( d1) & ( d2)] = 2 #4
     return out
 
 def circle_field(X, Y, cx=60.0, cy=60.0, r=30.0, inside_value=0, outside_value=-1):
@@ -20,7 +20,6 @@ def circle_field(X, Y, cx=60.0, cy=60.0, r=30.0, inside_value=0, outside_value=-
     return np.where(inside, inside_value, outside_value)
 
 def feat_to_euler(featID):
-    # Example mapping (yours)
     if featID == 0:
         return 0.116174, 2.359454, 3.775561
     elif featID == 1 or featID == 3:
@@ -29,6 +28,68 @@ def feat_to_euler(featID):
         return 4.757033, 0.755838, 1.956608
     else:
         # fallback (or raise)
+        return 0.0, 0.0, 0.0
+
+def feat_to_euler2(featID,case=0):
+    if case == 0: #01- 8, 02- 51, 12- 47
+        if featID == 0:
+            return np.radians(200.896956), np.radians(83.457538), np.radians(29.106038)
+        elif featID == 1 or featID == 3:
+            return np.radians(197.075987), np.radians(81.618801), np.radians(23.033282)
+        elif featID == 2 or featID == 4:
+            return np.radians(161.498961), np.radians(103.523997), np.radians(358.479164)
+        else:
+            return 0.0, 0.0, 0.0
+    if case == 1:
+        if featID == 0:
+            return np.radians(200.896956), np.radians(83.457538), np.radians(29.106038)
+        elif featID == 2 or featID == 4:
+            return np.radians(197.075987), np.radians(81.618801), np.radians(23.033282)
+        elif featID == 1 or featID == 3:
+            return np.radians(161.498961), np.radians(103.523997), np.radians(358.479164)
+        else:
+            return 0.0, 0.0, 0.0
+    elif case == 2:
+        if featID == 1 or featID == 3:
+            return np.radians(200.896956), np.radians(83.457538), np.radians(29.106038)
+        elif featID == 0:
+            return np.radians(197.075987), np.radians(81.618801), np.radians(23.033282)
+        elif featID == 2 or featID == 4:
+            return np.radians(161.498961), np.radians(103.523997), np.radians(358.479164)
+        else:
+            return 0.0, 0.0, 0.0
+    elif case == 3:
+        if featID == 2 or featID == 4:
+            return np.radians(200.896956), np.radians(83.457538), np.radians(29.106038)
+        elif featID == 1 or featID == 3:
+            return np.radians(197.075987), np.radians(81.618801), np.radians(23.033282)
+        elif featID == 0:
+            return np.radians(161.498961), np.radians(103.523997), np.radians(358.479164)
+        else:
+            return 0.0, 0.0, 0.0
+    else:
+        return 0.0, 0.0, 0.0
+
+def two_grains(X, Y, L=120.0):
+    out = np.ones_like(X, dtype=np.int32)
+    return out
+
+def feat_to_euler2gr(featID,case=0):
+    if case == 0: #01- 8
+        if featID == 0:
+            return np.radians(200.896956), np.radians(83.457538), np.radians(29.106038)
+        elif featID == 1:
+            return np.radians(197.075987), np.radians(81.618801), np.radians(23.033282)
+        else:
+            return 0.0, 0.0, 0.0
+    elif case == 1: #01- 51
+        if featID == 0:
+            return np.radians(200.896956), np.radians(83.457538), np.radians(29.106038)
+        elif featID == 1:
+            return np.radians(161.498961), np.radians(103.523997), np.radians(358.479164)
+        else:
+            return 0.0, 0.0, 0.0
+    else:
         return 0.0, 0.0, 0.0
 
 # --- Writer ------------------------------------------------------------------
@@ -43,7 +104,9 @@ def write_dream3d_ebsd_txt(
     phase_name: str = "Primary",
     symmetry: int = 43,
     phase_id: int = 1,
-    fid_offset: int = 0,   # set to 1 if you want FeatureId to be 1-based like many DREAM3D outputs
+    fid_offset: int = 0,
+    case: int = 0,
+    bicr: bool = False
 ):
     """
     Writes a DREAM3D-like EBSD text file:
@@ -108,8 +171,10 @@ def write_dream3d_ebsd_txt(
                 # If you want to skip background points entirely, continue.
                 # If you want them written, remove this continue and decide on eulers for fid=-1.
                 continue
-
-            ea, eb, ec = feat_to_euler(int(fid))
+            if bicr:
+                ea, eb, ec = feat_to_euler2gr(int(fid),case=case)
+            else:
+                ea, eb, ec = feat_to_euler2(int(fid),case=case)
             f.write(
                 f"{ea:.6f} {eb:.6f} {ec:.6f} "
                 f"{x:.6f} {y:.6f} 0.000000 "
@@ -125,6 +190,8 @@ def main():
     ap.add_argument("--N", type=int, default=120, help="Number of elements")
     ap.add_argument("-r", type=float, default=30.0, help="Center grain radius")
     ap.add_argument("--fid_offset", type=int, default=0, help="Use 1 for 1-based FeatureId output")
+    ap.add_argument("--case", type=int, default=0, help="[0,1,2,3] to change which grain has which orientation.")
+    ap.add_argument("--bicr", action='store_true', help="Create a true bicrystal")
     args = ap.parse_args()
 
     L = args.L
@@ -135,7 +202,11 @@ def main():
     X, Y = np.meshgrid(coord_space, coord_space, indexing="xy")
 
     # Build feature IDs for each cell center
-    out = four_grains(X, Y, L=L)
+    if args.bicr:
+        out = two_grains(X, Y, L=L)
+    else:
+        out = four_grains(X, Y, L=L)
+
     feature_ids = circle_field(X, Y, cx=L/2, cy=L/2, r=args.r, inside_value=0, outside_value=out).astype(np.int32)
 
     write_dream3d_ebsd_txt(
@@ -146,6 +217,8 @@ def main():
         L=L,
         dx=dx,
         fid_offset=args.fid_offset,
+        case=args.case,
+        bicr=args.bicr
     )
 
 if __name__ == "__main__":
