@@ -158,6 +158,8 @@ def p_to_dist(file, xcol="x", ycol="contour", level=0.5):
 def aspect_ratio(subdir=None):
     # Time
     tf = find_csv('_out.csv',subdir=subdir)
+    if tf is None:
+        tf = find_csv('_vpp.csv',subdir=subdir)
     times = pd.read_csv(tf)['time'].to_numpy()
 
     idx, xfile = find_all_csv('horizontal',subdir=subdir)
