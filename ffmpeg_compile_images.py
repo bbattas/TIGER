@@ -331,6 +331,9 @@ def write_video_ffmpeg(
     vf = None
     if resize_mode in {"pad", "scale"}:
         target_w, target_h = compute_target_size(paths)
+        # force even dimensions
+        target_w = target_w if target_w % 2 == 0 else target_w + 1
+        target_h = target_h if target_h % 2 == 0 else target_h + 1
         if resize_mode == "pad":
             vf = (
                 f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
