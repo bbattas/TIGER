@@ -154,6 +154,16 @@ def p_to_dist(file, xcol="x", ycol="contour", level=0.5):
     return None
 
 
+def p_to_rad(file, xcol="x", ycol="contour", level=0.5):
+    df = pd.read_csv(file)
+    xmin = df[xcol].min()
+    xp = x_at_level(df, xcol=xcol, ycol=ycol, level=level, which="first")
+    if xp is not None:
+        dist = abs(xp - xmin)
+        return dist
+    return None
+
+
 
 def aspect_ratio(subdir=None):
     # Time
@@ -178,6 +188,36 @@ def aspect_ratio(subdir=None):
                 "x": xd,
                 "y": yd,
                 "aspect": ar
+            })
+    odf = pd.DataFrame(csv_out)
+    if subdir is not None:
+        out_stem = subdir.rsplit("/", 1)[-1]
+    else:
+        out_stem = tf.stem.removesuffix("_out.csv")
+    out_name = out_stem + "_aspect.csv"
+    odf.to_csv(out_name, index=False)
+    print(f'Saved {out_name} from {subdir}')
+
+
+def radial(subdir=None):
+    # Time
+    tf = find_csv('_out.csv',subdir=subdir)
+    if tf is None:
+        tf = find_csv('_vpp.csv',subdir=subdir)
+    times = pd.read_csv(tf)['time'].to_numpy()
+    idr, rfile = find_all_csv('radial',subdir=subdir)
+    csv_out = []
+    for a,rf in zip(idr,rfile):
+        t = times[a]
+        rd = p_to_rad(rf,xcol='x',ycol='contour',level=0.5)
+        if (rd is not None):
+            r2 = rd*rd
+            csv_out.append({
+                "time": t,
+                "x": rd,
+                "r2": r2,
+                "y": 1,
+                "aspect": 1
             })
     odf = pd.DataFrame(csv_out)
     if subdir is not None:
@@ -244,6 +284,8 @@ pars = argparse.ArgumentParser(
         description="Measure the aspect ratio over time from LineValueSamplers")
 pars.add_argument("-s", "--subdirs",action="store_true",
         help="Search for *.e files one level down (./*/.e). If not set, only search current directory.")
+pars.add_argument("-r", "--radial",action="store_true",
+        help="Output based on misorientation only, with one vpp called radial.")
 args = pars.parse_args()
 
 
@@ -256,7 +298,10 @@ else:
 
 for dir in dirnames:
     try:
-        aspect_ratio(subdir=dir)
+        if args.radial:
+            radial(subdir=dir)
+        else:
+            aspect_ratio(subdir=dir)
     except Exception as e:
         print(f'An error occurred in {dir}: ')
         print(str(e))
