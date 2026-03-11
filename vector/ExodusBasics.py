@@ -23,7 +23,8 @@ class ExodusBasics:
     def __init__(self, filename: str):
         self.filename = filename
         self.ds = None
-        self._center_cache = {}  # (eb, method, tol) -> (xc, yc)
+        self._center_cache = {}    # (eb, method, tol, zero_based) -> (xc, yc)
+        self._center_cache_3d = {} # (eb, method, tol, zero_based) -> (xc, yc, zc)
 
     def __enter__(self):
         self.ds = Dataset(self.filename, mode="r")
@@ -52,6 +53,24 @@ class ExodusBasics:
         x = self.ds.variables["coordx"][:]
         y = self.ds.variables["coordy"][:]
         return x, y
+
+    def coords_xyz(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Reads nodal coordinates as (x, y, z).
+
+        If coordz is not present (common for 2D Exodus files),
+        z is returned as zeros with the same shape as x.
+        """
+        self._require_open()
+        x = self.ds.variables["coordx"][:]
+        y = self.ds.variables["coordy"][:]
+
+        if "coordz" in self.ds.variables:
+            z = self.ds.variables["coordz"][:]
+        else:
+            z = np.zeros_like(x)
+
+        return x, y, z
 
     # ---- connectivity ----
     def connect_varnames(self) -> list[str]:
@@ -171,6 +190,60 @@ class ExodusBasics:
         else:
             return self.elem_var_at_step(name, step, eb=eb)
 
+
+    def xyzc_at_step(
+        self,
+        name: str,
+        step: int,
+        *,
+        eb: int = 1,
+        elem_center_method: str = "mean",
+        zero_based_connect: bool = True,
+        cache_centers: bool = True,
+        quantize_tol: float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Return plottable coordinates and values for variable `name` at timestep `step`.
+
+        For nodal variables:
+            returns nodal (x, y, z, c)
+
+        For elemental variables:
+            returns element-representative (x, y, z, c) for block `eb`,
+            where x/y/z are computed from the element node coordinates.
+
+        Args:
+            name: Exodus variable name
+            step: timestep index (0-based)
+            eb: element block index for elemental variables
+            elem_center_method: "min", "mean", or "bbox" for elemental coordinates
+            zero_based_connect: if True, treat connectivity as 0-based indices
+            cache_centers: cache computed elemental centers
+            quantize_tol: optional snapping tolerance for elemental coordinates
+
+        Returns:
+            (x, y, z, c)
+        """
+        self._require_open()
+        kind = self.var_kind(name)
+
+        if kind == "nodal":
+            x, y, z = self.coords_xyz()
+            c = self.nodal_var_at_step(name, step)
+            return x, y, z, c
+
+        # elemental
+        x, y, z = self.element_centers_xyz(
+            eb=eb,
+            method=elem_center_method,
+            zero_based_connect=zero_based_connect,
+            cache=cache_centers,
+            quantize_tol=quantize_tol,
+        )
+        c = self.elem_var_at_step(name, step, eb=eb)
+        return x, y, z, c
+
+
     def element_centers_xy(
         self,
         eb: int = 1,
@@ -233,6 +306,74 @@ class ExodusBasics:
             self._center_cache[key] = (xc, yc)
 
         return xc, yc
+
+
+    def element_centers_xyz(
+        self,
+        eb: int = 1,
+        method: str = "mean",
+        *,
+        zero_based_connect: bool = True,
+        cache: bool = True,
+        quantize_tol: float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute element representative x/y/z coordinates for element block `eb`.
+
+        Args:
+            eb: element block index (connect{eb})
+            method:
+                - "min"  : minimum x/y/z of the element nodes
+                - "mean" : average of element node coordinates
+                - "bbox" : 0.5*(min+max) bounding-box center
+            zero_based_connect: if True, treat connectivity as 0-based indices
+            cache: cache results (recommended; mesh is usually static)
+            quantize_tol: if provided, snap centers to a grid by:
+                        center = round(center/tol)*tol
+
+        Returns:
+            (xc, yc, zc), each shape (n_elem_in_block,)
+        """
+        self._require_open()
+        method = method.lower().strip()
+        if method not in {"min", "mean", "bbox"}:
+            raise ValueError("method must be one of: 'min', 'mean', 'bbox'")
+
+        key = (eb, method, quantize_tol, zero_based_connect)
+        if cache and key in self._center_cache_3d:
+            return self._center_cache_3d[key]
+
+        x, y, z = self.coords_xyz()
+        conn = self.connectivity(which=eb, zero_based=zero_based_connect)
+
+        # Gather element node coords (vectorized)
+        x_e = x[conn]  # (n_elem, n_per_elem)
+        y_e = y[conn]
+        z_e = z[conn]
+
+        if method == "min":
+            xc = x_e.min(axis=1)
+            yc = y_e.min(axis=1)
+            zc = z_e.min(axis=1)
+        elif method == "mean":
+            xc = x_e.mean(axis=1)
+            yc = y_e.mean(axis=1)
+            zc = z_e.mean(axis=1)
+        else:  # "bbox"
+            xc = 0.5 * (x_e.min(axis=1) + x_e.max(axis=1))
+            yc = 0.5 * (y_e.min(axis=1) + y_e.max(axis=1))
+            zc = 0.5 * (z_e.min(axis=1) + z_e.max(axis=1))
+
+        if quantize_tol is not None:
+            tol = float(quantize_tol)
+            xc = np.rint(xc / tol) * tol
+            yc = np.rint(yc / tol) * tol
+            zc = np.rint(zc / tol) * tol
+
+        if cache:
+            self._center_cache_3d[key] = (xc, yc, zc)
+
+        return xc, yc, zc
 
 
     # ---- global variables ----
