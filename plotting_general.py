@@ -38,6 +38,10 @@ def parse_args():
         "-t", "--time", type=float,
         help="Target time; chooses timestep with time_whole closest to this value."
     )
+    grp.add_argument(
+        "--full", action="store_true",
+        help="Use the final Exodus timestep as the target/end frame."
+    )
 
     # ---- Output frame mode ----
     out = p.add_argument_group("Timestepping")
@@ -151,12 +155,17 @@ def closest_index(values: np.ndarray, target: float) -> int:
     return int(np.argmin(np.abs(values - target)))
 
 
-def select_step(exo, *, grains: int | None, time_value: float | None, log: logging.Logger) -> int:
+def select_step(exo, *, grains: int | None, time_value: float | None, full: bool, log: logging.Logger) -> int:
     """
     exo: an open ExodusBasics instance
     Returns: timestep index (0-based)
     """
     times = exo.time()
+
+    if full:
+        step = len(times) - 1
+        log.info(f"Frame selected by full run: chosen final step={step}, time={times[step]}")
+        return step
 
     if time_value is not None:
         step = closest_index(times, float(time_value))
@@ -227,6 +236,7 @@ def select_steps(
     *,
     grains: int | None,
     time_value: float | None,
+    full: bool,
     frame_mode: str,
     nframes: int,
     log: logging.Logger,
@@ -240,7 +250,7 @@ def select_steps(
         - 'sequence' : evenly spaced frames from 0 to target_step inclusive
     """
     times = exo.time()
-    target_step = select_step(exo, grains=grains, time_value=time_value, log=log)
+    target_step = select_step(exo, grains=grains, time_value=time_value, full=full, log=log)
 
     if frame_mode == "single":
         steps = [target_step]
@@ -485,6 +495,7 @@ def main():
                     exo,
                     grains=args.grains,
                     time_value=args.time,
+                    full=args.full,
                     frame_mode=args.frame_mode,
                     nframes=args.nframes,
                     log=log,
