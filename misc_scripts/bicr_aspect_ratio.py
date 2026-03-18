@@ -172,25 +172,67 @@ def aspect_ratio(subdir=None):
         tf = find_csv('_vpp.csv',subdir=subdir)
     times = pd.read_csv(tf)['time'].to_numpy()
 
-    idx, xfile = find_all_csv('horizontal',subdir=subdir)
-    idy, yfile = find_all_csv('vertical',subdir=subdir)
+    idx, xfiles = find_all_csv('horizontal',subdir=subdir)
+    idy, yfiles = find_all_csv('vertical',subdir=subdir)
+    # csv_out = []
+    # for a,b,xf,yf in zip(idx,idy,xfile,yfile):
+    #     if a != b:
+    #         # raise ValueError("idx and idy for vpp not the same?")
+    #         print(f"idx and idy mismatch: {a}, {b}")
+    #         continue
+    #     t = times[a]
+    #     xd = p_to_dist(xf,xcol='x',ycol='contour',level=0.5)
+    #     yd = p_to_dist(yf,xcol='y',ycol='contour',level=0.5)
+    #     if (xd is not None) and (yd is not None):
+    #         ar = xd/yd
+    #         csv_out.append({
+    #             "time": t,
+    #             "x": xd,
+    #             "y": yd,
+    #             "aspect": ar
+    #         })
+    if idx is None or idy is None:
+        raise FileNotFoundError(f"Could not find both horizontal and vertical CSV files in {subdir}")
+
+    # Match by timestep/index instead of by list position
+    xmap = dict(zip(idx, xfiles))
+    ymap = dict(zip(idy, yfiles))
+
+    common_ids = sorted(set(xmap) & set(ymap))
+    missing_x = sorted(set(ymap) - set(xmap))
+    missing_y = sorted(set(xmap) - set(ymap))
+
+    if missing_x:
+        print(f"Missing horizontal files for ids: {missing_x[:20]}"
+              + (" ..." if len(missing_x) > 20 else ""))
+    if missing_y:
+        print(f"Missing vertical files for ids: {missing_y[:20]}"
+              + (" ..." if len(missing_y) > 20 else ""))
+
     csv_out = []
-    for a,b,xf,yf in zip(idx,idy,xfile,yfile):
-        if a != b:
-            # raise ValueError("idx and idy for vpp not the same?")
-            print(f"idx and idy mismatch: {a}, {b}")
+    for i in common_ids:
+        if i >= len(times):
+            print(f"Skipping id {i}: outside time array length {len(times)}")
             continue
-        t = times[a]
-        xd = p_to_dist(xf,xcol='x',ycol='contour',level=0.5)
-        yd = p_to_dist(yf,xcol='y',ycol='contour',level=0.5)
-        if (xd is not None) and (yd is not None):
-            ar = xd/yd
+
+        xf = xmap[i]
+        yf = ymap[i]
+        t = times[i]
+
+        xd = p_to_dist(xf, xcol='x', ycol='contour', level=0.5)
+        yd = p_to_dist(yf, xcol='y', ycol='contour', level=0.5)
+
+        if xd is not None and yd is not None and yd != 0:
+            ar = xd / yd
             csv_out.append({
+                "id": i,
                 "time": t,
                 "x": xd,
                 "y": yd,
                 "aspect": ar
             })
+        else:
+            print(f"Skipping id {i}: xd={xd}, yd={yd}")
     odf = pd.DataFrame(csv_out)
     if subdir is not None:
         out_stem = subdir.rsplit("/", 1)[-1]
