@@ -103,45 +103,74 @@ def x_at_level(df, xcol="x", ycol="contour", level=0.5, which="all"):
 
 
 
+# def find_all_csv(
+#     file_part: Union[str, Path],
+#     subdir: Optional[Union[str, Path]] = None,
+#     *,
+#     recursive: bool = False
+# ) -> Path:
+#     """
+#     Find a CSV by partial name (or exact .csv), in cwd or a given subdir.
+
+#     - If `file_part` ends with ".csv": search for any file ending with that (e.g. "*foo.csv")
+#     - Else: search for any file containing that and ending in .csv (e.g. "*foo*.csv")
+
+#     Returns:
+#         Path to the match.
+
+#     Raises:
+#         FileNotFoundError: no matches
+#         FileExistsError: multiple matches and strict_single=True
+#     """
+#     base = Path(subdir) if subdir else Path.cwd()
+#     fp = Path(str(file_part))  # normalize inputs like 12 -> "12"
+#     token = fp.name  # ignore any accidental path parts in file_part
+
+#     pattern = f"*{token}" if token.lower().endswith(".csv") else f"*{token}*.csv"
+#     it = base.rglob(pattern) if recursive else base.glob(pattern)
+
+#     matches = sorted((p for p in it if p.is_file()), key=lambda p: p.name.lower())
+#     nums = []
+#     for p in matches:
+#         m = re.search(r'_(\d+)$', p.stem)
+#         if not m:
+#             raise ValueError(f"Could not extract trailing number from: {p}")
+#         nums.append(int(m.group(1)))
+
+#     if not matches:
+#         # raise FileNotFoundError(f"No CSV matches pattern {pattern!r} in {str(base)!r}")
+#         return None, None
+
+#     return nums, matches
+
 def find_all_csv(
     file_part: Union[str, Path],
     subdir: Optional[Union[str, Path]] = None,
     *,
     recursive: bool = False
-) -> Path:
-    """
-    Find a CSV by partial name (or exact .csv), in cwd or a given subdir.
-
-    - If `file_part` ends with ".csv": search for any file ending with that (e.g. "*foo.csv")
-    - Else: search for any file containing that and ending in .csv (e.g. "*foo*.csv")
-
-    Returns:
-        Path to the match.
-
-    Raises:
-        FileNotFoundError: no matches
-        FileExistsError: multiple matches and strict_single=True
-    """
+):
     base = Path(subdir) if subdir else Path.cwd()
-    fp = Path(str(file_part))  # normalize inputs like 12 -> "12"
-    token = fp.name  # ignore any accidental path parts in file_part
+    fp = Path(str(file_part))
+    token = fp.name
 
     pattern = f"*{token}" if token.lower().endswith(".csv") else f"*{token}*.csv"
     it = base.rglob(pattern) if recursive else base.glob(pattern)
 
-    matches = sorted((p for p in it if p.is_file()), key=lambda p: p.name.lower())
-    nums = []
-    for p in matches:
+    pairs = []
+    for p in it:
+        if not p.is_file():
+            continue
         m = re.search(r'_(\d+)$', p.stem)
         if not m:
             raise ValueError(f"Could not extract trailing number from: {p}")
-        nums.append(int(m.group(1)))
+        pairs.append((int(m.group(1)), p))
 
-    if not matches:
-        # raise FileNotFoundError(f"No CSV matches pattern {pattern!r} in {str(base)!r}")
+    if not pairs:
         return None, None
 
-    return nums, matches
+    pairs.sort(key=lambda x: x[0])
+    nums, matches = zip(*pairs)
+    return list(nums), list(matches)
 
 
 def p_to_dist(file, xcol="x", ycol="contour", level=0.5):
