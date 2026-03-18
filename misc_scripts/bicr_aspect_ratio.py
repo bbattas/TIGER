@@ -177,7 +177,9 @@ def aspect_ratio(subdir=None):
     csv_out = []
     for a,b,xf,yf in zip(idx,idy,xfile,yfile):
         if a != b:
-            raise ValueError("idx and idy for vpp not the same?")
+            # raise ValueError("idx and idy for vpp not the same?")
+            print(f"idx and idy mismatch: {a}, {b}")
+            continue
         t = times[a]
         xd = p_to_dist(xf,xcol='x',ycol='contour',level=0.5)
         yd = p_to_dist(yf,xcol='y',ycol='contour',level=0.5)
