@@ -502,6 +502,7 @@ def main():
                 )
 
                 times = exo.time()
+                minimal_tag = "_minimal" if args.minimal else ""
                 use_tqdm = (args.verbose == 0 and len(steps) > 1)
                 frame_iter = tqdm(
                     steps,
@@ -512,9 +513,9 @@ def main():
 
                 for i, step in enumerate(frame_iter):
                     if len(steps) == 1:
-                        frame_name = f"{stem}_{args.var}_step{step}"
+                        frame_name = f"{stem}_{args.var}{minimal_tag}_step{step}"
                     else:
-                        frame_name = f"{stem}_{args.var}_{i:04d}"
+                        frame_name = f"{stem}_{args.var}{minimal_tag}_{i:04d}"
 
                     log.info(
                         f"Plotting frame {i+1}/{len(steps)}: "
