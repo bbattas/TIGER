@@ -20,7 +20,9 @@ from scipy.spatial import cKDTree
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Grain-boundary angle analysis from unique_grains Exodus variable.",
+        description="Grain-boundary angle analysis from unique_grains Exodus variable. " \
+        "Needs a csv file of the ij misorientation angles, which can be created from " \
+        "the txt file of euler angles using misc_scripts/miso_txt_check.py",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
