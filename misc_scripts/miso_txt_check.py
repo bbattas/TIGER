@@ -77,98 +77,218 @@ def euler_to_quats(euler_angles):
     return rots.as_quat()  # (N, 4)
 
 
+def canonicalize_quaternion_sign(q):
+    """
+    Force a unique sign convention for quaternion reporting.
+    Since q and -q represent the same rotation, make w >= 0.
+    """
+    q = q.copy()
+    mask = q[..., 3] < 0.0
+    q[mask] *= -1.0
+    return q
+
+
+def pair_to_linear_index(i, j, N):
+    """
+    Index of pair (i, j) in the same order as np.triu_indices(N, k=1).
+    """
+    if i == j:
+        raise ValueError("i and j must be different")
+    if i > j:
+        i, j = j, i
+    return i * N - i * (i + 1) // 2 + (j - i - 1)
+
+
+def build_pair_lookup(ii, jj):
+    """
+    Return a dict mapping (i, j) -> row index in the result arrays.
+    """
+    return {(int(i), int(j)): k for k, (i, j) in enumerate(zip(ii, jj))}
+
 # ── 5. Vectorized misorientation for ALL grain pairs ─────────────────────────
+# def compute_all_misorientations_vectorized(filepath, max_grain=None):
+#     euler_angles = read_euler_file(filepath)
+
+#     if max_grain is not None:
+#         euler_angles = euler_angles[:max_grain]
+
+#     N = len(euler_angles)
+#     print(f"Using {N} grains → {N*(N-1)//2} pairs")
+
+#     quats = euler_to_quats(euler_angles)  # (N, 4)
+#     quats = quat_normalize(quats)
+
+#     # Pre-apply all 24 symmetry ops to every grain: shape (24, N, 4)
+#     # s * q  for each symmetry s and each grain q
+#     sym_q = SYM_QUAT[:, np.newaxis, :]          # (24, 1, 4)
+#     grain_q = quats[np.newaxis, :, :]            # (1, N, 4)
+#     # broadcast multiply: (24, N, 4)
+#     sq = quat_normalize(quat_mul(sym_q, grain_q))  # (24, N, 4)
+
+#     # Build upper-triangle pair indices
+#     ii, jj = np.triu_indices(N, k=1)            # each shape (P,), P = N*(N-1)/2
+#     P = len(ii)
+
+#     # For each pair (i,j): we need to try all 24x24 sym combos
+#     # sq[:, ii, :] → (24, P, 4)  — symmetry-applied versions of grain i
+#     # sq[:, jj, :] → (24, P, 4)  — symmetry-applied versions of grain j
+
+#     sqi = sq[:, ii, :]   # (24, P, 4)
+#     sqj = sq[:, jj, :]   # (24, P, 4)
+
+#     # We need all 24x24 combos per pair.
+#     # Reshape to (24,1,P,4) and (1,24,P,4), then multiply → (24,24,P,4)
+#     sqi_exp = sqi[:, np.newaxis, :, :]   # (24, 1, P, 4)
+#     sqj_exp = sqj[np.newaxis, :, :, :]   # (1, 24, P, 4)
+
+#     # misorientation quaternion: qi_sym * qj_sym^{-1}
+#     mis_q = quat_normalize(quat_mul(sqi_exp, quat_inv(sqj_exp)))  # (24, 24, P, 4)
+
+#     # ── Fundamental zone check: 0 <= qz <= qy <= qx <= 1 ────────────────────
+#     qx = mis_q[..., 0]
+#     qy = mis_q[..., 1]
+#     qz = mis_q[..., 2]
+#     qw = mis_q[..., 3]
+
+#     in_fz     = (qz >= 0) & (qz <= qy) & (qy <= qx) & (qx <= 1.0)
+#     inv_in_fz = (-qz >= 0) & (-qz <= -qy) & (-qy <= -qx) & (-qx <= 1.0)
+#     valid     = in_fz | inv_in_fz                          # (24, 24, P)
+
+#     # Misorientation angle
+#     theta = 2.0 * np.arccos(np.clip(np.abs(qw), 0.0, 1.0))  # (24, 24, P)
+
+#     # Mask invalid combos with large angle so they never win argmin
+#     theta_masked = np.where(valid, theta, 2 * np.pi)        # (24, 24, P)
+
+#     # Best (minimum) angle over all 576 sym combos for each pair
+#     flat_theta = theta_masked.reshape(24*24, P)              # (576, P)
+#     flat_valid = valid.reshape(24*24, P)
+#     flat_in_fz = in_fz.reshape(24*24, P)
+#     flat_q     = mis_q.reshape(24*24, P, 4)
+
+#     best_idx   = np.argmin(flat_theta, axis=0)              # (P,)
+#     pair_idx   = np.arange(P)
+
+#     best_theta = flat_theta[best_idx, pair_idx]             # (P,)
+#     best_q     = flat_q[best_idx, pair_idx, :]              # (P, 4)
+#     best_in_fz = flat_in_fz[best_idx, pair_idx]             # (P,)
+
+#     # Flip sign if in inv_fz (conjugate = negate xyz)
+#     sign = np.where(best_in_fz[:, np.newaxis],
+#                     np.ones((P, 4)),
+#                     np.array([-1., -1., -1., -1.]))
+#     best_q = best_q * sign
+
+#     # ── Rotation axis (polar, azimuth) ───────────────────────────────────────
+#     axis  = best_q[:, :3]                                   # (P, 3)
+#     vnorm = np.linalg.norm(axis, axis=-1, keepdims=True)    # (P, 1)
+#     safe  = (vnorm[:, 0] > 1e-12)
+
+#     axis_n    = np.where(vnorm > 1e-12, axis / np.maximum(vnorm, 1e-30), 0.0)
+#     polar_ax  = np.where(safe, np.arccos(np.clip(axis_n[:, 2], -1, 1)), 0.0)
+#     azim_ax   = np.where(safe, np.arctan2(axis_n[:, 1], axis_n[:, 0]), 0.0)
+#     azim_ax   = np.where(azim_ax < 0, azim_ax + 2 * np.pi, azim_ax)
+
+#     return {
+#         'grain_i':    ii,
+#         'grain_j':    jj,
+#         'theta_rad':  best_theta,
+#         'theta_deg':  np.degrees(best_theta),
+#         'polar_ax':   polar_ax,
+#         'azim_ax':    azim_ax,
+#         'qmin':       best_q,
+#     }
 def compute_all_misorientations_vectorized(filepath, max_grain=None):
     euler_angles = read_euler_file(filepath)
-
     if max_grain is not None:
         euler_angles = euler_angles[:max_grain]
 
     N = len(euler_angles)
-    print(f"Using {N} grains → {N*(N-1)//2} pairs")
+    print(f"Using {N} grains -> {N * (N - 1) // 2} pairs")
 
-    quats = euler_to_quats(euler_angles)  # (N, 4)
-    quats = quat_normalize(quats)
+    quats = quat_normalize(euler_to_quats(euler_angles))  # (N, 4)
 
-    # Pre-apply all 24 symmetry ops to every grain: shape (24, N, 4)
-    # s * q  for each symmetry s and each grain q
-    sym_q = SYM_QUAT[:, np.newaxis, :]          # (24, 1, 4)
-    grain_q = quats[np.newaxis, :, :]            # (1, N, 4)
-    # broadcast multiply: (24, N, 4)
+    # Apply all 24 symmetry operators to every grain
+    sym_q = SYM_QUAT[:, np.newaxis, :]    # (24, 1, 4)
+    grain_q = quats[np.newaxis, :, :]     # (1, N, 4)
     sq = quat_normalize(quat_mul(sym_q, grain_q))  # (24, N, 4)
 
-    # Build upper-triangle pair indices
-    ii, jj = np.triu_indices(N, k=1)            # each shape (P,), P = N*(N-1)/2
+    # Upper-triangle pairs
+    ii, jj = np.triu_indices(N, k=1)
     P = len(ii)
 
-    # For each pair (i,j): we need to try all 24x24 sym combos
-    # sq[:, ii, :] → (24, P, 4)  — symmetry-applied versions of grain i
-    # sq[:, jj, :] → (24, P, 4)  — symmetry-applied versions of grain j
+    sqi = sq[:, ii, :]                    # (24, P, 4)
+    sqj = sq[:, jj, :]                    # (24, P, 4)
 
-    sqi = sq[:, ii, :]   # (24, P, 4)
-    sqj = sq[:, jj, :]   # (24, P, 4)
+    sqi_exp = sqi[:, np.newaxis, :, :]    # (24, 1, P, 4)
+    sqj_exp = sqj[np.newaxis, :, :, :]    # (1, 24, P, 4)
 
-    # We need all 24x24 combos per pair.
-    # Reshape to (24,1,P,4) and (1,24,P,4), then multiply → (24,24,P,4)
-    sqi_exp = sqi[:, np.newaxis, :, :]   # (24, 1, P, 4)
-    sqj_exp = sqj[np.newaxis, :, :, :]   # (1, 24, P, 4)
-
-    # misorientation quaternion: qi_sym * qj_sym^{-1}
+    # All cubic symmetric misorientation quaternions
     mis_q = quat_normalize(quat_mul(sqi_exp, quat_inv(sqj_exp)))  # (24, 24, P, 4)
 
-    # ── Fundamental zone check: 0 <= qz <= qy <= qx <= 1 ────────────────────
-    qx = mis_q[..., 0]
-    qy = mis_q[..., 1]
-    qz = mis_q[..., 2]
-    qw = mis_q[..., 3]
+    # Angle only depends on |w|, so use that directly for the minimum-angle search
+    qw = np.clip(np.abs(mis_q[..., 3]), 0.0, 1.0)
+    theta = 2.0 * np.arccos(qw)  # (24, 24, P)
 
-    in_fz     = (qz >= 0) & (qz <= qy) & (qy <= qx) & (qx <= 1.0)
-    inv_in_fz = (-qz >= 0) & (-qz <= -qy) & (-qy <= -qx) & (-qx <= 1.0)
-    valid     = in_fz | inv_in_fz                          # (24, 24, P)
+    flat_theta = theta.reshape(24 * 24, P)
+    flat_q = mis_q.reshape(24 * 24, P, 4)
 
-    # Misorientation angle
-    theta = 2.0 * np.arccos(np.clip(np.abs(qw), 0.0, 1.0))  # (24, 24, P)
+    best_idx = np.argmin(flat_theta, axis=0)
+    pair_idx = np.arange(P)
 
-    # Mask invalid combos with large angle so they never win argmin
-    theta_masked = np.where(valid, theta, 2 * np.pi)        # (24, 24, P)
+    best_theta = flat_theta[best_idx, pair_idx]   # (P,)
+    best_q = flat_q[best_idx, pair_idx, :]        # (P, 4)
+    best_q = canonicalize_quaternion_sign(best_q)
 
-    # Best (minimum) angle over all 576 sym combos for each pair
-    flat_theta = theta_masked.reshape(24*24, P)              # (576, P)
-    flat_valid = valid.reshape(24*24, P)
-    flat_in_fz = in_fz.reshape(24*24, P)
-    flat_q     = mis_q.reshape(24*24, P, 4)
+    # Rotation axis from quaternion vector part
+    axis = best_q[:, :3]
+    vnorm = np.linalg.norm(axis, axis=-1, keepdims=True)
+    safe = vnorm[:, 0] > 1e-12
 
-    best_idx   = np.argmin(flat_theta, axis=0)              # (P,)
-    pair_idx   = np.arange(P)
+    axis_n = np.zeros_like(axis)
+    axis_n[safe] = axis[safe] / vnorm[safe]
 
-    best_theta = flat_theta[best_idx, pair_idx]             # (P,)
-    best_q     = flat_q[best_idx, pair_idx, :]              # (P, 4)
-    best_in_fz = flat_in_fz[best_idx, pair_idx]             # (P,)
+    polar_ax = np.zeros(P)
+    azim_ax = np.zeros(P)
 
-    # Flip sign if in inv_fz (conjugate = negate xyz)
-    sign = np.where(best_in_fz[:, np.newaxis],
-                    np.ones((P, 4)),
-                    np.array([-1., -1., -1., -1.]))
-    best_q = best_q * sign
+    polar_ax[safe] = np.arccos(np.clip(axis_n[safe, 2], -1.0, 1.0))
+    azim_ax[safe] = np.arctan2(axis_n[safe, 1], axis_n[safe, 0])
+    azim_ax = np.where(azim_ax < 0.0, azim_ax + 2.0 * np.pi, azim_ax)
 
-    # ── Rotation axis (polar, azimuth) ───────────────────────────────────────
-    axis  = best_q[:, :3]                                   # (P, 3)
-    vnorm = np.linalg.norm(axis, axis=-1, keepdims=True)    # (P, 1)
-    safe  = (vnorm[:, 0] > 1e-12)
-
-    axis_n    = np.where(vnorm > 1e-12, axis / np.maximum(vnorm, 1e-30), 0.0)
-    polar_ax  = np.where(safe, np.arccos(np.clip(axis_n[:, 2], -1, 1)), 0.0)
-    azim_ax   = np.where(safe, np.arctan2(axis_n[:, 1], axis_n[:, 0]), 0.0)
-    azim_ax   = np.where(azim_ax < 0, azim_ax + 2 * np.pi, azim_ax)
+    pair_lookup = build_pair_lookup(ii, jj)
 
     return {
-        'grain_i':    ii,
-        'grain_j':    jj,
-        'theta_rad':  best_theta,
-        'theta_deg':  np.degrees(best_theta),
-        'polar_ax':   polar_ax,
-        'azim_ax':    azim_ax,
-        'qmin':       best_q,
+        "grain_i": ii,
+        "grain_j": jj,
+        "theta_rad": best_theta,
+        "theta_deg": np.degrees(best_theta),
+        "polar_ax": polar_ax,
+        "azim_ax": azim_ax,
+        "qmin": best_q,
+        "pair_lookup": pair_lookup,
+        "N": N,
+    }
+
+
+def get_pair_result(res, i, j):
+    """
+    Safe lookup for a specific grain pair.
+    """
+    if i == j:
+        raise ValueError("i and j must be different")
+    if i > j:
+        i, j = j, i
+
+    k = res["pair_lookup"][(i, j)]
+    return {
+        "i": i,
+        "j": j,
+        "theta_rad": res["theta_rad"][k],
+        "theta_deg": res["theta_deg"][k],
+        "polar_ax": res["polar_ax"][k],
+        "azim_ax": res["azim_ax"][k],
+        "qmin": res["qmin"][k],
+        "row": k,
     }
 
 
