@@ -79,6 +79,10 @@ def parse_args():
                       help="Write a CSV table of time, low_count, high_count per frame.")
     ogrp.add_argument("--plot", action="store_true",
                       help="Save overlay plot of grain map + colored GB lines.")
+    ogrp.add_argument("--dist", action="store_true",
+                  help="Save a histogram of misorientation angle distribution per frame.")
+    ogrp.add_argument("--binsize", type=float, default=1.0,
+                      help="Bin width for misorientation angle distribution.")
     ogrp.add_argument("--view", action="store_true",
                       help="Show plots interactively instead of saving.")
     ogrp.add_argument("--dpi", type=int, default=300)
@@ -619,6 +623,93 @@ def plot_gb_overlay(
         plt.close(fig)
 
 
+def plot_miso_distribution(
+    low_pairs: list[tuple[int, int]],
+    high_pairs: list[tuple[int, int]],
+    missing: list[tuple[int, int]],
+    misorientation: dict[tuple[int, int], float],
+    threshold: float,
+    stem: str,
+    step: int,
+    frame_idx: int,
+    total_frames: int,
+    t_val: float,
+    *,
+    low_color: str = "blue",
+    high_color: str = "red",
+    dpi: int = 300,
+    show_title: bool = True,
+    open_plot: bool = False,
+    bin_width: float = 1.0,
+    log,
+):
+    """
+    Plot a histogram of misorientation angles (in degrees) for all
+    classified grain boundary pairs at a given timestep.
+    Low-angle and high-angle bars are colored separately, with a
+    vertical dashed line at the threshold.
+    """
+    # Gather angles for each class
+    low_angles  = [misorientation[p] for p in low_pairs  if p in misorientation]
+    high_angles = [misorientation[p] for p in high_pairs if p in misorientation]
+    all_angles  = low_angles + high_angles
+
+    if not all_angles:
+        log.warning(f"  No angles to plot for step {step}.")
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+
+    # # Determine shared bin edges across the full range
+    # angle_min = min(all_angles)
+    # angle_max = max(all_angles)
+    # bins = np.linspace(angle_min, angle_max, 36)  # ~1-degree bins up to 35 bins
+    # Fixed x-axis range
+    X_MIN, X_MAX = 0.0, 65.0
+    bins = np.arange(X_MIN, X_MAX + bin_width, bin_width)
+
+    # Warn if any angle falls outside the fixed range
+    all_angles = low_angles + high_angles
+    out_of_range = [a for a in all_angles if a < X_MIN or a > X_MAX]
+    if out_of_range:
+        log.warning(
+            f"  Step {step}: {len(out_of_range)} angle(s) outside "
+            f"[{X_MIN}, {X_MAX}]° — max={max(out_of_range):.2f}°. "
+            f"These will be clipped from the histogram."
+        )
+
+    ax.hist(low_angles,  bins=bins, color=low_color,  alpha=0.7,
+            label=f"Low-angle  (n={len(low_angles)})")
+    ax.hist(high_angles, bins=bins, color=high_color, alpha=0.7,
+            label=f"High-angle (n={len(high_angles)})")
+
+    ax.axvline(threshold, color="black", linestyle="--", linewidth=1.0,
+               label=f"Threshold = {threshold}°")
+
+    ax.set_xlim(X_MIN, X_MAX)
+    ax.set_xlabel("Misorientation angle (degrees)")
+    ax.set_ylabel("Grain boundary count")
+    ax.legend(fontsize=8, framealpha=0.7)
+
+    if show_title:
+        ax.set_title(
+            f"GB misorientation distribution  |  t = {t_val:.4g}s  |  "
+            f"low={len(low_angles)}  high={len(high_angles)}"
+        )
+
+    if open_plot:
+        plt.show()
+    else:
+        outdir = Path("pics")
+        outdir.mkdir(parents=True, exist_ok=True)
+        if total_frames == 1:
+            fname = outdir / f"{stem}_miso_dist_step{step}.png"
+        else:
+            fname = outdir / f"{stem}_miso_dist_{frame_idx:04d}.png"
+        fig.savefig(fname, dpi=dpi, bbox_inches="tight")
+        log.info(f"  Saved distribution plot: {fname}")
+    plt.close(fig)
+
 # ─────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────
@@ -728,6 +819,26 @@ def main():
                             show_colorbar=not args.no_colorbar,
                             show_title=not args.no_title,
                             open_plot=args.view,
+                            log=log,
+                        )
+
+                    # ── 3b. Optional misorientation distribution plot ───────────
+                    if args.dist:
+                        plot_miso_distribution(
+                            low_pairs, high_pairs, missing,
+                            misorientation,
+                            args.threshold,
+                            stem=stem,
+                            step=step,
+                            frame_idx=frame_idx,
+                            total_frames=len(steps),
+                            t_val=t_val,
+                            low_color=args.low_color,
+                            high_color=args.high_color,
+                            dpi=args.dpi,
+                            show_title=not args.no_title,
+                            open_plot=args.view,
+                            bin_width=args.binsize,
                             log=log,
                         )
 
