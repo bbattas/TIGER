@@ -325,11 +325,21 @@ if __name__ == "__main__":
 
     res = compute_all_misorientations_vectorized(filepath, max_grain=max_grain)
 
+    # ── Extract normalised rotation axis from the best-fit quaternion ──────────
+    axis  = res["qmin"][:, :3]                                  # (P, 3)  [x, y, z]
+    vnorm = np.linalg.norm(axis, axis=-1, keepdims=True)        # (P, 1)
+    safe  = vnorm[:, 0] > 1e-12
+    axis_n = np.zeros_like(axis)
+    axis_n[safe] = axis[safe] / vnorm[safe]                     # unit axis, zero for identity rotations
+
     df = pd.DataFrame({
         'i':       res['grain_i'],
         'j':       res['grain_j'],
-        'degrees': res['theta_deg'],
-        'radians': res['theta_rad']
+        'angle_deg': res['theta_deg'],
+        'radians': res['theta_rad'],
+        "ax_x":      axis_n[:, 0],
+        "ax_y":      axis_n[:, 1],
+        "ax_z":      axis_n[:, 2],
     })
 
     out_path = "misorientation.csv"
