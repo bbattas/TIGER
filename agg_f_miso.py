@@ -776,7 +776,7 @@ def main():
                             neighbor_pairs, misorientation, log
                         )
 
-                        log.warning(
+                        log.info(
                             f"  t={t_val:.4g}  |  "
                             f"GB_pairs={len(pairs_found)}  "
                             f"missing={len(missing)}  "
