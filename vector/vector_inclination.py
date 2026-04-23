@@ -49,6 +49,8 @@ def parse_args():
                help="Skip computing/writing the polar histogram CSV output.")
     cs.add_argument("--csv-up", action="store_true",
                help="Write csv output up one directory from current (../file.csv).")
+    cs.add_argument("--raw", "-r", action="store_true",
+                help="Write raw inclination angles (degrees) as a single-column CSV.")
 
     # ---- Plot options ----
     plot = p.add_argument_group("Plotting")
@@ -265,7 +267,7 @@ def get_normal_vector_slope(P, sites, para_name='Inc', bias=None, output=False):
     theta_closed = np.r_[theta, theta[0] + 2*np.pi]
     r_closed     = np.r_[r,     r[0]]
     if output:
-        return theta_closed, r_closed
+        return theta_closed, r_closed, np.degrees(degree)
     else:
         plt.plot(theta_closed, r_closed, linewidth=2, label=para_name)
         return 0
@@ -472,22 +474,28 @@ def main():
                 P, sites, _ = get_normal_vector(P0,args,log)
 
                 # Write histogram inclination to csv
-                if not args.skip_csv:
-                    theta_out, r_out = get_normal_vector_slope(P, sites, output=True)
+                if not args.skip_csv or args.raw:
+                    theta_out, r_out, raw_deg = get_normal_vector_slope(P, sites, output=True)
                     theta_out = np.asarray(theta_out)
                     r_out = np.asarray(r_out)
                     if theta_out.shape != r_out.shape:
                         raise ValueError(f"theta and r must have same shape, got {theta_out.shape} vs {r_out.shape}")
                     prefix = '../' if args.csv_up else ''
-                    out_name = prefix + stem + '_inc_hist.csv'
-                    log.info(f'Writing histogram inclination points to {out_name}')
-                    np.savetxt(
-                        out_name,
-                        np.column_stack((theta_out, r_out)),
-                        delimiter=",",
-                        header="theta,r",
-                        comments=""
-                    )
+                    if not args.skip_csv:
+                        out_name = prefix + stem + '_inc_hist.csv'
+                        log.info(f'Writing histogram inclination points to {out_name}')
+                        np.savetxt(
+                            out_name,
+                            np.column_stack((theta_out, r_out)),
+                            delimiter=",",
+                            header="theta,r",
+                            comments=""
+                        )
+
+                    if args.raw:
+                        raw_name = prefix + stem + '_inc_raw.csv'
+                        log.info(f'Writing raw inclination angles to {raw_name}')
+                        np.savetxt(raw_name, raw_deg, delimiter=",", header="theta_deg", comments="")
 
                 # Debug Plots
                 if args.verbose >= 2 or args.debug_plot:
