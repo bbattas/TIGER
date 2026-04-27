@@ -83,7 +83,7 @@ def parse_args():
                       help="Remove colorbar from plot images.")
     plot.add_argument("--no-title", action="store_true",
                       help="Remove title with time value from plot images.")
-    plot.add_argument("--grain-boundaries", action="store_true",
+    plot.add_argument("--gbs", action="store_true",
                       help="Overlay grain boundary edges on elemental feature plots.")
     plot.add_argument("--boundary-color", type=str, default="black",
                       help="Color of grain boundary overlay lines.")
@@ -331,7 +331,6 @@ def draw_grain_boundaries(ax, x, y, c, color="black", lw=0.5):
     try:
         xedges, yedges, C = build_structured_grid(x, y, c)
     except ValueError:
-        # Unstructured fallback: nearest-neighbor interpolation + contour
         from scipy.interpolate import griddata
         xi = np.linspace(x.min(), x.max(), 500)
         yi = np.linspace(y.min(), y.max(), 500)
@@ -340,30 +339,33 @@ def draw_grain_boundaries(ax, x, y, c, color="black", lw=0.5):
         ax.contour(Xi, Yi, Ci, levels=np.unique(c), colors=color, linewidths=lw)
         return
 
+    # Cast to integer to avoid float comparison artifacts
+    C_int = np.rint(C).astype(np.int64)
+
     # Boolean masks where neighboring cells differ
-    h_diff = C[:, :-1] != C[:, 1:]    # -> vertical boundary segments
-    v_diff = C[:-1, :] != C[1:, :]    # -> horizontal boundary segments
+    h_diff = C_int[:, :-1] != C_int[:, 1:]
+    v_diff = C_int[:-1, :] != C_int[1:, :]
 
     iy_v, ix_v = np.where(h_diff)
     iy_h, ix_h = np.where(v_diff)
 
-    # Vertical segments: x = xedges[ix+1], y spans yedges[iy] to yedges[iy+1]
-    vsegs = np.stack([
-        np.stack([xedges[ix_v + 1], xedges[ix_v + 1]], axis=1),
-        np.stack([yedges[iy_v],     yedges[iy_v + 1]], axis=1),
-    ], axis=2)  # shape (N, 2, 2)
+    if len(iy_v) == 0 and len(iy_h) == 0:
+        return
 
-    # Horizontal segments: y = yedges[iy+1], x spans xedges[ix] to xedges[ix+1]
-    hsegs = np.stack([
-        np.stack([xedges[ix_h],     xedges[ix_h + 1]], axis=1),
-        np.stack([yedges[iy_h + 1], yedges[iy_h + 1]], axis=1),
-    ], axis=2)  # shape (N, 2, 2)
+    # Vertical segments
+    vsegs = np.column_stack([
+        xedges[ix_v + 1], yedges[iy_v],
+        xedges[ix_v + 1], yedges[iy_v + 1],
+    ]).reshape(-1, 2, 2)
 
-    # Combine and convert to list of [[x0,y0],[x1,y1]] for LineCollection
-    all_segs = np.vstack([vsegs, hsegs])               # (N_total, 2, 2)
-    segments = [all_segs[i].T for i in range(len(all_segs))]
+    # Horizontal segments
+    hsegs = np.column_stack([
+        xedges[ix_h],     yedges[iy_h + 1],
+        xedges[ix_h + 1], yedges[iy_h + 1],
+    ]).reshape(-1, 2, 2)
 
-    lc = LineCollection(segments, colors=color, linewidths=lw, zorder=2)
+    all_segs = np.vstack([vsegs, hsegs])
+    lc = LineCollection(all_segs, colors=color, linewidths=lw, zorder=2)
     ax.add_collection(lc)
 
 
@@ -589,7 +591,7 @@ def main():
                         show_colorbar=not args.no_colorbar,
                         show_title=not args.no_title,
                         open_plot=args.view,
-                        show_boundaries=args.grain_boundaries,
+                        show_boundaries=args.gbs,
                         boundary_color=args.boundary_color,
                         boundary_lw=args.boundary_lw
                     )
