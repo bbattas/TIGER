@@ -8,6 +8,7 @@ import sys
 import logging
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
+from matplotlib.collections import LineCollection
 from pathlib import Path
 from tqdm import tqdm
 
@@ -82,6 +83,12 @@ def parse_args():
                       help="Remove colorbar from plot images.")
     plot.add_argument("--no-title", action="store_true",
                       help="Remove title with time value from plot images.")
+    plot.add_argument("--grain-boundaries", action="store_true",
+                      help="Overlay grain boundary edges on elemental feature plots.")
+    plot.add_argument("--boundary-color", type=str, default="black",
+                      help="Color of grain boundary overlay lines.")
+    plot.add_argument("--boundary-lw", type=float, default=0.5,
+                      help="Line width of grain boundary overlay.")
 
     args = p.parse_args()
 
@@ -316,6 +323,50 @@ def build_structured_grid(x, y, c):
     return xedges, yedges, C
 
 
+def draw_grain_boundaries(ax, x, y, c, color="black", lw=0.5):
+    """
+    Overlay grain boundary lines on an elemental plot.
+    Uses vectorized numpy diff + LineCollection for performance.
+    """
+    try:
+        xedges, yedges, C = build_structured_grid(x, y, c)
+    except ValueError:
+        # Unstructured fallback: nearest-neighbor interpolation + contour
+        from scipy.interpolate import griddata
+        xi = np.linspace(x.min(), x.max(), 500)
+        yi = np.linspace(y.min(), y.max(), 500)
+        Xi, Yi = np.meshgrid(xi, yi)
+        Ci = griddata((x, y), c, (Xi, Yi), method="nearest")
+        ax.contour(Xi, Yi, Ci, levels=np.unique(c), colors=color, linewidths=lw)
+        return
+
+    # Boolean masks where neighboring cells differ
+    h_diff = C[:, :-1] != C[:, 1:]    # -> vertical boundary segments
+    v_diff = C[:-1, :] != C[1:, :]    # -> horizontal boundary segments
+
+    iy_v, ix_v = np.where(h_diff)
+    iy_h, ix_h = np.where(v_diff)
+
+    # Vertical segments: x = xedges[ix+1], y spans yedges[iy] to yedges[iy+1]
+    vsegs = np.stack([
+        np.stack([xedges[ix_v + 1], xedges[ix_v + 1]], axis=1),
+        np.stack([yedges[iy_v],     yedges[iy_v + 1]], axis=1),
+    ], axis=2)  # shape (N, 2, 2)
+
+    # Horizontal segments: y = yedges[iy+1], x spans xedges[ix] to xedges[ix+1]
+    hsegs = np.stack([
+        np.stack([xedges[ix_h],     xedges[ix_h + 1]], axis=1),
+        np.stack([yedges[iy_h + 1], yedges[iy_h + 1]], axis=1),
+    ], axis=2)  # shape (N, 2, 2)
+
+    # Combine and convert to list of [[x0,y0],[x1,y1]] for LineCollection
+    all_segs = np.vstack([vsegs, hsegs])               # (N_total, 2, 2)
+    segments = [all_segs[i].T for i in range(len(all_segs))]
+
+    lc = LineCollection(segments, colors=color, linewidths=lw, zorder=2)
+    ax.add_collection(lc)
+
+
 def plot_exodus_var(
     exo,
     name: str,
@@ -337,6 +388,9 @@ def plot_exodus_var(
     dpi: int = 300,
     show_title: bool = True,
     open_plot: bool = False,
+    show_boundaries: bool = False,
+    boundary_color: str = "black",
+    boundary_lw: float = 0.5,
 ):
     """
     Plot Exodus variable with multiple plotting styles.
@@ -419,6 +473,9 @@ def plot_exodus_var(
         raise ValueError(
             "method must be 'auto', 'scatter', 'tripcolor', or 'pcolormesh'"
         )
+
+    if show_boundaries:
+        draw_grain_boundaries(ax, x, y, c, color=boundary_color, lw=boundary_lw)
 
     if show_title:
         ax.set_title(f"t = {t:.2f}s")
@@ -531,7 +588,10 @@ def main():
                         show_axes=not args.no_axes,
                         show_colorbar=not args.no_colorbar,
                         show_title=not args.no_title,
-                        open_plot=args.view
+                        open_plot=args.view,
+                        show_boundaries=args.grain_boundaries,
+                        boundary_color=args.boundary_color,
+                        boundary_lw=args.boundary_lw
                     )
 
                 vtf(ti, log, "Finished plotting selected frame(s) ")
