@@ -462,6 +462,10 @@ def main():
                 xc, yc = exo.element_centers_xy(method="mean")
                 ug = exo.elem_var_at_step("unique_grains", step=step)
                 ug = np.rint(ug).astype(np.int32)
+                ug_min = ug.min()
+                if ug_min != 1:
+                    log.info(f'Unique_Grains minimum = {ug_min} so shifting to 1.')
+                    ug = ug - ug_min + 1
                 vtf(ti,log,"End of Exodus ripping: ")
                 log.info(' ')
 
