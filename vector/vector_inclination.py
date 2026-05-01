@@ -208,7 +208,8 @@ def get_normal_vector(P0,args,log):
     """
     nx = P0.shape[0]
     ny = P0.shape[1]
-    ng = np.max(P0)
+    # ng = np.max(P0)
+    ng = int(np.nanmax(P0)) - int(np.nanmin(P0)) + 1
     cores = args.cpus
     loop_times = 5
     R = np.zeros((nx,ny,2))
@@ -462,10 +463,10 @@ def main():
                 xc, yc = exo.element_centers_xy(method="mean")
                 ug = exo.elem_var_at_step("unique_grains", step=step)
                 ug = np.rint(ug).astype(np.int32)
-                ug_min = ug.min()
-                if ug_min != 1:
-                    log.info(f'Unique_Grains minimum = {ug_min} so shifting to 1.')
-                    ug = ug - ug_min + 1
+                # ug_min = ug.min()
+                # if ug_min != 1:
+                #     log.info(f'Unique_Grains minimum = {ug_min} so shifting to 1.')
+                #     ug = ug - ug_min + 1
                 vtf(ti,log,"End of Exodus ripping: ")
                 log.info(' ')
 
@@ -524,7 +525,7 @@ def main():
 
         except Exception as e:
             # argparse-style error output (clean for CLI)
-            log.warning(f"ERROR: {e}")#, file=sys.stderr)
+            log.exception(f"ERROR: {e}")#, file=sys.stderr)
             sys.exit(2)
 
     # TOTAL end time
