@@ -60,7 +60,7 @@ def parse_args():
     # ---- Velocity selection ----
     # ---- Multi-frame HDF5 ----
     mf = p.add_argument_group("Multi-frame HDF5")
-    mf.add_argument("--out", type=str, default=None, metavar="NAME",
+    mf.add_argument("--out","-o", type=str, default=None, metavar="NAME",
                 help="Output name for the HDF5 file (with or without .h5 extension). "
                      "If not set, defaults to <stem>_multiframe.h5.")
     mf.add_argument("--hdf5-frames", type=int, default=5, metavar="N",
@@ -1122,8 +1122,8 @@ def main():
                     frame_tuple = process_frame(exo, s, args, log)
                     frames_data.append(frame_tuple)
 
-                if args.hdf5_out is not None:
-                    hdf5_name = args.hdf5_out if args.hdf5_out.endswith(".h5") else args.hdf5_out + ".h5"
+                if args.out is not None:
+                    hdf5_name = args.out if args.out.endswith(".h5") else args.out + ".h5"
                     hdf5_path = hdf5_name
                 else:
                     hdf5_path = stem + '_multiframe.h5'
