@@ -77,10 +77,10 @@ def parse_args() -> argparse.Namespace:
         help="Exclude boundary pixels within --tj-distance of a triple junction.",
     )
     gbe.add_argument(
-        "--tj-distance", type=int, default=6, metavar="N",
+        "--tj-distance", type=int, default=3, metavar="N",
         help=(
             "Euclidean pixel distance threshold for TJ exclusion. "
-            "Matches the default used in vector_exodus_to_hdf5.py."
+            "Matches the default used in vector_exodus_to_hdf5.py. Lin used 6"
         ),
     )
     gbe.add_argument(
@@ -92,16 +92,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     gbe.add_argument(
-        "--min-area", type=int, default=100, metavar="N",
-        help="Minimum GB area in pixels to include in velocity calculation.",
+        "--min-area", type=int, default=20, metavar="N",
+        help="Minimum GB area in pixels to include in velocity calculation. Lin used 100",
     )
     gbe.add_argument(
-        "--min-curvature", type=float, default=0.0182, metavar="F",
-        help="Minimum absolute avg_curvature to include in velocity calculation.",
+        "--min-curvature", type=float, default=0.0, metavar="F",
+        help="Minimum absolute avg_curvature to include in velocity calculation. Lin used 0.0182",
     )
     gbe.add_argument(
         "--antic-confidence", type=float, default=0.99, metavar="F",
-        help="Percent confidence for anticurvature calculation.",
+        help="Percent confidence for anticurvature calculation. Lin used 0.99",
     )
 
     # ---- Plotting ----
@@ -748,6 +748,9 @@ def compute_gb_velocity_one_interval(
         area          = float(data_current[1])
         grain_id1     = int(data_current[2])
         grain_id2     = int(data_current[3])
+
+        # TEMP DEBUGGING
+        log.warning(f"  pair {pair_id}: avg_curvature={avg_curvature:.6f}, area={area:.1f}")
 
         # ── Filters (mirror reference code's pre-loop filtering) ──────────
         if area < min_area:

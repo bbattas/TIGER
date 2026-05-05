@@ -60,22 +60,14 @@ def parse_args():
     # ---- Velocity selection ----
     # ---- Multi-frame HDF5 ----
     mf = p.add_argument_group("Multi-frame HDF5")
-    # mf.add_argument("--hdf5", action="store_true",
-    #                 help="Enable multi-frame HDF5 output.")
+    mf.add_argument("--out", type=str, default=None, metavar="NAME",
+                help="Output name for the HDF5 file (with or without .h5 extension). "
+                     "If not set, defaults to <stem>_multiframe.h5.")
     mf.add_argument("--hdf5-frames", type=int, default=5, metavar="N",
                     help="Number of frames to save in the HDF5 file.")
     mf.add_argument("--hdf5-dt", type=float, default=None, metavar="DT",
                     help="Target time spacing between saved frames. "
                         "If not set, defaults to 1%% of max simulation time.")
-
-    # ---- CSV options ----
-    cs = p.add_argument_group("CSV")
-    cs.add_argument("--skip-csv", action="store_true",
-               help="Skip computing/writing the single frame curvature CSV output.")
-    cs.add_argument("--csv-up", action="store_true",
-               help="Write csv output up one directory from current (../file.csv).")
-    # cs.add_argument("--raw", "-r", action="store_true",
-    #             help="Write raw inclination angles (degrees) as a single-column CSV.")
 
     # ---- Plot options ----
     plot = p.add_argument_group("Plotting")
@@ -716,73 +708,6 @@ def compute_gb_curvature(C: np.ndarray, TJ_distance_max: int = 6,
     return gb_dict, boundary_pixels, junction_pixels
 
 
-def save_gb_dict_to_csv(gb_dict: dict, filepath: str, log: logging.Logger) -> None:
-    """
-    Saves grain boundary curvature data to a CSV file.
-
-    Parameters
-    ----------
-    gb_dict : dict
-        Output of compute_gb_curvature.
-        pair_id (tuple) -> np.array([avg_curvature, area, grain_id1, grain_id2])
-    filepath : str
-        Full path to the output CSV file.
-    """
-    import csv
-
-    header = ['grain_id1', 'grain_id2', 'avg_curvature', 'area']
-
-    with open(filepath, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        for pair_id, data in gb_dict.items():
-            row = [
-                int(data[2]),  # grain_id1
-                int(data[3]),  # grain_id2
-                data[0],       # avg_curvature
-                int(data[1])   # area
-            ]
-            writer.writerow(row)
-
-    log.info(f"Saved {len(gb_dict)} grain boundaries to {filepath}")
-
-
-def load_gb_dict_from_csv(filepath: str, log: logging.Logger) -> dict:
-    """
-    Loads grain boundary curvature data from a CSV file back into
-    the gb_dict format.
-
-    Parameters
-    ----------
-    filepath : str
-        Path to the CSV file saved by save_gb_dict_to_csv.
-
-    Returns
-    -------
-    dict
-        pair_id (tuple) -> np.array([avg_curvature, area, grain_id1, grain_id2])
-    """
-    import csv
-
-    gb_dict = {}
-
-    with open(filepath, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            grain_id1 = int(float(row['grain_id1']))
-            grain_id2 = int(float(row['grain_id2']))
-            pair_id   = get_pair_id(grain_id1, grain_id2)
-            gb_dict[pair_id] = np.array([
-                float(row['avg_curvature']),
-                float(row['area']),
-                float(grain_id1),
-                float(grain_id2)
-            ])
-
-    log.info(f"Loaded {len(gb_dict)} grain boundaries from {filepath}")
-    return gb_dict
-
-
 
 def save_hdf5_multiframe(filepath: str, frames_data: list,
                          log: logging.Logger = None) -> None:
@@ -1197,7 +1122,11 @@ def main():
                     frame_tuple = process_frame(exo, s, args, log)
                     frames_data.append(frame_tuple)
 
-                hdf5_path = stem + '_multiframe.h5'
+                if args.hdf5_out is not None:
+                    hdf5_name = args.hdf5_out if args.hdf5_out.endswith(".h5") else args.hdf5_out + ".h5"
+                    hdf5_path = hdf5_name
+                else:
+                    hdf5_path = stem + '_multiframe.h5'
                 save_hdf5_multiframe(hdf5_path, frames_data, log=log)
                 log.info(f"HDF5 written: {hdf5_path} ({len(frames_data)} frames)")
                 vtf(tih,log,"End of HDF5 generation: ")
