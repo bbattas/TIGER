@@ -462,6 +462,40 @@ class linear_class(object):
             print("my core time is " + str((core_etime - core_stime).total_seconds()))
         return (fval,(core_etime - core_stime).total_seconds())
 
+    # NEW COMBO
+    def linear_combined_core(self, core_input):
+        core_stime = datetime.datetime.now()
+        li, lj, lk = np.shape(core_input)
+        fval = np.zeros((self.nx, self.ny, 3))  # 0,1 = normal vectors, 2 = curvature
+
+        for core_a in core_input:
+            for core_b in core_a:
+                i = core_b[0]
+                j = core_b[1]
+                ip, im, jp, jm = myInput.periodic_bc(self.nx, self.ny, i, j)
+
+                if (((self.P[0,ip,j]-self.P[0,i,j])!=0) or
+                    ((self.P[0,im,j]-self.P[0,i,j])!=0) or
+                    ((self.P[0,i,jp]-self.P[0,i,j])!=0) or
+                    ((self.P[0,i,jm]-self.P[0,i,j])!=0)):
+
+                    # Normal vector window (tableL size)
+                    window_n = self.find_window(i, j, self.tableL - 2*self.clip)
+                    fval[i,j,0] = -np.sum(window_n * self.smoothed_vector_i)
+                    fval[i,j,1] =  np.sum(window_n * self.smoothed_vector_j)
+
+                    # Curvature window (tableL_curv size)
+                    window_c = self.find_window(i, j, self.tableL_curv - 2*self.clip)
+                    smoothed_matrix = myInput.output_smoothed_matrix(
+                        window_c,
+                        myInput.output_linear_smoothing_matrix(self.loop_times)
+                    )[self.loop_times:-self.loop_times, self.loop_times:-self.loop_times]
+                    fval[i,j,2] = self.calculate_curvature(smoothed_matrix)
+
+        core_etime = datetime.datetime.now()
+        return (fval, (core_etime - core_stime).total_seconds())
+
+
     def res_back(self,back_result):
         res_stime = datetime.datetime.now()
         (fval,core_time) = back_result
@@ -474,6 +508,10 @@ class linear_class(object):
         elif fval.shape[2] == 2:
             self.P[1,:,:] += fval[:,:,0]
             self.P[2,:,:] += fval[:,:,1]
+        elif fval.shape[2] == 3: # NEW COMBO
+            self.P[1,:,:] += fval[:,:,0]
+            self.P[2,:,:] += fval[:,:,1]
+            self.C[1,:,:] += fval[:,:,2]
         res_etime = datetime.datetime.now()
         if self.verification_system == True: print("my res time is " + str((res_etime - res_stime).total_seconds()))
 
@@ -517,6 +555,14 @@ class linear_class(object):
                         args=(multi_input[ki][kj],),
                         callback=self.res_back)
                     res_list.append(res_one)
+        elif purpose == "both": # NEW COMBO
+            for ki in range(main_wc):
+                for kj in range(main_lc):
+                    res_one = pool.apply_async(
+                        func=self.linear_combined_core,
+                        args=(multi_input[ki][kj],),
+                        callback=self.res_back)
+                    res_list.append(res_one)
 
         # Wait for all processes to complete
         pool.close()
@@ -532,6 +578,9 @@ class linear_class(object):
         if purpose == "inclination":
             self.get_errors()
         elif purpose == "curvature":
+            self.get_curvature_errors()
+        elif purpose == "both": # NEW COMBO
+            self.get_errors()
             self.get_curvature_errors()
 
 

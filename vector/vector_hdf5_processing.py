@@ -1,0 +1,1781 @@
+#!/usr/bin/env python3
+"""
+vector_hdf5_processing.py
+
+Post-processing script for multi-frame HDF5 files produced by
+vector_exodus_to_hdf5.py.  Currently implements:
+  - GBE calculation at every boundary pixel (four modes)
+  - Optional triple-junction exclusion (default: enabled)
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import h5py
+import myInput
+import numpy as np
+import pandas as pd
+import math
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Constants
+# ──────────────────────────────────────────────────────────────────────────────
+
+THETA_MAX_DEG = 62.0
+THETA_MAX_RAD = np.deg2rad(THETA_MAX_DEG)
+
+GBE_MODES = ("inclination_cosine", "inclination", "misorientation", "both")
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  CLI
+# ──────────────────────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=(
+            "Post-process multi-frame HDF5 files from vector_exodus_to_hdf5.py. "
+            "Computes grain-boundary energy (GBE) at every boundary pixel."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # ---- I/O ----
+    io = p.add_argument_group("I/O")
+    io.add_argument(
+        "--hdf5", "-i", type=Path, required=True, metavar="FILE",
+        help="Input .h5 file produced by vector_exodus_to_hdf5.py.",
+    )
+    io.add_argument(
+        "--parquet", "-p", type=Path, default=None, metavar="FILE",
+        help=(
+            "Misorientation parquet file. Required when --gbe-mode is "
+            "'misorientation' or 'both'."
+        ),
+    )
+    io.add_argument(
+        "--output-dir", "-o", type=Path, default=Path("."), metavar="DIR",
+        help="Directory for all output files.",
+    )
+    io.add_argument(
+        "--inclination-csv", action="store_true",
+        help="Write a CSV of the inclination angle distribution (binned, normalized).",
+    )
+
+    # ---- GBE ----
+    gbe = p.add_argument_group("GBE")
+    gbe.add_argument(
+        "--gbe-mode", type=str, default="misorientation", choices=GBE_MODES,
+        help="Energy function to use for GBE calculation.",
+    )
+    gbe.add_argument(
+        "--tj-exclude", action=argparse.BooleanOptionalAction, default=True,
+        help="Exclude boundary pixels within --tj-distance of a triple junction.",
+    )
+    gbe.add_argument(
+        "--tj-distance", type=int, default=6, metavar="N",
+        help=(
+            "Euclidean pixel distance threshold for TJ exclusion. "
+            "Matches the default used in vector_exodus_to_hdf5.py."
+        ),
+    )
+    gbe.add_argument(
+        "--inclination-anisotropy", "-a", type=float, default=0.05,
+        metavar="A",
+        help=(
+            "Anisotropy amplitude 'a' for the inclination_cosine GBE mode: "
+            "GBE = 1 + a * cos(2 * theta). Must be in [0, 0.95]."
+        ),
+    )
+    gbe.add_argument(
+        "--min-area", type=int, default=100, metavar="N",
+        help="Minimum GB area in pixels to include in velocity calculation.",
+    )
+    gbe.add_argument(
+        "--min-curvature", type=float, default=0.0182, metavar="F",
+        help="Minimum absolute avg_curvature to include in velocity calculation.",
+    )
+
+    # ---- Plotting ----
+    tog = p.add_argument_group("Toggles")
+    tog.add_argument('--debug-plot','-d',action='store_true',
+        help='Save the debugging plots. -vv also enables this.')
+    tog.add_argument(
+        "--skip-velocity", action="store_true",
+        help="Skip GB velocity calculation.",
+    )
+
+    # ---- Verbosity ----
+    p.add_argument(
+        "-v", "--verbose", action="count", default=0,
+        help="Increase verbosity (-v = INFO, -vv = DEBUG).",
+    )
+
+    args = p.parse_args()
+
+    # ---- Cross-argument validation ----
+    if args.gbe_mode in ("misorientation", "both") and args.parquet is None:
+        p.error(
+            f"--gbe-mode '{args.gbe_mode}' requires --parquet to be specified."
+        )
+    if args.parquet is not None and not args.parquet.exists():
+        p.error(f"Parquet file not found: {args.parquet}")
+    if not args.hdf5.exists():
+        p.error(f"HDF5 file not found: {args.hdf5}")
+    if not (0.0 <= args.inclination_anisotropy <= 0.95):
+        p.error(
+            f"--inclination-anisotropy must be in [0, 0.95], "
+            f"got {args.inclination_anisotropy}."
+        )
+
+    return args
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Logging
+# ──────────────────────────────────────────────────────────────────────────────
+
+def setup_logging(verbosity: int) -> logging.Logger:
+    level = logging.WARNING
+    if verbosity >= 2:
+        level = logging.DEBUG
+    elif verbosity >= 1:
+        level = logging.INFO
+    logging.basicConfig(level=level, format="%(message)s")
+    return logging.getLogger("VHP")  # Vector HDF5 Processing
+
+
+def tf(ti: float, log: logging.Logger, extra: str = "") -> None:
+    log.warning(f"{extra}Time: {time.perf_counter() - ti:.4f}s")
+
+def vtf(ti: float, log: logging.Logger, extra: str = "") -> None:
+    log.info(f"{extra}Time: {time.perf_counter() - ti:.4f}s")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Data structures
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class FrameData:
+    step:            int
+    time:            float
+    P0:              np.ndarray   # (nx, ny)         grain ID map
+    C:               np.ndarray   # (2, nx, ny)      C[0]=grain ID, C[1]=curvature
+    P:               np.ndarray   # (3, nx, ny)      P[0]=grain ID, P[1]=dx, P[2]=dy
+    gb_dict:         dict         # pair_id -> np.array([avg_curv, area, gid1, gid2])
+    boundary_pixels: np.ndarray   # (N, 2)
+    junction_pixels: np.ndarray   # (M, 2)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Layer 1 — I/O
+# ──────────────────────────────────────────────────────────────────────────────
+
+def load_hdf5_frames(filepath: Path, log: logging.Logger) -> list[FrameData]:
+    """
+    Read all frames from an HDF5 file produced by vector_exodus_to_hdf5.py.
+    Reconstructs gb_dict from the parallel pair_ids / data arrays stored
+    under each frame's gb_dict group.
+    """
+    frames: list[FrameData] = []
+
+    with h5py.File(filepath, "r") as hf:
+        frames_grp = hf["frames"]
+        frame_keys = sorted(frames_grp.keys())  # frame_0000, frame_0001, ...
+        log.info(f"HDF5 contains {len(frame_keys)} frame(s): {frame_keys}")
+
+        for key in frame_keys:
+            fg = frames_grp[key]
+
+            step     = int(fg["step"][()])
+            time_val = float(fg["time"][()])
+            P0       = fg["P0"][:]
+            C        = fg["C"][:]
+            P        = fg["P"][:]
+            bp       = fg["boundary_pixels"][:]
+            jp       = fg["junction_pixels"][:]
+
+            # Reconstruct gb_dict from parallel arrays
+            gb_grp   = fg["gb_dict"]
+            pair_ids = gb_grp["pair_ids"][:]   # (K, 2)
+            data_arr = gb_grp["data"][:]        # (K, 4)
+
+            gb_dict: dict[tuple[int, int], np.ndarray] = {
+                (int(pair_ids[k, 0]), int(pair_ids[k, 1])): data_arr[k]
+                for k in range(len(pair_ids))
+            }
+
+            frames.append(FrameData(
+                step=step, time=time_val,
+                P0=P0, C=C, P=P,
+                gb_dict=gb_dict,
+                boundary_pixels=bp,
+                junction_pixels=jp,
+            ))
+            log.info(
+                f"  Loaded frame '{key}': step={step}, time={time_val:.6g}, "
+                f"gb_pairs={len(gb_dict)}, "
+                f"boundary_px={len(bp)}, junction_px={len(jp)}"
+            )
+
+    return frames
+
+
+def get_last_frame(frames: list[FrameData]) -> FrameData:
+    """Return the last frame — used for all single-frame analyses."""
+    return frames[-1]
+
+
+def load_misorientation_parquet(
+    parquet_path: Path,
+    neighbor_pairs: set[tuple[int, int]],
+    log: logging.Logger,
+) -> dict[tuple[int, int], dict]:
+    """
+    Load only the rows from the Parquet file that correspond to the
+    requested neighbor_pairs, using predicate push-down on column 'i'
+    to minimise I/O for large files.
+
+    Returns
+    -------
+    dict  pair_id -> {"angle_deg", "ax_x", "ax_y", "ax_z"}
+    """
+    if not neighbor_pairs:
+        return {}
+
+    log.info(f"Loading misorientation Parquet (pair-selective): {parquet_path}")
+
+    grain_ids = set()
+    for (a, b) in neighbor_pairs:
+        grain_ids.add(a)
+        grain_ids.add(b)
+
+    filters = [("i", "in", list(grain_ids))]
+    df = pd.read_parquet(
+        parquet_path,
+        columns=["i", "j", "angle_deg", "ax_x", "ax_y", "ax_z"],
+        filters=filters,
+    )
+
+    result: dict[tuple[int, int], dict] = {}
+    for row in df.itertuples(index=False):
+        key = (min(int(row.i), int(row.j)), max(int(row.i), int(row.j)))
+        if key in neighbor_pairs:
+            result[key] = {
+                "angle_deg": float(row.angle_deg),
+                "ax_x":      float(row.ax_x),
+                "ax_y":      float(row.ax_y),
+                "ax_z":      float(row.ax_z),
+            }
+
+    log.info(
+        f"  Parquet selective load: requested={len(neighbor_pairs)}, "
+        f"found={len(result)} pairs."
+    )
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Layer 2 — GBE energy functions
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compute_fmiso_single(
+    angle_deg: float,
+    ax_x: float,
+    ax_y: float,
+    ax_z: float,
+) -> float:
+    """
+    Misorientation-only GBE function f_miso for a single GB pair.
+
+    1. Normalize misorientation axis.
+    2. polar   = acos(ax_z)
+       azimuth = atan2(ax_y, ax_x), remapped to [0, 2π)
+    3. ang_energy = (θ/62°) * (1 - ln(θ/62°)), clamped to [0, 1]
+       ax_energy  = |cos(polar)|^0.4 + |cos(azimuth/2)|^0.4, clamped to [0, 1]
+    4. f_miso = 0.3 + 0.7 * (ang_energy * ax_energy)
+
+    Returns f_miso in [0.3, ~1.0].
+    """
+    norm = np.sqrt(ax_x**2 + ax_y**2 + ax_z**2)
+    if norm < 1e-12:
+        return 0.3
+    ax_x /= norm
+    ax_y /= norm
+    ax_z /= norm
+
+    polar   = np.arccos(np.clip(ax_z, -1.0, 1.0))
+    azimuth = np.arctan2(ax_y, ax_x)
+    if azimuth < 0.0:
+        azimuth += 2.0 * np.pi
+
+    theta_rad = np.deg2rad(angle_deg)
+    ratio     = theta_rad / THETA_MAX_RAD
+    if ratio <= 0.0:
+        ang_energy = 0.0
+    elif ratio >= 1.0:
+        ang_energy = 1.0
+    else:
+        ang_energy = ratio * (1.0 - np.log(ratio))
+    ang_energy = min(ang_energy, 1.0)
+
+    ax_energy = abs(np.cos(polar))**0.4 + abs(np.cos(azimuth / 2.0))**0.4
+    ax_energy = min(ax_energy, 1.0)
+
+    return float(0.3 + 0.7 * (ang_energy * ax_energy))
+
+
+def compute_finclination_cosine(dx: float, dy: float, a: float) -> float:
+    """
+    Inclination-only GBE using a two-fold cosine function:
+        GBE = 1 + a * cos(2 * theta)
+    where theta is the inclination angle computed from the normal vector
+    via atan2(-dy, dx) + pi, matching the convention in
+    get_normal_vector_slope and compute_inclination_per_pixel.
+
+    Parameters
+    ----------
+    dx, dy : float  — normal vector components from myInput.get_grad
+    a      : float  — anisotropy amplitude in [0, 0.95]
+
+    Returns
+    -------
+    float  — GBE in [1 - a, 1 + a]
+    """
+    theta = math.atan2(-dy, dx) + math.pi   # [0, 2π), consistent with inclination convention [1]
+    return 1.0 + a * math.cos(2.0 * theta)
+
+
+def compute_finclination(dx: float, dy: float) -> float:
+    """
+    Inclination-only GBE using a direct inclination-dependent function.
+    Placeholder — replace with your target formulation.
+    """
+    # TODO: implement direct inclination energy function
+    raise NotImplementedError("inclination GBE not yet implemented.")
+
+
+def compute_fboth(
+    dx: float,
+    dy: float,
+    angle_deg: float,
+    ax_x: float,
+    ax_y: float,
+    ax_z: float,
+) -> float:
+    """
+    Combined inclination + misorientation GBE.
+    Placeholder — replace with your target formulation.
+    """
+    # TODO: implement combined inclination + misorientation energy function
+    raise NotImplementedError("'both' GBE not yet implemented.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Layer 2 — TJ proximity filter
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_tj_proximity_set(
+    junction_pixels: np.ndarray,
+    tj_distance: int,
+) -> set[tuple[int, int]]:
+    """
+    Pre-compute the set of all pixel coordinates that lie within
+    tj_distance of any triple-junction pixel.  Using a set allows O(1)
+    membership tests in the hot loop below.
+
+    This mirrors the per-pair proximity check in accumulate_gb_properties
+    in vector_exodus_to_hdf5.py [1], but is applied globally (not per-pair)
+    so it only needs to be built once per frame.
+    """
+    if len(junction_pixels) == 0:
+        return set()
+
+    # For each candidate boundary pixel we only need to know whether *any*
+    # junction is close, not which one — so a global KD-style approach is
+    # fastest.  For typical image sizes the nested loop is fine; swap for
+    # scipy.spatial.cKDTree if performance becomes a concern.
+    excluded: set[tuple[int, int]] = set()
+    for (ji, jj) in junction_pixels:
+        excluded.add((int(ji), int(jj)))
+
+    # Expand: mark every pixel within tj_distance of a junction pixel.
+    # We use a bounding-box pre-filter to avoid the sqrt for most candidates.
+    junctions = np.array(list(excluded), dtype=np.int32)
+    r = tj_distance
+
+    for (ji, jj) in junctions:
+        for di in range(-r, r + 1):
+            for dj in range(-r, r + 1):
+                if di * di + dj * dj < r * r:
+                    excluded.add((ji + di, jj + dj))
+
+    return excluded
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Layer 2 — Core GBE per-pixel computation
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compute_gbe_per_pixel(
+    frame: FrameData,
+    mode: str,
+    tj_excluded: set[tuple[int, int]],
+    misorientation_data: dict | None = None,
+    inclination_anisotropy: float = 0.05,
+    log: logging.Logger | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute GBE at every (non-excluded) boundary pixel in the last frame.
+
+    Parameters
+    ----------
+    frame              : FrameData  (last frame)
+    mode               : one of GBE_MODES
+    tj_excluded        : pre-built set from build_tj_proximity_set(), shared across
+                         all per-pixel calculations for this frame.
+    misorientation_data: output of load_misorientation_parquet, or None
+    log                : logger
+
+    Returns
+    -------
+    pixel_coords : np.ndarray  shape (N, 2)   — (i, j) of each kept pixel
+    gbe_values   : np.ndarray  shape (N,)     — GBE value at each pixel
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    C0 = frame.C[0]          # grain ID map
+    P  = frame.P              # normal-vector field
+    nx, ny = C0.shape
+
+
+
+    pixel_coords: list[tuple[int, int]] = []
+    gbe_values:   list[float]           = []
+    n_skipped_tj      = 0
+    n_skipped_no_data = 0
+
+    for (i, j) in frame.boundary_pixels:
+        # ── TJ exclusion ──────────────────────────────────────────────────
+        if (int(i), int(j)) in tj_excluded:
+            n_skipped_tj += 1
+            continue
+
+        # ── Identify the grain pair at this pixel ─────────────────────────
+        # Re-derive the pair from C0 using periodic BCs, consistent with
+        # accumulate_gb_properties in vector_exodus_to_hdf5.py [1].
+        central = int(C0[i, j])
+        ip = (i + 1) % nx;  im = (i - 1) % nx
+        jp = (j + 1) % ny;  jm = (j - 1) % ny
+        neighbors = {
+            int(C0[ip, j]), int(C0[im, j]),
+            int(C0[i,  jp]), int(C0[i,  jm]),
+        }
+        neighbors.discard(central)
+
+        # Skip junction pixels (more than one foreign neighbor)
+        if len(neighbors) != 1:
+            continue
+
+        neighbor_id = next(iter(neighbors))
+        pair_id = (min(central, neighbor_id), max(central, neighbor_id))
+
+        # ── Compute inclination (dx, dy) via myInput.get_grad ─────────────
+        dx, dy = myInput.get_grad(P, int(i), int(j))
+
+        # ── Dispatch to energy function ───────────────────────────────────
+        try:
+            if mode == "inclination_cosine":
+                gbe = compute_finclination_cosine(dx, dy, inclination_anisotropy)
+
+            elif mode == "inclination":
+                gbe = compute_finclination(dx, dy)
+
+            elif mode == "misorientation":
+                if pair_id not in misorientation_data:
+                    n_skipped_no_data += 1
+                    continue
+                m = misorientation_data[pair_id]
+                gbe = compute_fmiso_single(
+                    m["angle_deg"], m["ax_x"], m["ax_y"], m["ax_z"]
+                )
+
+            elif mode == "both":
+                if pair_id not in misorientation_data:
+                    n_skipped_no_data += 1
+                    continue
+                m = misorientation_data[pair_id]
+                gbe = compute_fboth(
+                    dx, dy,
+                    m["angle_deg"], m["ax_x"], m["ax_y"], m["ax_z"]
+                )
+
+            else:
+                raise ValueError(f"Unknown GBE mode: {mode}")
+
+        except NotImplementedError:
+            raise
+
+        pixel_coords.append((int(i), int(j)))
+        gbe_values.append(gbe)
+
+    log.info(
+        f"  GBE computed: {len(gbe_values)} pixels kept, "
+        f"{n_skipped_tj} skipped (TJ proximity), "
+        f"{n_skipped_no_data} skipped (no misorientation data)."
+    )
+
+    return np.array(pixel_coords, dtype=np.int32), np.array(gbe_values, dtype=np.float64)
+
+# Inclination
+def compute_inclination_per_pixel(
+    frame: FrameData,
+    tj_excluded: set[tuple[int, int]],
+    log: logging.Logger | None = None,
+) -> np.ndarray:
+    """
+    Compute inclination angle (radians, [0, 2π)) at every non-excluded
+    boundary pixel using myInput.get_grad on the P field.
+
+    Follows the same convention as get_normal_vector_slope:
+        angle = atan2(-dy, dx) + π
+
+    Parameters
+    ----------
+    frame       : FrameData (last frame)
+    tj_excluded : pre-built TJ proximity set — shared with GBE calculation
+    log         : logger
+
+    Returns
+    -------
+    inclination_angles : np.ndarray, shape (N,)
+        Angle in radians at each kept boundary pixel, in [0, 2π).
+    pixel_coords : np.ndarray, shape (N, 2)
+        Corresponding (i, j) coordinates.
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    P  = frame.P
+    C0 = frame.C[0]
+    nx, ny = C0.shape
+
+    angles: list[float]          = []
+    coords: list[tuple[int,int]] = []
+    n_skipped = 0
+
+    for (i, j) in frame.boundary_pixels:
+        if (int(i), int(j)) in tj_excluded:
+            n_skipped += 1
+            continue
+
+        # Confirm it's a clean GB pixel (not a junction) — same logic as
+        # accumulate_gb_properties [1]
+        central  = int(C0[i, j])
+        ip = (i + 1) % nx;  im = (i - 1) % nx
+        jp = (j + 1) % ny;  jm = (j - 1) % ny
+        neighbors = {
+            int(C0[ip, j]), int(C0[im, j]),
+            int(C0[i, jp]), int(C0[i, jm]),
+        }
+        neighbors.discard(central)
+        if len(neighbors) != 1:
+            continue
+
+        dx, dy = myInput.get_grad(P, int(i), int(j))
+        angle  = math.atan2(-dy, dx) + math.pi   # [0, 2π), matches reference fn
+        angles.append(angle)
+        coords.append((int(i), int(j)))
+
+    log.info(
+        f"  Inclination: {len(angles)} pixels computed, "
+        f"{n_skipped} skipped (TJ proximity)."
+    )
+
+    return np.array(coords, dtype=np.int32), np.array(angles, dtype=np.float64)
+
+
+def compute_inclination_distribution(
+    inclination_angles: np.ndarray,
+    bin_width_deg: float = 10.01,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Bin inclination angles into a normalized frequency distribution,
+    matching the convention in get_normal_vector_slope.
+
+    Parameters
+    ----------
+    inclination_angles : (N,) array of angles in radians, [0, 2π)
+    bin_width_deg      : bin width in degrees (default 10.01 matches reference fn)
+
+    Returns
+    -------
+    theta_closed : (B+1,) bin centres in radians, loop-closed for polar plot
+    r_closed     : (B+1,) normalized frequency, loop-closed
+    bin_centers  : (B,)   bin centres in degrees (for CSV output)
+    freq         : (B,)   normalized frequency   (for CSV output)
+    """
+    x_lim    = (0.0, 360.0)
+    bin_num  = round((x_lim[1] - x_lim[0]) / bin_width_deg)
+    bin_centers_deg = np.linspace(
+        x_lim[0] + bin_width_deg / 2,
+        x_lim[1] - bin_width_deg / 2,
+        bin_num,
+    )
+
+    freq = np.zeros(bin_num)
+    degrees = np.degrees(inclination_angles)   # [0°, 360°)
+
+    for angle_deg in degrees:
+        idx = int((angle_deg - x_lim[0]) / bin_width_deg)
+        idx = min(idx, bin_num - 1)            # guard upper edge
+        freq[idx] += 1
+
+    freq = freq / np.sum(freq * bin_width_deg)  # normalize to PDF
+
+    # Close the loop for polar plotting (0° connects back to 360°)
+    theta        = bin_centers_deg / 180.0 * math.pi
+    theta_closed = np.r_[theta, theta[0] + 2 * math.pi]
+    r_closed     = np.r_[freq,  freq[0]]
+
+    return theta_closed, r_closed, bin_centers_deg, freq
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Velocity
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compute_dV_split(
+    P0_current: np.ndarray,
+    P0_next: np.ndarray,
+    grain_id1: int,
+    grain_id2: int,
+) -> tuple[int, int, int]:
+    """
+    Count pixels that swapped grain identity between two frames for a GB pair.
+    Mirrors compute_dV_split from the reference code, implemented in pure numpy
+    using your P0 grain ID maps [1].
+
+    A pixel "swaps" if it belonged to grain A in the current frame and grain B
+    in the next frame — indicating the boundary moved through that pixel.
+
+    positive dV means net label transition 1 -> 2,
+    i.e. grain 2 gained area from grain 1.
+
+    Parameters
+    ----------
+    P0_current : (nx, ny) int array  — grain ID map at time t
+    P0_next    : (nx, ny) int array  — grain ID map at time t + dt
+    grain_id1  : int
+    grain_id2  : int
+
+    Returns
+    -------
+    dV_1_to_2 : net pixel swap count (grain1->grain2 minus grain2->grain1)
+    n_1_to_2  : pixels where grain1 grew into grain2
+    n_2_to_1  : pixels where grain2 grew into grain1
+    """
+    n_1_to_2 = int(np.sum((P0_current == grain_id1) & (P0_next == grain_id2)))
+    n_2_to_1 = int(np.sum((P0_current == grain_id2) & (P0_next == grain_id1)))
+    dV_1_to_2 = n_1_to_2 - n_2_to_1
+    return dV_1_to_2 , n_1_to_2, n_2_to_1
+
+
+def compute_gb_velocity_one_interval(
+    frame_current: FrameData,
+    frame_next: FrameData,
+    min_area: int = 100,
+    min_curvature: float = 0.0,
+    log: logging.Logger | None = None,
+) -> dict[tuple[int, int], dict]:
+    """
+    Compute GB velocity for all qualifying pairs between two consecutive frames.
+
+    Velocity is defined as:
+        v = dV / dt / (area / 2)
+    matching the normalization in the reference code, where area/2 approximates
+    the mean boundary area across the two frames.
+
+    Parameters
+    ----------
+    frame_current  : FrameData at time t
+    frame_next     : FrameData at time t + dt
+    min_area       : minimum GB area (pixels) in current frame to include
+    min_curvature  : minimum |avg_curvature| in current frame to include
+
+    Returns
+    -------
+    dict  pair_id -> {
+        "velocity":       float,
+        "dV":             int,
+        "dV_forward":     int,   # grain1 grew into grain2
+        "dV_backward":    int,   # grain2 grew into grain1
+        "avg_curvature":  float, # from current frame
+        "area":           float, # from current frame
+        "is_anti_curvature": bool,
+    }
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    dt = frame_next.time - frame_current.time
+    if dt <= 0.0:
+        raise ValueError(
+            f"Non-positive time interval between frames: "
+            f"t_current={frame_current.time}, t_next={frame_next.time}"
+        )
+
+    P0_current = np.rint(frame_current.P0).astype(np.int32)
+    P0_next    = np.rint(frame_next.P0).astype(np.int32)
+
+    results: dict[tuple[int, int], dict] = {}
+    n_skipped_area = 0
+    n_skipped_curv = 0
+    n_skipped_gone = 0
+
+    for pair_id, data_current in frame_current.gb_dict.items():
+        avg_curvature = float(data_current[0])
+        area          = float(data_current[1])
+        grain_id1     = int(data_current[2])
+        grain_id2     = int(data_current[3])
+
+        # ── Filters (mirror reference code's pre-loop filtering) ──────────
+        if area < min_area:
+            n_skipped_area += 1
+            continue
+        if abs(avg_curvature) < min_curvature:
+            n_skipped_curv += 1
+            continue
+        if pair_id not in frame_next.gb_dict:
+            n_skipped_gone += 1
+            continue                          # GB disappears in next frame
+
+        # ── dV calculation ────────────────────────────────────────────────
+        dV, dV_forward, dV_backward = compute_dV_split(
+            P0_current, P0_next, grain_id1, grain_id2
+        )
+
+        # Normalize by time and half-area — matches reference code exactly
+        velocity = dV / dt / (area / 2.0)
+
+        results[pair_id] = {
+            "velocity":          velocity,
+            "dV":                dV,
+            "dV_forward":        dV_forward,
+            "dV_backward":       dV_backward,
+            "avg_curvature":     avg_curvature,
+            "area":              area,
+            "is_anti_curvature": (avg_curvature * velocity) < 0.0,
+        }
+
+    log.info(
+        f"  Velocity [{frame_current.step}->{frame_next.step}]: "
+        f"{len(results)} pairs computed, "
+        f"{n_skipped_area} skipped (area), "
+        f"{n_skipped_curv} skipped (curvature), "
+        f"{n_skipped_gone} skipped (GB gone)."
+    )
+    return results
+
+
+def compute_gb_velocity_averaged(
+    frames: list[FrameData],
+    min_area: int = 100,
+    min_curvature: float = 0.0,
+    log: logging.Logger | None = None,
+) -> pd.DataFrame:
+    """
+    Compute per-GB velocity averaged across all consecutive frame pairs.
+
+    For each GB pair that appears in at least one consecutive interval,
+    collects velocity from every qualifying interval and returns the mean,
+    along with curvature and area from the last frame the pair appears in.
+
+    Parameters
+    ----------
+    frames        : all loaded frames (in time order)
+    min_area      : passed through to compute_gb_velocity_one_interval
+    min_curvature : passed through to compute_gb_velocity_one_interval
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+        pair_id, grain_id1, grain_id2,
+        velocity_mean, velocity_std, n_intervals,
+        avg_curvature, area,
+        dV_forward_total, dV_backward_total,
+        is_anti_curvature_mean   (fraction of intervals showing anti-curvature)
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    if len(frames) < 2:
+        raise ValueError("Velocity calculation requires at least 2 frames.")
+
+    # Accumulate per-pair results across all intervals
+    accum: dict[tuple[int, int], list[dict]] = {}
+
+    for i in range(len(frames) - 1):
+        interval_results = compute_gb_velocity_one_interval(
+            frame_current = frames[i],
+            frame_next    = frames[i + 1],
+            min_area      = min_area,
+            min_curvature = min_curvature,
+            log           = log,
+        )
+        for pair_id, res in interval_results.items():
+            accum.setdefault(pair_id, []).append(res)
+
+    # Aggregate into one row per pair
+    rows = []
+    for pair_id, res_list in accum.items():
+        velocities  = [r["velocity"]          for r in res_list]
+        anti_curv   = [r["is_anti_curvature"] for r in res_list]
+        dV_fwd_tot  = sum(r["dV_forward"]     for r in res_list)
+        dV_bwd_tot  = sum(r["dV_backward"]    for r in res_list)
+
+        # Curvature and area from the last interval this pair appeared in
+        last = res_list[-1]
+
+        rows.append({
+            "pair_id":                pair_id,
+            "grain_id1":              int(frames[0].gb_dict.get(pair_id, [0,0,0,0])[2]),
+            "grain_id2":              int(frames[0].gb_dict.get(pair_id, [0,0,0,0])[3]),
+            "velocity_mean":          float(np.mean(velocities)),
+            "velocity_std":           float(np.std(velocities)),
+            "n_intervals":            len(velocities),
+            "avg_curvature":          last["avg_curvature"],
+            "area":                   last["area"],
+            "dV_forward_total":       dV_fwd_tot,
+            "dV_backward_total":      dV_bwd_tot,
+            "anti_curvature_fraction": float(np.mean(anti_curv)),
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        log.warning(
+            "\033[31mVelocity:\033[0m Velocity DataFrame is empty — all GB pairs were filtered out. "
+            "Check --min-area and --min-curvature thresholds against your data, "
+            "and confirm gb_dict pair_ids match across frames."
+        )
+        # Return empty DataFrame with correct columns so downstream code doesn't KeyError
+        return pd.DataFrame(columns=[
+            "pair_id", "grain_id1", "grain_id2",
+            "velocity_mean", "velocity_std", "n_intervals",
+            "avg_curvature", "area",
+            "dV_forward_total", "dV_backward_total",
+            "anti_curvature_fraction",
+        ])
+    log.warning(
+        f"Velocity averaged: {len(df)} GB pairs across "
+        f"{len(frames) - 1} interval(s)."
+    )
+    return df
+
+
+
+def accumulate_velocity_flat_lists(
+    frames: list[FrameData],
+    min_area: int = 100,
+    min_curvature: float = 0.0,
+    log: logging.Logger | None = None,
+) -> dict:
+    """
+    Accumulate per-interval velocity results into flat lists,
+    one entry per (GB pair, timestep) — matching the reference
+    accumulation pattern exactly [1].
+
+    Returns
+    -------
+    dict with keys:
+        all_curvatures      : list[float]
+        all_velocities      : list[float]
+        all_dV_forward      : list[int]
+        all_dV_backward     : list[int]
+        all_areas           : list[float]
+        all_pair_ids        : list[tuple[int,int]]
+        all_timestep_indices: list[int]
+        all_interval_results: list[dict[pair_id -> result]]
+            — per-interval dicts retained for sliding window filter (Priority 4)
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    flat = {
+        "all_curvatures":       [],
+        "all_velocities":       [],
+        "all_dV_forward":       [],
+        "all_dV_backward":      [],
+        "all_areas":            [],
+        "all_pair_ids":         [],
+        "all_timestep_indices": [],
+        "all_interval_results": [],   # retained for Priority 4
+    }
+
+    for i in range(len(frames) - 1):
+        interval_results = compute_gb_velocity_one_interval(
+            frame_current = frames[i],
+            frame_next    = frames[i + 1],
+            min_area      = min_area,
+            min_curvature = min_curvature,
+            log           = log,
+        )
+        flat["all_interval_results"].append(interval_results)
+
+        for pair_id, res in interval_results.items():
+            flat["all_curvatures"].append(res["avg_curvature"])
+            flat["all_velocities"].append(res["velocity"])
+            flat["all_dV_forward"].append(res["dV_forward"])
+            flat["all_dV_backward"].append(res["dV_backward"])
+            flat["all_areas"].append(res["area"])
+            flat["all_pair_ids"].append(pair_id)
+            flat["all_timestep_indices"].append(i)
+
+        log.warning(
+            f"  Interval {i}->{i+1}: {len(interval_results)} pairs accumulated. "
+            f"Flat list size now: {len(flat['all_curvatures'])}"
+        )
+
+    return flat
+
+
+
+def apply_curvature_sign_convention(
+    curvatures:   list[float],
+    velocities:   list[float],
+    dV_forward:   list[int],
+    dV_backward:  list[int],
+) -> tuple[list[float], list[float], list[int], list[int]]:
+    """
+    Flip signs so all curvatures are positive (|κ|) and the velocity
+    sign carries the physical meaning.
+
+    For each entry where curvature < 0:
+      - flip sign of both curvature and velocity
+      - swap dV_forward and dV_backward so 'forward' always means
+        the curvature-driven direction [1]
+
+    This means the scatter x-axis is always |κ| ≥ 0, matching
+    the reference figures exactly.
+    """
+    out_curv = []
+    out_vel  = []
+    out_fwd  = []
+    out_bwd  = []
+
+    for kappa, v, fwd, bwd in zip(curvatures, velocities, dV_forward, dV_backward):
+        if kappa < 0.0:
+            out_curv.append(-kappa)
+            out_vel.append(-v)
+            out_fwd.append(bwd)   # swap: grain2->grain1 becomes "forward"
+            out_bwd.append(fwd)
+        else:
+            out_curv.append(kappa)
+            out_vel.append(v)
+            out_fwd.append(fwd)
+            out_bwd.append(bwd)
+
+    return out_curv, out_vel, out_fwd, out_bwd
+
+
+def apply_confidence_filter(
+    curvatures:  list[float],
+    velocities:  list[float],
+    dV_forward:  list[int],
+    dV_backward: list[int],
+    areas:       list[float],
+    pair_ids:    list[tuple[int,int]],
+    mode:        str,           # "antic" or "normc"
+    confidence:  float = 0.99,
+    log: logging.Logger | None = None,
+) -> dict:
+    """
+    Filter entries by voxel-level directional confidence [1].
+
+    For anti-curvature entries (mode='antic'):
+        keep if  dV_forward / (dV_forward + dV_backward) > confidence
+        i.e. >= 99% of moved voxels went AGAINST curvature
+
+    For normal-curvature entries (mode='normc'):
+        keep if  dV_forward / (dV_forward + dV_backward) > confidence
+        i.e. >= 99% of moved voxels went WITH curvature
+
+    After apply_curvature_sign_convention, dV_forward is always the
+    curvature-direction count, so the ratio is the same expression
+    for both modes.
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    kept = {
+        "curvatures":  [],
+        "velocities":  [],
+        "dV_forward":  [],
+        "dV_backward": [],
+        "areas":       [],
+        "pair_ids":    [],
+    }
+    n_total  = len(curvatures)
+    n_kept   = 0
+    n_zero   = 0
+
+    for kappa, v, fwd, bwd, area, pid in zip(
+        curvatures, velocities, dV_forward, dV_backward, areas, pair_ids
+    ):
+        total_dV = fwd + bwd
+        if total_dV == 0:
+            n_zero += 1
+            continue
+        ratio = fwd / total_dV
+        if ratio > confidence:
+            kept["curvatures"].append(kappa)
+            kept["velocities"].append(v)
+            kept["dV_forward"].append(fwd)
+            kept["dV_backward"].append(bwd)
+            kept["areas"].append(area)
+            kept["pair_ids"].append(pid)
+            n_kept += 1
+
+    log.warning(
+        f"  Confidence filter ({mode}, >{confidence*100:.0f}%): "
+        f"{n_kept}/{n_total} kept, {n_zero} skipped (zero dV)."
+    )
+    return kept
+
+
+def compute_velocity_bins(
+    curvatures:    list[float],
+    velocities:    list[float],
+    x_lim:         tuple[float, float] = (0.0, 0.1),
+    bin_interval:  float = 0.002,
+    min_count:     int   = 10,
+) -> dict:
+    """
+    Bin velocities by curvature and compute mean ± std per bin,
+    matching the reference binning loop exactly [1].
+
+    Returns
+    -------
+    dict with keys:
+        bin_centers  : (B,) bin centre coordinates
+        bin_means    : (B,) mean velocity per bin (0 if empty)
+        bin_stds     : (B,) std  velocity per bin (0 if empty)
+        bin_counts   : (B,) number of entries per bin
+        valid_mask   : (B,) bool — bins with count > min_count
+    """
+    bin_number = int((x_lim[1] - x_lim[0]) / bin_interval)
+    bin_centers = (
+        np.arange(x_lim[0], x_lim[1], bin_interval) + bin_interval / 2.0
+    )
+
+    counts  = np.zeros(bin_number, dtype=int)
+    sums    = np.zeros(bin_number, dtype=float)
+    sq_sums = np.zeros(bin_number, dtype=float)
+
+    for kappa, v in zip(curvatures, velocities):
+        if kappa < x_lim[0] or kappa >= x_lim[1]:
+            continue
+        idx = int((kappa - x_lim[0]) / bin_interval)
+        idx = min(idx, bin_number - 1)
+        counts[idx]  += 1
+        sums[idx]    += v
+        sq_sums[idx] += v * v
+
+    means = np.zeros(bin_number)
+    stds  = np.zeros(bin_number)
+    for i in range(bin_number):
+        if counts[i] > 0:
+            means[i] = sums[i] / counts[i]
+            stds[i]  = np.sqrt(
+                max(0.0, sq_sums[i] / counts[i] - means[i] ** 2)
+            )
+
+    return {
+        "bin_centers": bin_centers,
+        "bin_means":   means,
+        "bin_stds":    stds,
+        "bin_counts":  counts,
+        "valid_mask":  counts > min_count,
+    }
+
+
+
+def apply_sliding_window_filter(
+    all_interval_results: list[dict],
+    log: logging.Logger | None = None,
+) -> set[tuple[tuple[int,int], int]]:
+    """
+    Apply the "00100" sliding window filter from the reference [1].
+
+    A (pair_id, timestep_index) is kept as genuinely anti-curvature
+    only if:
+      - it IS anti-curvature at step t   (centre of window)
+      - it is NOT anti-curvature at t-2, t-1, t+1, t+2
+
+    This removes transient anti-curvature events that appear for
+    only one step due to noise.
+
+    Parameters
+    ----------
+    all_interval_results : list of per-interval result dicts,
+                           one per consecutive frame pair, in order.
+                           Each dict maps pair_id -> result dict
+                           with key "is_anti_curvature".
+
+    Returns
+    -------
+    kept_set : set of (pair_id, timestep_index) tuples that pass
+               the filter. Empty if fewer than 5 intervals available.
+    """
+    if log is None:
+        log = logging.getLogger("VHP")
+
+    n = len(all_interval_results)
+
+    if n < 5:
+        log.warning(
+            f"  Sliding window filter: only {n} interval(s) available — "
+            f"need ≥5. Filter skipped; returning empty set. "
+            f"Add more frames to enable this filter."
+        )
+        return set()
+
+    # Build per-step sets of anti-curvature pair_ids (mirrors GB_filter_kernel [1])
+    antic_sets: list[set[tuple[int,int]]] = []
+    for step_idx, interval in enumerate(all_interval_results):
+        step_set = {
+            pid for pid, res in interval.items() if res["is_anti_curvature"]
+        }
+        antic_sets.append(step_set)
+
+    kept_set: set[tuple[tuple[int,int], int]] = set()
+    n_total   = 0
+    n_removed = 0
+
+    # Slide a 5-step window: centre at t, flanks at t-2, t-1, t+1, t+2
+    for t in range(2, n - 2):
+        centre   = antic_sets[t]
+        flanks   = antic_sets[t-2] | antic_sets[t-1] | antic_sets[t+1] | antic_sets[t+2]
+
+        # "00100": in centre but NOT in any flank step
+        filtered = centre - flanks
+        n_total  += len(centre)
+        n_removed += len(centre) - len(filtered)
+
+        for pid in filtered:
+            kept_set.add((pid, t))
+
+    log.warning(
+        f"  Sliding window filter: {len(kept_set)} (pair, step) entries kept "
+        f"from {n_total} anti-curvature candidates "
+        f"({n_removed} removed as transient)."
+    )
+    return kept_set
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Debugging
+# ──────────────────────────────────────────────────────────────────────────────
+
+def plot_gbe_debug(
+    frame: FrameData,
+    pixel_coords: np.ndarray,
+    gbe_values: np.ndarray,
+    mode: str,
+    tj_exclude: bool,
+    output_dir: Path,
+    stem: str = "gbe_debug",
+) -> None:
+    """
+    Debug heatmap of GBE values overlaid on the grain ID map.
+
+    Boundary pixels not included in the GBE calculation (e.g. TJ-excluded)
+    are shown in a neutral colour so the exclusion pattern is visible.
+
+    Parameters
+    ----------
+    frame        : FrameData (last frame)
+    pixel_coords : (N, 2) array of (i, j) coords returned by compute_gbe_per_pixel
+    gbe_values   : (N,)   GBE value at each coord
+    mode         : GBE mode string — used in title
+    tj_exclude   : bool — noted in title
+    output_dir   : Path  — where to save the figure
+    stem         : str   — filename prefix
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    C0 = frame.C[0]
+    nx, ny = C0.shape
+
+    # ── Build a 2D GBE image (NaN everywhere except computed boundary pixels) ──
+    gbe_map = np.full((nx, ny), np.nan, dtype=np.float64)
+    for (i, j), val in zip(pixel_coords, gbe_values):
+        gbe_map[i, j] = val
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    # Grain ID background — faint, for structural context
+    ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25, interpolation="nearest")
+
+    # GBE heatmap — only paints pixels with a real value
+    im = ax.imshow(
+        gbe_map,
+        origin="lower",
+        cmap="plasma",
+        interpolation="nearest",
+        vmin=np.nanmin(gbe_values),
+        vmax=np.nanmax(gbe_values),
+    )
+
+    # Optionally mark junction pixels to show what was excluded
+    if tj_exclude and len(frame.junction_pixels) > 0:
+        jp = frame.junction_pixels
+        ax.scatter(
+            jp[:, 1], jp[:, 0],
+            c="cyan", s=2, linewidths=0,
+            label="Junction pixels (excluded region centres)",
+            zorder=3,
+        )
+        ax.legend(loc="upper right", fontsize=7, markerscale=3)
+
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("GBE (a.u.)", fontsize=10)
+
+    tj_str = "TJ-excluded" if tj_exclude else "TJ-included"
+    ax.set_title(
+        f"GBE Debug Heatmap\nmode={mode}  |  {tj_str}  |  "
+        f"N={len(gbe_values)} pixels\n"
+        f"min={np.nanmin(gbe_values):.4f}  "
+        f"mean={np.nanmean(gbe_values):.4f}  "
+        f"max={np.nanmax(gbe_values):.4f}",
+        fontsize=10,
+    )
+    ax.set_xlabel("j (x)")
+    ax.set_ylabel("i (y)")
+
+    plt.tight_layout()
+    outpath = output_dir / f"{stem}_DEBUG_gbe_heatmap.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    print(f"Debug GBE heatmap saved: {outpath}")
+
+
+
+def plot_inclination_polar(
+    theta_closed: np.ndarray,
+    r_closed: np.ndarray,
+    output_dir: Path,
+    stem: str,
+    tj_exclude: bool,
+    n_pixels: int,
+    log: logging.Logger,
+) -> None:
+    """
+    Polar plot of the inclination angle distribution.
+    Saved as <stem>_DEBUG_inclination_polar.png, consistent with
+    the debug plot naming convention used in vector_exodus_to_hdf5.py [1].
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"}, figsize=(6, 6))
+
+    ax.plot(theta_closed, r_closed, linewidth=2, color="steelblue", label="Inclination")
+    ax.fill(theta_closed, r_closed, alpha=0.15, color="steelblue")
+
+    ax.set_rgrids(np.arange(0, 0.01, 0.004))  # Radial grid lines every 0.004 units
+    ax.set_rlabel_position(0.0)  # Position radial labels at 0-degree angle
+    ax.set_rlim(0.0, 0.01)       # Radial axis limits for probability density range
+    ax.set_yticklabels(['0', '4e-3', '8e-3'],fontsize=8)
+
+    tj_str = "TJ-excluded" if tj_exclude else "TJ-included"
+    ax.set_title(
+        f"Inclination Distribution\n{tj_str}  |  N={n_pixels} pixels",
+        fontsize=10, pad=25,
+    )
+    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=8)
+
+    plt.tight_layout()
+    outpath = output_dir / f"{stem}_DEBUG_inclination_polar.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Inclination polar plot saved: {outpath}")
+
+
+def plot_velocity_debug(
+    flat_lists:      dict,
+    normc_flat:      dict,
+    antic_flat:      dict,
+    normc_flat_conf: dict,
+    antic_flat_conf: dict,
+    last_frame:      FrameData,
+    frames:          list[FrameData],
+    velocity_df:     pd.DataFrame,
+    output_dir:      Path,
+    stem:            str,
+    tj_exclude:      bool,
+    log:             logging.Logger,
+    curvature_limit: float = 0.0182,
+    x_lim:           tuple[float, float] = (0.0, 0.1),
+    bin_interval:    float = 0.002,
+) -> None:
+    """
+    Four-panel debug figure matching the reference output style [1]:
+
+    Panel 1 : Velocity heatmap (unchanged from original)
+    Panel 2 : Raw scatter — normc (blue) vs antic (orange), signed curvature
+    Panel 3 : Density contour + binned mean ± std + linear fits (pre-confidence)
+    Panel 4 : Confidence-filtered scatter — normc vs antic (|κ| on x-axis)
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    C0 = last_frame.C[0]
+    nx, ny = C0.shape
+    tj_str = "TJ-excluded" if tj_exclude else "TJ-included"
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+    # ── Panel 1: Velocity heatmap ─────────────────────────────────────────
+    ax = axes[0, 0]
+
+    # Build velocity map from averaged df for the heatmap (visual only)
+    vel_lookup = {
+        row.pair_id: row.velocity_mean
+        for row in velocity_df.itertuples(index=False)
+    } if velocity_df is not None and not velocity_df.empty else {}
+
+    vel_map = np.full((nx, ny), np.nan, dtype=np.float64)
+    for (i, j) in last_frame.boundary_pixels:
+        central = int(C0[i, j])
+        ip = (i+1)%nx; im = (i-1)%nx
+        jp = (j+1)%ny; jm = (j-1)%ny
+        neighbors = {
+            int(C0[ip,j]), int(C0[im,j]),
+            int(C0[i,jp]), int(C0[i,jm]),
+        }
+        neighbors.discard(central)
+        if len(neighbors) != 1:
+            continue
+        pid = (min(central, next(iter(neighbors))),
+               max(central, next(iter(neighbors))))
+        if pid in vel_lookup:
+            vel_map[i, j] = vel_lookup[pid]
+
+    valid_vals = vel_map[~np.isnan(vel_map)]
+    vabs = np.percentile(np.abs(valid_vals), 95) if len(valid_vals) > 0 else 1.0
+
+    ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25, interpolation="nearest")
+    im = ax.imshow(vel_map, origin="lower", cmap="RdBu",
+                   interpolation="nearest", vmin=-vabs, vmax=vabs)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label(
+        "Velocity mean (px/s)", fontsize=9)
+    ax.set_title(
+        f"Velocity Heatmap\n{tj_str}  |  N={len(velocity_df) if velocity_df is not None else 0} GB pairs",
+        fontsize=9)
+    ax.set_xlabel("j (x)"); ax.set_ylabel("i (y)")
+
+    # ── Panel 2: Raw scatter — normc vs antic (signed curvature) ─────────
+    ax = axes[0, 1]
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.axvline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.plot([curvature_limit, x_lim[1]], [0, 0], "-", color="grey", linewidth=1.5)
+
+    ax.scatter(
+        normc_flat["curvatures"], normc_flat["velocities"],
+        s=8, alpha=0.8, color="C0", label=f"Normal-c ({len(normc_flat['curvatures'])})",
+    )
+    ax.scatter(
+        [-v for v in antic_flat["velocities"]],   # anti-c plotted with negative v
+        antic_flat["velocities"],
+        s=8, alpha=0.8, color="C1",
+        label=f"Anti-c ({len(antic_flat['velocities'])})",
+    )
+    # Correct: x-axis uses |κ| for both (already flipped by sign convention)
+    ax.scatter(
+        antic_flat["curvatures"], antic_flat["velocities"],
+        s=8, alpha=0.8, color="C1",
+    )
+
+    ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_ylim([
+        min(flat_lists["all_velocities"]) * 1.1 if flat_lists["all_velocities"] else -1,
+        max(flat_lists["all_velocities"]) * 1.1 if flat_lists["all_velocities"] else  1,
+    ])
+    ax.set_xlabel("|κ| (px⁻¹)", fontsize=11)
+    ax.set_ylabel("velocity (px/s)", fontsize=11)
+    ax.set_title("Raw Scatter: Normal-c vs Anti-c\n(pre-confidence filter)", fontsize=9)
+    ax.legend(fontsize=8)
+
+    # ── Panel 3: Density contour + binned mean ± std ──────────────────────
+    ax = axes[1, 0]
+
+    all_c = normc_flat["curvatures"] + antic_flat["curvatures"]
+    all_v = normc_flat["velocities"] + antic_flat["velocities"]
+
+    x_bins = np.linspace(x_lim[0], x_lim[1], 40)
+    y_abs  = max(abs(v) for v in all_v) * 1.1 if all_v else 1.0
+    y_bins = np.linspace(-y_abs, y_abs, 40)
+
+    if len(all_c) >= 2:
+        hist, x_edges, y_edges = np.histogram2d(all_c, all_v,
+                                                  bins=[x_bins, y_bins])
+        x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+        y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+        X, Y = np.meshgrid(x_centers, y_centers)
+        hist.T[hist.T == 0] = 1
+        ax.contourf(X, Y, np.log10(hist.T), levels=20,
+                    cmap="coolwarm", alpha=0.9, vmin=0)
+        ax.contour(X, Y, np.log10(hist.T), levels=20,
+                   cmap="gray", alpha=0.1, vmin=0)
+
+    # Binned mean ± std overlay
+    bins = compute_velocity_bins(all_c, all_v, x_lim=x_lim,
+                                  bin_interval=bin_interval, min_count=10)
+    valid = bins["valid_mask"]
+    if valid.any():
+        ax.errorbar(
+            bins["bin_centers"][valid],
+            bins["bin_means"][valid],
+            yerr=bins["bin_stds"][valid],
+            fmt="o", color="k", linewidth=1, capsize=2,
+            ecolor="black", markersize=3, label="Bin mean ± std",
+        )
+
+        # Linear fit — all valid bins
+        x_all = bins["bin_centers"][valid]
+        y_all = bins["bin_means"][valid]
+        p_all = np.polyfit(x_all, y_all, 1)
+        y_pred_all = np.polyval(p_all, x_all)
+        ss_res = np.sum((y_all - y_pred_all)**2)
+        ss_tot = np.sum((y_all - y_all.mean())**2)
+        r2_all = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+        ax.plot(x_all, y_pred_all, "-", color="C1", linewidth=2,
+                label=rf"All (R²={r2_all:.3f}, M*={p_all[0]:.4f})")
+        log.warning(f"Binned fit (all):   slope={p_all[0]:.4f}  R²={r2_all:.4f}")
+
+        # Linear fit — low-κ bins only (κ < 0.03, matching reference [1])
+        mask_sub = x_all < 0.03
+        if mask_sub.sum() > 1:
+            x_sub = x_all[mask_sub]; y_sub = y_all[mask_sub]
+            p_sub = np.polyfit(x_sub, y_sub, 1)
+            y_pred_sub = np.polyval(p_sub, x_sub)
+            ss_res_s = np.sum((y_sub - y_pred_sub)**2)
+            ss_tot_s = np.sum((y_sub - y_sub.mean())**2)
+            r2_sub = 1.0 - ss_res_s / ss_tot_s if ss_tot_s > 0 else float("nan")
+            ax.plot(x_sub, y_pred_sub, "-", color="C2", linewidth=2,
+                    label=rf"κ<0.03 (R²={r2_sub:.3f}, M*={p_sub[0]:.4f})")
+            log.warning(f"Binned fit (κ<0.03): slope={p_sub[0]:.4f}  R²={r2_sub:.4f}")
+
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.plot([curvature_limit, x_lim[1]], [0, 0], "-", color="grey", linewidth=1.5)
+    ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_xlabel("|κ| (px⁻¹)", fontsize=11)
+    ax.set_ylabel("velocity (px/s)", fontsize=11)
+    ax.set_title("Density + Binned Mean ± Std\n(pre-confidence filter)", fontsize=9)
+    ax.legend(fontsize=8, loc="lower right")
+
+    # ── Panel 4: Confidence-filtered scatter ─────────────────────────────
+    ax = axes[1, 1]
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.plot([curvature_limit, x_lim[1]], [0, 0], "-", color="grey", linewidth=1.5)
+
+    ax.scatter(
+        normc_flat_conf["curvatures"], normc_flat_conf["velocities"],
+        s=4, alpha=0.5, color="C0",
+        label=f"Normal-c ({len(normc_flat_conf['curvatures'])})",
+    )
+    ax.scatter(
+        antic_flat_conf["curvatures"], antic_flat_conf["velocities"],
+        s=8, alpha=0.5, color="C1",
+        label=f"Anti-c ({len(antic_flat_conf['curvatures'])})",
+    )
+    # ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_xlabel("|κ| (px⁻¹)", fontsize=11)
+    ax.set_ylabel("velocity (px/s)", fontsize=11)
+    ax.set_title("Confidence-Filtered Scatter (99%)\nnormc (blue) vs anti-c (orange)", fontsize=9)
+    ax.legend(fontsize=8)
+
+    plt.suptitle(
+        f"Velocity Analysis — {stem} — {len(frames)-1} interval(s)",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_DEBUG_velocity.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Velocity debug plot saved: {outpath}")
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Output Writing
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def save_inclination_csv(
+    bin_centers_deg: np.ndarray,
+    freq: np.ndarray,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Write the inclination distribution to a two-column CSV:
+        angle_deg, normalized_frequency
+    """
+    import csv
+    outpath = output_dir / f"{stem}_inclination_distribution.csv"
+    with open(outpath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["angle_deg", "normalized_frequency"])
+        for angle, nf in zip(bin_centers_deg, freq):
+            writer.writerow([f"{angle:.4f}", f"{nf:.8f}"])
+    log.warning(f"Inclination CSV saved: {outpath}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Main
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    ti = time.perf_counter()
+    args = parse_args()
+    log  = setup_logging(args.verbose)
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"Arguments: {args}")
+
+    # ── 1. Load HDF5 ──────────────────────────────────────────────────────
+    t0 = time.perf_counter()
+    frames = load_hdf5_frames(args.hdf5, log)
+    tf(t0, log, "HDF5 load: ")
+
+    last_frame = get_last_frame(frames)
+    log.warning(
+        f"Using last frame: step={last_frame.step}, time={last_frame.time:.6g}, "
+        f"boundary_pixels={len(last_frame.boundary_pixels)}, "
+        f"junction_pixels={len(last_frame.junction_pixels)}, "
+        f"gb_pairs={len(last_frame.gb_dict)}"
+    )
+
+    # ── 2. Load misorientation parquet (if needed) ─────────────────────────
+    misorientation_data: dict = {}
+    if args.gbe_mode in ("misorientation", "both"):
+        neighbor_pairs = set(last_frame.gb_dict.keys())
+        t0 = time.perf_counter()
+        misorientation_data = load_misorientation_parquet(
+            args.parquet, neighbor_pairs, log
+        )
+        tf(t0, log, "Parquet load: ")
+
+    # ── 3. Build TJ exclusion set ONCE — shared by all per-pixel calculations ──
+    tj_excluded: set[tuple[int, int]] = set()
+    if args.tj_exclude and len(last_frame.junction_pixels) > 0:
+        t0 = time.perf_counter()
+        tj_excluded = build_tj_proximity_set(
+            last_frame.junction_pixels, args.tj_distance
+        )
+        tf(t0, log, "TJ exclusion set: ")
+        log.warning(
+            f"TJ exclusion: {len(tj_excluded)} coords excluded "
+            f"(radius={args.tj_distance}px, "
+            f"from {len(last_frame.junction_pixels)} junction pixels)"
+        )
+
+    # ── 4. Compute GBE per pixel ───────────────────────────────────────────────
+    t0 = time.perf_counter()
+    pixel_coords, gbe_values = compute_gbe_per_pixel(
+        frame                  = last_frame,
+        mode                   = args.gbe_mode,
+        tj_excluded            = tj_excluded,
+        misorientation_data    = misorientation_data,
+        inclination_anisotropy = args.inclination_anisotropy,
+        log                    = log,
+    )
+    tf(t0, log, "GBE calculation: ")
+
+    log.info(
+        f"GBE result: {len(gbe_values)} pixels, "
+        f"min={gbe_values.min():.4f}, max={gbe_values.max():.4f}, "
+        f"mean={gbe_values.mean():.4f}"
+    )
+
+    if args.debug_plot:
+        stem = args.hdf5.stem
+        plot_gbe_debug(
+            frame       = last_frame,
+            pixel_coords= pixel_coords,
+            gbe_values  = gbe_values,
+            mode        = args.gbe_mode,
+            tj_exclude  = args.tj_exclude,
+            output_dir  = args.output_dir,
+            stem        = stem,
+        )
+
+    # ── 5. Compute inclination per pixel ──────────────────────────────────────
+    t0 = time.perf_counter()
+    inc_coords, inc_angles = compute_inclination_per_pixel(
+        frame       = last_frame,
+        tj_excluded = tj_excluded,
+        log         = log,
+    )
+    tf(t0, log, "Inclination calculation: ")
+
+    theta_closed, r_closed, bin_centers_deg, freq = compute_inclination_distribution(
+        inc_angles
+    )
+
+    if args.inclination_csv:
+        stem = args.hdf5.stem
+        save_inclination_csv(bin_centers_deg, freq, args.output_dir, stem, log)
+
+    if args.debug_plot:
+        stem = args.hdf5.stem
+        plot_inclination_polar(
+            theta_closed = theta_closed,
+            r_closed     = r_closed,
+            output_dir   = args.output_dir,
+            stem         = stem,
+            tj_exclude   = args.tj_exclude,
+            n_pixels     = len(inc_angles),
+            log          = log,
+        )
+
+
+    # ── 6. Compute velocity (all frame intervals) ─────────────────────────────
+    if not args.skip_velocity:
+        t0 = time.perf_counter()
+        # PRIMARY path: flat per-interval accumulation (matches reference [1])
+        flat_lists = accumulate_velocity_flat_lists(
+            frames        = frames,
+            min_area      = args.min_area,
+            min_curvature = args.min_curvature,
+            log           = log,
+        )
+        vtf(t0, log, "Velocity flat accumulation: ")
+
+        t02 = time.perf_counter()
+        # SECONDARY path: averaged DataFrame retained as optional utility
+        velocity_df = compute_gb_velocity_averaged(
+            frames        = frames,
+            min_area      = args.min_area,
+            min_curvature = args.min_curvature,
+            log           = log,
+        )
+        vtf(t02, log, "Velocity averaged (secondary): ")
+        tf(t0, log, "Velocity calculation: ")
+
+        # ── 6.1 Sign convention on flat lists before splitting/filtering ────────
+        # Apply sign convention before any splitting or filtering
+        (flat_lists["all_curvatures"],
+        flat_lists["all_velocities"],
+        flat_lists["all_dV_forward"],
+        flat_lists["all_dV_backward"]) = apply_curvature_sign_convention(
+            flat_lists["all_curvatures"],
+            flat_lists["all_velocities"],
+            flat_lists["all_dV_forward"],
+            flat_lists["all_dV_backward"],
+        )
+
+        # ── 6.2 Split into normal-c and anti-c flat lists ──────────────────────
+        # After sign convention: normc has v > 0, antic has v < 0
+        normc_indices = [
+            i for i, v in enumerate(flat_lists["all_velocities"]) if v >= 0.0
+        ]
+        antic_indices = [
+            i for i, v in enumerate(flat_lists["all_velocities"]) if v < 0.0
+        ]
+
+        def _extract(flat, indices):
+            return {
+                "curvatures": [flat["all_curvatures"][i]  for i in indices],
+                "velocities": [flat["all_velocities"][i]  for i in indices],
+                "dV_forward": [flat["all_dV_forward"][i]  for i in indices],
+                "dV_backward":[flat["all_dV_backward"][i] for i in indices],
+                "areas":      [flat["all_areas"][i]        for i in indices],
+                "pair_ids":   [flat["all_pair_ids"][i]     for i in indices],
+            }
+
+        normc_flat = _extract(flat_lists, normc_indices)
+        antic_flat = _extract(flat_lists, antic_indices)
+        # ── 6.3 Sliding window filter (Priority 4) ───────────────────────────────
+        sliding_window_kept = apply_sliding_window_filter(
+            flat_lists["all_interval_results"], log=log
+        )
+        # Tag each entry in the flat lists with whether it passed the filter.
+        # This is used downstream if you want to restrict analysis to
+        # "persistent" anti-c GBs only.
+        flat_lists["sliding_window_kept"] = [
+            (pid, t) in sliding_window_kept
+            for pid, t in zip(
+                flat_lists["all_pair_ids"],
+                flat_lists["all_timestep_indices"]
+            )
+        ]
+        log.warning(
+            f"Sliding window: {sum(flat_lists['sliding_window_kept'])} entries "
+            f"tagged as persistent anti-curvature."
+        )
+        # ── 6.4 Confidence filtering ─────────────────────────────────────────────
+        CONFIDENCE = 0.99
+
+        normc_flat_conf = apply_confidence_filter(
+            **{k: normc_flat[k] for k in
+            ("curvatures","velocities","dV_forward","dV_backward","areas","pair_ids")},
+            mode       = "normc",
+            confidence = CONFIDENCE,
+            log        = log,
+        )
+        antic_flat_conf = apply_confidence_filter(
+            **{k: antic_flat[k] for k in
+            ("curvatures","velocities","dV_forward","dV_backward","areas","pair_ids")},
+            mode       = "antic",
+            confidence = CONFIDENCE,
+            log        = log,
+        )
+    else:
+        flat_lists  = None
+        velocity_df = None
+
+
+
+    if args.debug_plot:
+        if flat_lists is not None and len(flat_lists["all_velocities"]) > 0:
+            stem = args.hdf5.stem
+            plot_velocity_debug(
+                flat_lists      = flat_lists,
+                normc_flat      = normc_flat,
+                antic_flat      = antic_flat,
+                normc_flat_conf = normc_flat_conf,
+                antic_flat_conf = antic_flat_conf,
+                last_frame      = last_frame,
+                frames          = frames,
+                velocity_df     = velocity_df,
+                output_dir      = args.output_dir,
+                stem            = stem,
+                tj_exclude      = args.tj_exclude,
+                log             = log,
+            )
+        else:
+            log.warning("Skipping velocity debug plot — no velocity data.")
+
+    # ── Placeholder: downstream outputs go here ───────────────────────────
+    # plot_gbe_cdf(...)
+    # plot_gbe_histogram(...)
+    # plot_inclination_polar(...)
+    # plot_velocity_vs_curvature(...)
+
+    tf(ti, log, "Total: ")
+
+
+if __name__ == "__main__":
+    main()
