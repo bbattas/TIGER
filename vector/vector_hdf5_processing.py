@@ -99,6 +99,10 @@ def parse_args() -> argparse.Namespace:
         "--min-curvature", type=float, default=0.0182, metavar="F",
         help="Minimum absolute avg_curvature to include in velocity calculation.",
     )
+    gbe.add_argument(
+        "--antic-confidence", type=float, default=0.99, metavar="F",
+        help="Percent confidence for anticurvature calculation.",
+    )
 
     # ---- Plotting ----
     tog = p.add_argument_group("Toggles")
@@ -1338,6 +1342,7 @@ def plot_velocity_debug(
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
 
+    xmin_curve = curvature_limit * 0.95 if curvature_limit > 0 else -0.005
     C0 = last_frame.C[0]
     nx, ny = C0.shape
     tj_str = "TJ-excluded" if tj_exclude else "TJ-included"
@@ -1391,21 +1396,21 @@ def plot_velocity_debug(
 
     ax.scatter(
         normc_flat["curvatures"], normc_flat["velocities"],
-        s=8, alpha=0.8, color="C0", label=f"Normal-c ({len(normc_flat['curvatures'])})",
+        s=10, alpha=0.8, color="C0", label=f"Normal-c ({len(normc_flat['curvatures'])})",
     )
-    ax.scatter(
-        [-v for v in antic_flat["velocities"]],   # anti-c plotted with negative v
-        antic_flat["velocities"],
-        s=8, alpha=0.8, color="C1",
-        label=f"Anti-c ({len(antic_flat['velocities'])})",
-    )
+    # ax.scatter(
+    #     [-v for v in antic_flat["velocities"]],   # anti-c plotted with negative v
+    #     antic_flat["velocities"],
+    #     s=8, alpha=0.8, color="C1",
+    #     label=f"Anti-c ({len(antic_flat['velocities'])})",
+    # )
     # Correct: x-axis uses |κ| for both (already flipped by sign convention)
     ax.scatter(
         antic_flat["curvatures"], antic_flat["velocities"],
-        s=8, alpha=0.8, color="C1",
+        s=10, alpha=0.8, color="C1",label=f"Anti-c ({len(antic_flat['velocities'])})"
     )
 
-    ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_xlim([xmin_curve, x_lim[1]]) #[curvature_limit, x_lim[1]])
     ax.set_ylim([
         min(flat_lists["all_velocities"]) * 1.1 if flat_lists["all_velocities"] else -1,
         max(flat_lists["all_velocities"]) * 1.1 if flat_lists["all_velocities"] else  1,
@@ -1477,7 +1482,7 @@ def plot_velocity_debug(
 
     ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
     ax.plot([curvature_limit, x_lim[1]], [0, 0], "-", color="grey", linewidth=1.5)
-    ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_xlim([curvature_limit, x_lim[1]]) #curvature_limit
     ax.set_xlabel("|κ| (px⁻¹)", fontsize=11)
     ax.set_ylabel("velocity (px/s)", fontsize=11)
     ax.set_title("Density + Binned Mean ± Std\n(pre-confidence filter)", fontsize=9)
@@ -1498,7 +1503,7 @@ def plot_velocity_debug(
         s=8, alpha=0.5, color="C1",
         label=f"Anti-c ({len(antic_flat_conf['curvatures'])})",
     )
-    # ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_xlim([xmin_curve, x_lim[1]]) #curvature_limit
     ax.set_xlabel("|κ| (px⁻¹)", fontsize=11)
     ax.set_ylabel("velocity (px/s)", fontsize=11)
     ax.set_title("Confidence-Filtered Scatter (99%)\nnormc (blue) vs anti-c (orange)", fontsize=9)
@@ -1514,6 +1519,235 @@ def plot_velocity_debug(
     fig.savefig(outpath, dpi=300, transparent=True)
     plt.close(fig)
     log.warning(f"Velocity debug plot saved: {outpath}")
+
+
+def plot_curvature_debug(
+    frame: FrameData,
+    tj_excluded: set[tuple[int, int]],
+    tj_exclude: bool,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Debug heatmap of signed curvature values overlaid on the grain ID map.
+
+    Generates TWO figures side by side for direct comparison:
+        Figure A : All GB pixels (TJ-included) — full curvature field
+        Figure B : TJ-excluded GB pixels only   — mirrors the filtering
+                   applied in the velocity and GBE pipelines [2]
+
+    Each figure has four panels:
+        Panel 1 : Signed curvature heatmap (diverging, zero = white)
+        Panel 2 : |curvature| heatmap (sequential)
+        Panel 3 : Histogram of signed curvature at all plotted GB pixels
+        Panel 4 : |curvature| histogram with reference threshold lines
+
+    Parameters
+    ----------
+    frame       : FrameData  (any frame — typically last_frame)
+    tj_excluded : pre-built TJ proximity set from build_tj_proximity_set()
+                  Pass the same set used by the velocity/GBE pipeline [2]
+                  so the exclusion zones match exactly.
+    tj_exclude  : bool — if False, Figure B is skipped and a warning is logged
+    output_dir  : Path
+    stem        : filename prefix
+    log         : logger
+    """
+    import matplotlib.pyplot as plt
+
+    C0        = frame.C[0]   # grain ID map
+    curv_full = frame.C[1]   # signed curvature field (full grid)
+    nx, ny    = C0.shape
+
+    # ── Helper: build curvature map for a given exclusion set ─────────────
+    def _build_curv_map(exclude_set: set | None) -> tuple[np.ndarray, list[float]]:
+        """
+        Walk boundary_pixels and paint curvature values into a 2D map.
+
+        Parameters
+        ----------
+        exclude_set : set of (i,j) to skip, or None to skip nothing
+                      (None = TJ-included mode)
+
+        Returns
+        -------
+        curv_map  : (nx, ny) float array, NaN where no GB pixel
+        curv_vals : flat list of curvature values at kept pixels
+        """
+        curv_map  = np.full((nx, ny), np.nan, dtype=np.float64)
+        curv_vals: list[float] = []
+
+        for (i, j) in frame.boundary_pixels:
+            # Apply exclusion if requested
+            if exclude_set is not None and (int(i), int(j)) in exclude_set:
+                continue
+
+            central = int(C0[i, j])
+            ip = (i + 1) % nx;  im = (i - 1) % nx
+            jp = (j + 1) % ny;  jm = (j - 1) % ny
+            neighbors = {
+                int(C0[ip, j]), int(C0[im, j]),
+                int(C0[i, jp]), int(C0[i, jm]),
+            }
+            neighbors.discard(central)
+            # Include junction pixels in TJ-included mode so the full
+            # boundary is visible; they are simply not in exclude_set.
+            kappa = float(curv_full[i, j])
+            curv_map[i, j] = kappa
+            curv_vals.append(kappa)
+
+        return curv_map, curv_vals
+
+    # ── Helper: render a single 4-panel figure ────────────────────────────
+    def _render_figure(
+        curv_map:   np.ndarray,
+        curv_vals:  list[float],
+        title_tag:  str,        # e.g. "TJ-included" or "TJ-excluded"
+        out_suffix: str,        # appended to stem for filename
+    ) -> None:
+        if len(curv_vals) == 0:
+            log.warning(
+                f"plot_curvature_debug ({title_tag}): "
+                f"no boundary pixels found — skipping."
+            )
+            return
+
+        curv_arr = np.array(curv_vals)
+        abs_arr  = np.abs(curv_arr)
+
+        # Symmetric color limit — robust to outliers
+        vabs = float(np.percentile(abs_arr, 98))
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+        # ── Panel 1: Signed curvature heatmap ────────────────────────────
+        ax = axes[0, 0]
+        ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25,
+                  interpolation="nearest")
+        im1 = ax.imshow(
+            curv_map, origin="lower", cmap="RdBu",
+            interpolation="nearest", vmin=-vabs, vmax=vabs,
+        )
+        plt.colorbar(im1, ax=ax, fraction=0.046, pad=0.04).set_label(
+            "Signed curvature (px⁻¹)", fontsize=9)
+        ax.set_title(
+            f"Signed Curvature — {title_tag}\n"
+            f"N={len(curv_vals)} px  "
+            f"min={curv_arr.min():.5f}  max={curv_arr.max():.5f}  "
+            f"mean={curv_arr.mean():.5f}",
+            fontsize=9,
+        )
+        ax.set_xlabel("j (x)"); ax.set_ylabel("i (y)")
+
+        # ── Panel 2: |curvature| heatmap ─────────────────────────────────
+        ax = axes[0, 1]
+        abs_map = np.where(np.isnan(curv_map), np.nan, np.abs(curv_map))
+        ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25,
+                  interpolation="nearest")
+        im2 = ax.imshow(
+            abs_map, origin="lower", cmap="plasma",
+            interpolation="nearest", vmin=0.0, vmax=vabs,
+        )
+        plt.colorbar(im2, ax=ax, fraction=0.046, pad=0.04).set_label(
+            "|curvature| (px⁻¹)", fontsize=9)
+        ax.set_title(
+            f"|Curvature| heatmap — {title_tag}\n"
+            f"98th pct={vabs:.5f}  median={float(np.median(abs_arr)):.5f}",
+            fontsize=9,
+        )
+        ax.set_xlabel("j (x)"); ax.set_ylabel("i (y)")
+
+        # ── Panel 3: Signed curvature histogram ──────────────────────────
+        ax = axes[1, 0]
+        ax.hist(curv_arr, bins=120, color="steelblue", alpha=0.8,
+                edgecolor="none")
+        ax.axvline(0, color="black", linewidth=1.2, linestyle="--",
+                   label="κ = 0")
+        ax.axvline( 0.0182, color="C1", linewidth=1.5, linestyle=":",
+                    label="ref threshold +0.0182 [1]")
+        ax.axvline(-0.0182, color="C1", linewidth=1.5, linestyle=":")
+        ax.set_xlabel("Signed curvature (px⁻¹)", fontsize=11)
+        ax.set_ylabel("Pixel count", fontsize=11)
+        ax.set_title(
+            f"Signed Curvature Distribution — {title_tag}\n"
+            f"(all plotted GB pixels, pre-filter)",
+            fontsize=9,
+        )
+        ax.legend(fontsize=8)
+
+        # ── Panel 4: |curvature| histogram + threshold lines ─────────────
+        ax = axes[1, 1]
+        ax.hist(abs_arr, bins=100, color="darkorange", alpha=0.8,
+                edgecolor="none")
+
+        pct_ref = 100.0 * (abs_arr >= 0.0182).mean()
+        pct_0   = 100.0 * (abs_arr >  0.0).mean()
+
+        ax.axvline(
+            0.0182, color="C1", linewidth=2.0, linestyle="--",
+            label=f"ref min_curvature=0.0182 [1]\n"
+                  f"({(abs_arr >= 0.0182).sum()} / {len(abs_arr)} px survive)",
+        )
+        ax.set_xlabel("|curvature| (px⁻¹)", fontsize=11)
+        ax.set_ylabel("Pixel count", fontsize=11)
+        ax.set_title(
+            f"|Curvature| Distribution — {title_tag}\n"
+            f">{0.0182:.4f}: {pct_ref:.1f}% pass  |  >0: {pct_0:.1f}%",
+            fontsize=9,
+        )
+        ax.legend(fontsize=8)
+
+        plt.suptitle(
+            f"Curvature Debug ({title_tag}) — {stem}  |  step={frame.step}",
+            fontsize=12, fontweight="bold",
+        )
+        plt.tight_layout()
+
+        outpath = output_dir / f"{stem}_DEBUG_curvature_{out_suffix}.png"
+        fig.savefig(outpath, dpi=300, transparent=True)
+        plt.close(fig)
+        log.warning(f"Curvature debug plot saved: {outpath}")
+
+    # ── Figure A: TJ-included (no exclusion) ─────────────────────────────
+    curv_map_all, curv_vals_all = _build_curv_map(exclude_set=None)
+    _render_figure(
+        curv_map   = curv_map_all,
+        curv_vals  = curv_vals_all,
+        title_tag  = "TJ-included",
+        out_suffix = "tj_included",
+    )
+
+    # ── Figure B: TJ-excluded (uses the same set as velocity/GBE) ────────
+    if not tj_exclude:
+        log.warning(
+            "plot_curvature_debug: --tj-exclude is False — "
+            "skipping TJ-excluded figure."
+        )
+        return
+
+    if len(tj_excluded) == 0:
+        log.warning(
+            "plot_curvature_debug: tj_excluded set is empty — "
+            "skipping TJ-excluded figure. "
+            "Check that build_tj_proximity_set() was called before this."
+        )
+        return
+
+    curv_map_excl, curv_vals_excl = _build_curv_map(exclude_set=tj_excluded)
+    n_removed = len(curv_vals_all) - len(curv_vals_excl)
+    log.warning(
+        f"Curvature debug TJ exclusion: "
+        f"{n_removed} pixels removed "
+        f"({100.0 * n_removed / max(len(curv_vals_all), 1):.1f}% of boundary pixels), "
+        f"{len(curv_vals_excl)} remaining."
+    )
+    _render_figure(
+        curv_map   = curv_map_excl,
+        curv_vals  = curv_vals_excl,
+        title_tag  = "TJ-excluded",
+        out_suffix = "tj_excluded",
+    )
 
 
 
@@ -1619,6 +1853,14 @@ def main() -> None:
             tj_exclude  = args.tj_exclude,
             output_dir  = args.output_dir,
             stem        = stem,
+        )
+        plot_curvature_debug(
+            frame       = last_frame,
+            tj_excluded = tj_excluded,
+            tj_exclude  = args.tj_exclude,
+            output_dir  = args.output_dir,
+            stem        = stem,
+            log         = log,
         )
 
     # ── 5. Compute inclination per pixel ──────────────────────────────────────
@@ -1726,7 +1968,7 @@ def main() -> None:
             f"tagged as persistent anti-curvature."
         )
         # ── 6.4 Confidence filtering ─────────────────────────────────────────────
-        CONFIDENCE = 0.99
+        CONFIDENCE = args.antic_confidence #0.99
 
         normc_flat_conf = apply_confidence_filter(
             **{k: normc_flat[k] for k in
@@ -1763,6 +2005,7 @@ def main() -> None:
                 output_dir      = args.output_dir,
                 stem            = stem,
                 tj_exclude      = args.tj_exclude,
+                curvature_limit = args.min_curvature,
                 log             = log,
             )
         else:
