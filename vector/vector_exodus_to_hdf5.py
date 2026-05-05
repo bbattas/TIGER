@@ -1123,7 +1123,9 @@ def main():
                     frames_data.append(frame_tuple)
 
                 if args.out is not None:
-                    hdf5_name = args.out if args.out.endswith(".h5") else args.out + ".h5"
+                    hdf5_out = Path(args.out)
+                    hdf5_out.parent.mkdir(parents=True, exist_ok=True)
+                    hdf5_name = str(hdf5_out) if str(hdf5_out).endswith(".h5") else str(hdf5_out) + ".h5"
                     hdf5_path = hdf5_name
                 else:
                     hdf5_path = stem + '_multiframe.h5'
