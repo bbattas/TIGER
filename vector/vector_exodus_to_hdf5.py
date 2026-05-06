@@ -10,9 +10,10 @@ import argparse
 import sys
 import logging
 import matplotlib.pyplot as plt
-import math
+import csv
 from pathlib import Path
 import h5py
+from tqdm import tqdm
 
 
 
@@ -52,9 +53,8 @@ def parse_args():
     curv.add_argument("--tj-distance", type=int, default=6, metavar="N",
                     help="Euclidean pixel distance threshold for excluding "
                         "TJ-proximal boundary pixels.")
-    curv.add_argument("--signed", action="store_true", default=False,
-                    help="If set, preserve curvature sign relative to grain "
-                        "orientation.")
+    curv.add_argument("--unsigned", action="store_true", default=False,
+                    help="If set, use an unsigned abs() curvature.")
 
 
     # ---- Velocity selection ----
@@ -63,6 +63,9 @@ def parse_args():
     mf.add_argument("--out","-o", type=str, default=None, metavar="NAME",
                 help="Output name for the HDF5 file (with or without .h5 extension). "
                      "If not set, defaults to <stem>_multiframe.h5.")
+    mf.add_argument("--stream", action="store_true", default=False,
+                help="Write each HDF5 frame immediately and discard from memory. "
+                     "Minimizes RAM usage for large frame counts.")
     mf.add_argument("--hdf5-frames", type=int, default=5, metavar="N",
                     help="Number of frames to save in the HDF5 file.")
     mf.add_argument("--hdf5-dt", type=float, default=None, metavar="DT",
@@ -76,8 +79,9 @@ def parse_args():
     plot.add_argument('--debug-plot','-d',action='store_true',
                             help='Save the debugging plots. -vv also enables this.')
 
-
-    return p.parse_args()
+    args = p.parse_args()
+    args.signed = not args.unsigned
+    return args
 
 
 def setup_logging(verbosity: int) -> logging.Logger:
@@ -105,6 +109,11 @@ def vtf(ti,log,extra=None):
     else:
         log.info(f"Time: {(time.perf_counter()-ti):.4}s")
 
+def progress(iterable, desc=None, *, verbose=0, **kwargs):
+    """Wrap iterable in tqdm only when not in verbose mode."""
+    if verbose > 0:
+        return iterable
+    return tqdm(iterable, desc=desc, **kwargs)
 
 def find_exodus_files(*, subdirs: bool = False, pattern: str = "*.e") -> list[Path]:
     """
@@ -365,7 +374,7 @@ def get_both(P0, args):
     loop_times = args.loop_times
     R = np.zeros((nx, ny, 3))
     verb = False
-    smooth_class = smooth.linear_class(nx, ny, ng, cores, loop_times, P0, R, verification_system=verb)
+    smooth_class = smooth.linear_class(nx, ny, ng, cores, loop_times, P0, R, verification_system=verb,curvature_sign=args.signed)
     smooth_class.linear_main("both")
     C = smooth_class.get_C()
     P = smooth_class.get_P()
@@ -515,7 +524,7 @@ def get_junction_pixels(C0: np.ndarray, boundary_pixels: list) -> dict:
 
 
 def accumulate_gb_properties(C: np.ndarray, TJ_distance_max: int = 6,
-                              signed: bool = False) -> dict:
+                              signed: bool = True) -> dict:
     """
     Single-pass accumulation of grain boundary properties.
     Simultaneously identifies boundary pixels, detects junction pixels,
@@ -681,7 +690,7 @@ def average_gb_properties(raw_gb_dict: dict) -> dict:
 
 
 def compute_gb_curvature(C: np.ndarray, TJ_distance_max: int = 6,
-                         signed: bool = False) -> dict:
+                         signed: bool = True) -> dict:
     """
     Top-level orchestrator for GB curvature calculation.
 
@@ -707,6 +716,79 @@ def compute_gb_curvature(C: np.ndarray, TJ_distance_max: int = 6,
 
     return gb_dict, boundary_pixels, junction_pixels
 
+
+def save_frame_times_csv(filepath: str, frames_data: list, exo,
+                          log: logging.Logger = None) -> None:
+    """
+    Write a CSV with step, time, and grain count (if available) for each frame.
+    filepath should be the .h5 path — _times.csv will be substituted.
+    """
+    csv_path = filepath.replace(".h5", "_times.csv")
+
+    glo_names = exo.glo_varnames()
+    has_gt = "grain_tracker" in glo_names
+    gt = np.rint(exo.glo_var_series("grain_tracker")).astype(np.int64) if has_gt else None
+
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        if has_gt:
+            writer.writerow(["frame", "step", "time", "grains"])
+            for frame_num, (step, time_val, *_) in enumerate(frames_data):
+                writer.writerow([frame_num, step, time_val, int(gt[step])])
+        else:
+            writer.writerow(["frame", "step", "time"])
+            for frame_num, (step, time_val, *_) in enumerate(frames_data):
+                writer.writerow([frame_num, step, time_val])
+
+    if log:
+        log.info(f"Frame times CSV written: {csv_path}")
+    else:
+        print(f"Frame times CSV written: {csv_path}")
+
+
+
+def _stream_frame_to_hdf5(filepath: str, frame_num: int, frame_tuple: tuple,
+                           log: logging.Logger = None) -> None:
+    """Append a single frame to an existing HDF5 file."""
+    step, time_val, P0, C, P, gb_dict, boundary_pixels, junction_pixels = frame_tuple
+
+    with h5py.File(filepath, 'a') as hf:
+        fg = hf["frames"].create_group(f"frame_{frame_num:04d}")
+
+        fg.create_dataset("step", data=int(step))
+        fg.create_dataset("time", data=float(time_val))
+        fg.create_dataset("P0",   data=np.rint(P0).astype(np.int32), compression="gzip")
+        fg.create_dataset("C",    data=C, compression="gzip")
+        fg.create_dataset("P",    data=P, compression="gzip")
+
+        if len(boundary_pixels) > 0:
+            fg.create_dataset("boundary_pixels",
+                              data=np.array(boundary_pixels, dtype=np.int32),
+                              compression="gzip")
+        else:
+            fg.create_dataset("boundary_pixels", data=np.empty((0, 2), dtype=np.int32))
+
+        if len(junction_pixels) > 0:
+            fg.create_dataset("junction_pixels",
+                              data=np.array(junction_pixels, dtype=np.int32),
+                              compression="gzip")
+        else:
+            fg.create_dataset("junction_pixels", data=np.empty((0, 2), dtype=np.int32))
+
+        gb_grp = fg.create_group("gb_dict")
+        if gb_dict:
+            gb_grp.create_dataset("pair_ids",
+                                  data=np.array(list(gb_dict.keys()), dtype=np.int32),
+                                  compression="gzip")
+            gb_grp.create_dataset("data",
+                                  data=np.array(list(gb_dict.values()), dtype=np.float64),
+                                  compression="gzip")
+        else:
+            gb_grp.create_dataset("pair_ids", data=np.empty((0, 2), dtype=np.int32))
+            gb_grp.create_dataset("data",     data=np.empty((0, 4), dtype=np.float64))
+
+    if log:
+        log.info(f"  Streamed frame_{frame_num:04d} (step={step}) to {filepath}.")
 
 
 def save_hdf5_multiframe(filepath: str, frames_data: list,
@@ -1115,13 +1197,7 @@ def main():
                     mode="end", # or "center", your preference
                     log=log,
                 )
-                frames_data = []
-                log.info(f"  Processing HDF5 Frames:")
-                for s, t in frame_steps:
-                    log.info(f"  HDF5 frame: step={s}, time={t:.6g}")
-                    frame_tuple = process_frame(exo, s, args, log)
-                    frames_data.append(frame_tuple)
-
+                # save name/path
                 if args.out is not None:
                     hdf5_out = Path(args.out)
                     hdf5_out.parent.mkdir(parents=True, exist_ok=True)
@@ -1129,7 +1205,44 @@ def main():
                     hdf5_path = hdf5_name
                 else:
                     hdf5_path = stem + '_multiframe.h5'
-                save_hdf5_multiframe(hdf5_path, frames_data, log=log)
+
+                frames_data = []
+                log.info(f"Processing HDF5 Frames:")
+                if args.stream:
+                    frames_data_for_csv = []
+                    # Initialize the file once, then append each frame
+                    with h5py.File(hdf5_path, 'w') as hf:
+                        hf.create_group("frames")
+
+                    for frame_num, (s, t) in progress(enumerate(frame_steps),
+                                       desc="Streaming frames",
+                                       verbose=args.verbose,
+                                       total=len(frame_steps)):
+                        log.info(f"  HDF5 frame: step={s}, time={t:.6g}")
+                        tif = time.perf_counter()
+                        frame_tuple = process_frame(exo, s, args, log)
+                        frames_data_for_csv.append((frame_tuple[0], frame_tuple[1]))  # (step, time_val) only
+                        _stream_frame_to_hdf5(hdf5_path, frame_num, frame_tuple, log=log)
+                        vtf(tif, log, extra=f"  Frame {frame_num} (step={s}) process: ")
+
+                        # Keep only the target frame tuple for debug plotting
+                        if s == step:
+                            frames_data = [frame_tuple]  # single entry for debug plot
+                        # frame_tuple goes out of scope here — GC can collect it
+                else:
+                    for frame_num, (s, t) in progress(enumerate(frame_steps),
+                                       desc="Processing all frames",
+                                       verbose=args.verbose,
+                                       total=len(frame_steps)):
+                        log.info(f"  HDF5 frame: step={s}, time={t:.6g}")
+                        tif = time.perf_counter()
+                        frame_tuple = process_frame(exo, s, args, log)
+                        vtf(tif, log, extra=f"  Frame {frame_num} (step={s}) process: ")
+                        frames_data.append(frame_tuple)
+                    tif = time.perf_counter()
+                    save_hdf5_multiframe(hdf5_path, frames_data, log=log)
+                    save_frame_times_csv(hdf5_path, frames_data, exo, log=log)
+                    vtf(tif, log, extra=f"  Batch write ({len(frames_data)} frames): ")
                 log.info(f"HDF5 written: {hdf5_path} ({len(frames_data)} frames)")
                 vtf(tih,log,"End of HDF5 generation: ")
                 log.info(' ')

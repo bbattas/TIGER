@@ -65,6 +65,14 @@ def parse_args() -> argparse.Namespace:
         "--inclination-csv", action="store_true",
         help="Write a CSV of the inclination angle distribution (binned, normalized).",
     )
+    io.add_argument(
+        "--dpi", type=int, default=300,
+        help="DPI for saving the actual plots from --plot",
+    )
+    io.add_argument(
+        "--final", action="store_true",
+        help="Write final plotting data to CSV files.",
+    )
 
     # ---- GBE ----
     gbe = p.add_argument_group("GBE")
@@ -107,11 +115,18 @@ def parse_args() -> argparse.Namespace:
     # ---- Plotting ----
     tog = p.add_argument_group("Toggles")
     tog.add_argument('--debug-plot','-d',action='store_true',
-        help='Save the debugging plots. -vv also enables this.')
+        help='Save the debugging plots.')
+    tog.add_argument('--plot',action='store_true',
+        help='Save individual plots for critical values.')
     tog.add_argument(
         "--skip-velocity", action="store_true",
         help="Skip GB velocity calculation.",
     )
+    tog.add_argument(
+        "--drop-isolated-antic", action="store_true",
+        help="Use the sliding window 00100 approach to drop isolated anticurvature events.",
+    )
+
 
     # ---- Verbosity ----
     p.add_argument(
@@ -750,7 +765,7 @@ def compute_gb_velocity_one_interval(
         grain_id2     = int(data_current[3])
 
         # TEMP DEBUGGING
-        log.warning(f"  pair {pair_id}: avg_curvature={avg_curvature:.6f}, area={area:.1f}")
+        # log.warning(f"  pair {pair_id}: avg_curvature={avg_curvature:.6f}, area={area:.1f}")
 
         # ── Filters (mirror reference code's pre-loop filtering) ──────────
         if area < min_area:
@@ -978,8 +993,8 @@ def apply_curvature_sign_convention(
 
     for kappa, v, fwd, bwd in zip(curvatures, velocities, dV_forward, dV_backward):
         if kappa < 0.0:
-            out_curv.append(-kappa)
-            out_vel.append(-v)
+            out_curv.append(-kappa) # flip to positive
+            out_vel.append(-v) # flip velocity too
             out_fwd.append(bwd)   # swap: grain2->grain1 becomes "forward"
             out_bwd.append(fwd)
         else:
@@ -1039,7 +1054,11 @@ def apply_confidence_filter(
         if total_dV == 0:
             n_zero += 1
             continue
-        ratio = fwd / total_dV
+        # Anti-c GBs move against curvature: backward direction dominates
+        if mode == "antic":
+            ratio = bwd / total_dV
+        else:
+            ratio = fwd / total_dV
         if ratio > confidence:
             kept["curvatures"].append(kappa)
             kept["velocities"].append(v)
@@ -1113,20 +1132,19 @@ def compute_velocity_bins(
 
 
 
-def apply_sliding_window_filter(
+def find_isolated_anticurvature_events(
     all_interval_results: list[dict],
     log: logging.Logger | None = None,
-) -> set[tuple[tuple[int,int], int]]:
+) -> set[tuple[tuple[int, int], int]]:
     """
-    Apply the "00100" sliding window filter from the reference [1].
+    Find isolated "00100" anti-curvature events from Lin's sliding-window filter.
 
-    A (pair_id, timestep_index) is kept as genuinely anti-curvature
-    only if:
-      - it IS anti-curvature at step t   (centre of window)
-      - it is NOT anti-curvature at t-2, t-1, t+1, t+2
+    A (pair_id, timestep_index) is returned if:
+      - it IS anti-curvature at center step t
+      - it is NOT anti-curvature at t-2, t-1, t+1, or t+2
 
-    This removes transient anti-curvature events that appear for
-    only one step due to noise.
+    In Lin's code, these returned events are treated as transient/noisy and
+    removed from anti-curvature tracking.
 
     Parameters
     ----------
@@ -1137,7 +1155,7 @@ def apply_sliding_window_filter(
 
     Returns
     -------
-    kept_set : set of (pair_id, timestep_index) tuples that pass
+    rejected_set : set of (pair_id, timestep_index) tuples that trip
                the filter. Empty if fewer than 5 intervals available.
     """
     if log is None:
@@ -1161,7 +1179,7 @@ def apply_sliding_window_filter(
         }
         antic_sets.append(step_set)
 
-    kept_set: set[tuple[tuple[int,int], int]] = set()
+    rejected_set: set[tuple[tuple[int,int], int]] = set()
     n_total   = 0
     n_removed = 0
 
@@ -1173,17 +1191,17 @@ def apply_sliding_window_filter(
         # "00100": in centre but NOT in any flank step
         filtered = centre - flanks
         n_total  += len(centre)
-        n_removed += len(centre) - len(filtered)
+        n_removed += len(filtered) #len(centre) - len(filtered)
 
         for pid in filtered:
-            kept_set.add((pid, t))
+            rejected_set.add((pid, t))
 
     log.warning(
-        f"  Sliding window filter: {len(kept_set)} (pair, step) entries kept "
+        f"  Sliding window filter: {len(rejected_set)} (pair, step) entries rejected "
         f"from {n_total} anti-curvature candidates "
         f"({n_removed} removed as transient)."
     )
-    return kept_set
+    return rejected_set
 
 
 
@@ -1433,17 +1451,30 @@ def plot_velocity_debug(
     y_abs  = max(abs(v) for v in all_v) * 1.1 if all_v else 1.0
     y_bins = np.linspace(-y_abs, y_abs, 40)
 
+    # if len(all_c) >= 2:
+    #     hist, x_edges, y_edges = np.histogram2d(all_c, all_v,
+    #                                               bins=[x_bins, y_bins])
+    #     x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    #     y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+    #     X, Y = np.meshgrid(x_centers, y_centers)
+    #     hist.T[hist.T == 0] = 1
+    #     ax.contourf(X, Y, np.log10(hist.T), levels=20,
+    #                 cmap="coolwarm", alpha=0.9, vmin=0)
+    #     ax.contour(X, Y, np.log10(hist.T), levels=20,
+    #                cmap="gray", alpha=0.1, vmin=0)
     if len(all_c) >= 2:
         hist, x_edges, y_edges = np.histogram2d(all_c, all_v,
-                                                  bins=[x_bins, y_bins])
+                                                bins=[x_bins, y_bins])
         x_centers = (x_edges[:-1] + x_edges[1:]) / 2
         y_centers = (y_edges[:-1] + y_edges[1:]) / 2
         X, Y = np.meshgrid(x_centers, y_centers)
         hist.T[hist.T == 0] = 1
-        ax.contourf(X, Y, np.log10(hist.T), levels=20,
-                    cmap="coolwarm", alpha=0.9, vmin=0)
+        cf = ax.contourf(X, Y, np.log10(hist.T), levels=20,
+                        cmap="coolwarm", alpha=0.9, vmin=0)
         ax.contour(X, Y, np.log10(hist.T), levels=20,
-                   cmap="gray", alpha=0.1, vmin=0)
+                cmap="gray", alpha=0.1, vmin=0)
+        cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(r"log$_{10}$(count)", fontsize=9)
 
     # Binned mean ± std overlay
     bins = compute_velocity_bins(all_c, all_v, x_lim=x_lim,
@@ -1779,6 +1810,427 @@ def save_inclination_csv(
             writer.writerow([f"{angle:.4f}", f"{nf:.8f}"])
     log.warning(f"Inclination CSV saved: {outpath}")
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Final Plots
+# ──────────────────────────────────────────────────────────────────────────────
+
+def plot_final_gbe_cdf(
+    gbe_values: np.ndarray,
+    output_dir: Path,
+    stem: str,
+    mode: str,
+    log: logging.Logger,
+) -> None:
+    """
+    CDF of per-pixel GBE values (TJ-excluded, fully filtered).
+
+    Parameters
+    ----------
+    gbe_values : (N,) array of GBE values at kept boundary pixels
+    output_dir : output directory
+    stem       : filename prefix
+    mode       : GBE mode string — used in labels
+    log        : logger
+    """
+    import matplotlib.pyplot as plt
+
+    sorted_vals = np.sort(gbe_values)
+    cdf = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(sorted_vals, cdf, linewidth=2, color="steelblue")
+    ax.set_xlabel("GBE (a.u.)", fontsize=12)
+    ax.set_ylabel("Cumulative Fraction", fontsize=12)
+    ax.set_title(
+        f"GBE CDF — mode={mode}\n"
+        f"N={len(gbe_values)} pixels  "
+        f"(TJ-excluded)",
+        fontsize=11,
+    )
+    ax.grid(True, linestyle=":", alpha=0.5)
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_gbe_cdf.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final GBE CDF saved: {outpath}")
+
+
+def plot_final_gbe_heatmap(
+    frame: FrameData,
+    pixel_coords: np.ndarray,
+    gbe_values: np.ndarray,
+    tj_excluded: set,
+    mode: str,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Heatmap of per-pixel GBE with TJ exclusion zone centres overlaid.
+
+    TJ exclusion zone centre pixels (junction_pixels from the frame) are
+    plotted as cyan dots so the reader can see which regions were masked.
+
+    Parameters
+    ----------
+    frame        : FrameData (last frame)
+    pixel_coords : (N, 2) kept boundary pixel coordinates
+    gbe_values   : (N,)   GBE values at those pixels
+    tj_excluded  : pre-built TJ proximity set (used for the mask label)
+    mode         : GBE mode string
+    output_dir   : output directory
+    stem         : filename prefix
+    log          : logger
+    """
+    import matplotlib.pyplot as plt
+
+    C0 = frame.C[0]
+    nx, ny = C0.shape
+
+    gbe_map = np.full((nx, ny), np.nan, dtype=np.float64)
+    for (i, j), val in zip(pixel_coords, gbe_values):
+        gbe_map[i, j] = val
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25,
+              interpolation="nearest")
+    im = ax.imshow(
+        gbe_map,
+        origin="lower",
+        cmap="plasma",
+        interpolation="nearest",
+        vmin=float(np.nanmin(gbe_values)),
+        vmax=float(np.nanmax(gbe_values)),
+    )
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("GBE (a.u.)", fontsize=10)
+
+    if len(frame.junction_pixels) > 0:
+        jp = frame.junction_pixels
+        ax.scatter(
+            jp[:, 1], jp[:, 0],
+            c="cyan", s=4, linewidths=0,
+            label=f"TJ centres ({len(jp)} px)",
+            zorder=3,
+        )
+        ax.legend(loc="upper right", fontsize=7, markerscale=3)
+
+    ax.set_title(
+        f"GBE Heatmap — mode={mode}  |  TJ-excluded\n"
+        f"N={len(gbe_values)} pixels  "
+        f"min={np.nanmin(gbe_values):.4f}  "
+        f"mean={np.nanmean(gbe_values):.4f}  "
+        f"max={np.nanmax(gbe_values):.4f}",
+        fontsize=10,
+    )
+    ax.set_xlabel("j (x)")
+    ax.set_ylabel("i (y)")
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_gbe_heatmap.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final GBE heatmap saved: {outpath}")
+
+
+def plot_final_inclination_polar(
+    theta_closed: np.ndarray,
+    r_closed: np.ndarray,
+    n_pixels: int,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Polar plot of the inclination angle distribution (TJ-excluded).
+
+    Parameters
+    ----------
+    theta_closed : (B+1,) bin centres in radians, loop-closed
+    r_closed     : (B+1,) normalised frequency, loop-closed
+    n_pixels     : number of pixels used
+    output_dir   : output directory
+    stem         : filename prefix
+    log          : logger
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"}, figsize=(6, 6))
+    ax.plot(theta_closed, r_closed, linewidth=2, color="steelblue",
+            label="Inclination PDF")
+    ax.fill(theta_closed, r_closed, alpha=0.15, color="steelblue")
+
+    ax.set_rgrids(np.arange(0, 0.01, 0.004))
+    ax.set_rlabel_position(0.0)
+    ax.set_rlim(0.0, 0.01)
+    ax.set_yticklabels(["0", "4e-3", "8e-3"], fontsize=8)
+    ax.set_title(
+        f"Inclination Distribution\nTJ-excluded  |  N={n_pixels} pixels",
+        fontsize=10, pad=25,
+    )
+    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=8)
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_inclination_polar.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final inclination polar plot saved: {outpath}")
+
+
+def plot_final_gbe_histograms_by_curvature(
+    frame: FrameData,
+    pixel_coords: np.ndarray,
+    gbe_values: np.ndarray,
+    output_dir: Path,
+    stem: str,
+    mode: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Two side-by-side histograms of per-pixel GBE split by the sign of the
+    local curvature at each boundary pixel.
+
+    Pixels where curvature > 0  → "normal curvature" (blue)
+    Pixels where curvature <= 0 → "anti-curvature"   (orange)
+
+    The curvature value used is C[1] from the last frame, evaluated at the
+    same kept boundary pixels that were used for GBE.
+
+    Parameters
+    ----------
+    frame        : FrameData (last frame) — supplies C[1] curvature field
+    pixel_coords : (N, 2) kept boundary pixel coordinates
+    gbe_values   : (N,)   GBE values at those pixels
+    output_dir   : output directory
+    stem         : filename prefix
+    mode         : GBE mode string — used in title
+    log          : logger
+    """
+    import matplotlib.pyplot as plt
+
+    curv_field = frame.C[1]
+    curvatures_at_pixels = np.array(
+        [curv_field[i, j] for (i, j) in pixel_coords], dtype=np.float64
+    )
+
+    normc_mask = curvatures_at_pixels > 0.0
+    antic_mask = ~normc_mask
+
+    gbe_normc = gbe_values[normc_mask]
+    gbe_antic = gbe_values[antic_mask]
+
+    all_vals = gbe_values
+    bins = np.linspace(float(all_vals.min()), float(all_vals.max()), 50)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
+
+    for ax, gbe_sub, label, color, n in [
+        (axes[0], gbe_normc, "Normal curvature (κ > 0)", "steelblue", normc_mask.sum()),
+        (axes[1], gbe_antic, "Anti-curvature (κ ≤ 0)",   "darkorange", antic_mask.sum()),
+    ]:
+        if len(gbe_sub) > 0:
+            ax.hist(gbe_sub, bins=bins, color=color, alpha=0.85, edgecolor="none")
+            ax.axvline(float(np.mean(gbe_sub)), color="black", linewidth=1.5,
+                       linestyle="--", label=f"mean={np.mean(gbe_sub):.4f}")
+            ax.legend(fontsize=9)
+        ax.set_xlabel("GBE (a.u.)", fontsize=11)
+        ax.set_ylabel("Pixel count", fontsize=11)
+        ax.set_title(f"{label}\nN={n} pixels", fontsize=10)
+
+    fig.suptitle(
+        f"GBE Distribution by Curvature Sign — mode={mode}  |  TJ-excluded",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_gbe_hist_by_curvature.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final GBE histograms saved: {outpath}")
+
+
+def plot_final_velocity_scatter(
+    normc_flat_conf: dict,
+    antic_flat_conf: dict,
+    output_dir: Path,
+    stem: str,
+    curvature_limit: float,
+    x_lim: tuple,
+    log: logging.Logger,
+) -> None:
+    """
+    Confidence-filtered velocity vs |κ| scatter plot.
+
+    Mirrors debug Panel 4 as a clean, standalone figure.
+    Normal-curvature GBs in blue, anti-curvature in orange.
+
+    Parameters
+    ----------
+    normc_flat_conf : confidence-filtered normal-curvature flat dict
+    antic_flat_conf : confidence-filtered anti-curvature flat dict
+    output_dir      : output directory
+    stem            : filename prefix
+    curvature_limit : min_curvature threshold — shown as reference line
+    x_lim           : (x_min, x_max) for the curvature axis
+    log             : logger
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.plot([curvature_limit, x_lim[1]], [0, 0], "-", color="grey",
+            linewidth=1.5)
+
+    ax.scatter(
+        normc_flat_conf["curvatures"], normc_flat_conf["velocities"],
+        s=6, alpha=0.6, color="C0",
+        label=f"Normal-c ({len(normc_flat_conf['curvatures'])})",
+    )
+    ax.scatter(
+        antic_flat_conf["curvatures"], antic_flat_conf["velocities"],
+        s=10, alpha=0.6, color="C1",
+        label=f"Anti-c ({len(antic_flat_conf['curvatures'])})",
+    )
+
+    ax.set_xlim([max(0.0, curvature_limit * 0.95), x_lim[1]])
+    ax.set_xlabel("|κ| (px⁻¹)", fontsize=12)
+    ax.set_ylabel("Velocity (px/s)", fontsize=12)
+    ax.set_title(
+        "Velocity vs Curvature — Confidence-Filtered (99%)\n"
+        "Normal-c (blue) vs Anti-c (orange)  |  TJ-excluded",
+        fontsize=11,
+    )
+    ax.legend(fontsize=9)
+    ax.grid(True, linestyle=":", alpha=0.4)
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_velocity_scatter.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final velocity scatter saved: {outpath}")
+
+
+def plot_final_velocity_density_with_fits(
+    normc_flat: dict,
+    antic_flat: dict,
+    output_dir: Path,
+    stem: str,
+    curvature_limit: float,
+    x_lim: tuple,
+    bin_interval: float,
+    log: logging.Logger,
+) -> None:
+    """
+    Density contour plot of velocity vs |κ| with binned mean ± std and
+    linear fits overlaid.
+
+    Mirrors debug Panel 3 as a clean, standalone figure using the
+    post-sign-convention, pre-confidence data (all normc + antic combined).
+
+    Parameters
+    ----------
+    normc_flat      : sign-convention-corrected normal-curvature flat dict
+    antic_flat      : sign-convention-corrected anti-curvature flat dict
+    output_dir      : output directory
+    stem            : filename prefix
+    curvature_limit : min_curvature threshold line
+    x_lim           : (x_min, x_max) for the curvature axis
+    bin_interval    : bin width for compute_velocity_bins
+    log             : logger
+    """
+    import matplotlib.pyplot as plt
+
+    all_c = normc_flat["curvatures"] + antic_flat["curvatures"]
+    all_v = normc_flat["velocities"] + antic_flat["velocities"]
+
+    if len(all_c) < 2:
+        log.warning("plot_final_velocity_density_with_fits: insufficient data, skipping.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # ── Density contour ──────────────────────────────────────────────────────
+    x_bins = np.linspace(x_lim[0], x_lim[1], 40)
+    y_abs  = max(abs(v) for v in all_v) * 1.1
+    y_bins = np.linspace(-y_abs, y_abs, 40)
+
+    hist, x_edges, y_edges = np.histogram2d(all_c, all_v,
+                                             bins=[x_bins, y_bins])
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+    X, Y = np.meshgrid(x_centers, y_centers)
+    hist.T[hist.T == 0] = 1
+    cf = ax.contourf(X, Y, np.log10(hist.T), levels=20,
+                     cmap="coolwarm", alpha=0.9, vmin=0)
+    ax.contour(X, Y, np.log10(hist.T), levels=20,
+               cmap="gray", alpha=0.15, vmin=0)
+    cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(r"log$_{10}$(count)", fontsize=9)
+
+    # ── Binned mean ± std ────────────────────────────────────────────────────
+    bins = compute_velocity_bins(all_c, all_v, x_lim=x_lim,
+                                 bin_interval=bin_interval, min_count=10)
+    valid = bins["valid_mask"]
+    if valid.any():
+        ax.errorbar(
+            bins["bin_centers"][valid],
+            bins["bin_means"][valid],
+            yerr=bins["bin_stds"][valid],
+            fmt="o", color="k", linewidth=1, capsize=2,
+            ecolor="black", markersize=4, label="Bin mean ± std",
+        )
+
+        # Linear fit — all valid bins
+        x_all = bins["bin_centers"][valid]
+        y_all = bins["bin_means"][valid]
+        p_all = np.polyfit(x_all, y_all, 1)
+        y_pred_all = np.polyval(p_all, x_all)
+        ss_res = np.sum((y_all - y_pred_all) ** 2)
+        ss_tot = np.sum((y_all - y_all.mean()) ** 2)
+        r2_all = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+        ax.plot(x_all, y_pred_all, "-", color="C1", linewidth=2,
+                label=rf"All bins  R²={r2_all:.3f}  M*={p_all[0]:.4f}")
+        log.warning(f"Final density fit (all):    slope={p_all[0]:.4f}  R²={r2_all:.4f}")
+
+        # Linear fit — low-κ bins (κ < 0.03)
+        mask_sub = x_all < 0.03
+        if mask_sub.sum() > 1:
+            x_sub = x_all[mask_sub]
+            y_sub = y_all[mask_sub]
+            p_sub = np.polyfit(x_sub, y_sub, 1)
+            y_pred_sub = np.polyval(p_sub, x_sub)
+            ss_res_s = np.sum((y_sub - y_pred_sub) ** 2)
+            ss_tot_s = np.sum((y_sub - y_sub.mean()) ** 2)
+            r2_sub = 1.0 - ss_res_s / ss_tot_s if ss_tot_s > 0 else float("nan")
+            ax.plot(x_sub, y_pred_sub, "-", color="C2", linewidth=2,
+                    label=rf"κ<0.03  R²={r2_sub:.3f}  M*={p_sub[0]:.4f}")
+            log.warning(f"Final density fit (κ<0.03): slope={p_sub[0]:.4f}  R²={r2_sub:.4f}")
+
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.plot([curvature_limit, x_lim[1]], [0, 0], "-", color="grey",
+            linewidth=1.5)
+    ax.set_xlim([curvature_limit, x_lim[1]])
+    ax.set_xlabel("|κ| (px⁻¹)", fontsize=12)
+    ax.set_ylabel("Velocity (px/s)", fontsize=12)
+    ax.set_title(
+        "Velocity vs Curvature — Density + Binned Fits\n"
+        "TJ-excluded  |  post-confidence filter",
+        fontsize=11,
+    )
+    ax.legend(fontsize=9, loc="lower right")
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_velocity_density.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final velocity density plot saved: {outpath}")
+
+
+
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Main
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1919,8 +2371,7 @@ def main() -> None:
         vtf(t02, log, "Velocity averaged (secondary): ")
         tf(t0, log, "Velocity calculation: ")
 
-        # ── 6.1 Sign convention on flat lists before splitting/filtering ────────
-        # Apply sign convention before any splitting or filtering
+        # ── 6.1 Sign convention ─────────────────────────────────────────────────
         (flat_lists["all_curvatures"],
         flat_lists["all_velocities"],
         flat_lists["all_dV_forward"],
@@ -1931,8 +2382,36 @@ def main() -> None:
             flat_lists["all_dV_backward"],
         )
 
-        # ── 6.2 Split into normal-c and anti-c flat lists ──────────────────────
-        # After sign convention: normc has v > 0, antic has v < 0
+        # ── 6.2 Sliding window filter (optional, --drop-isolated-antic) ─────────
+        isolated_antic = find_isolated_anticurvature_events(
+            flat_lists["all_interval_results"], log=log
+        )
+
+        if args.drop_isolated_antic and isolated_antic:
+            # Build a set of flat-list indices to drop
+            rejected_flat_indices = {
+                i for i, (pid, t) in enumerate(
+                    zip(flat_lists["all_pair_ids"], flat_lists["all_timestep_indices"])
+                )
+                if (pid, t) in isolated_antic
+            }
+            log.warning(
+                f"Sliding window: dropping {len(rejected_flat_indices)} isolated "
+                f"anti-curvature entries from flat lists."
+            )
+            keep_indices = [
+                i for i in range(len(flat_lists["all_velocities"]))
+                if i not in rejected_flat_indices
+            ]
+            for key in ("all_curvatures", "all_velocities", "all_dV_forward",
+                        "all_dV_backward", "all_areas", "all_pair_ids",
+                        "all_timestep_indices"):
+                flat_lists[key] = [flat_lists[key][i] for i in keep_indices]
+        else:
+            if args.drop_isolated_antic:
+                log.warning("Sliding window filter enabled but returned no rejections.")
+
+        # ── 6.3 Split into normc / antic ────────────────────────────────────────
         normc_indices = [
             i for i, v in enumerate(flat_lists["all_velocities"]) if v >= 0.0
         ]
@@ -1952,40 +2431,19 @@ def main() -> None:
 
         normc_flat = _extract(flat_lists, normc_indices)
         antic_flat = _extract(flat_lists, antic_indices)
-        # ── 6.3 Sliding window filter (Priority 4) ───────────────────────────────
-        sliding_window_kept = apply_sliding_window_filter(
-            flat_lists["all_interval_results"], log=log
-        )
-        # Tag each entry in the flat lists with whether it passed the filter.
-        # This is used downstream if you want to restrict analysis to
-        # "persistent" anti-c GBs only.
-        flat_lists["sliding_window_kept"] = [
-            (pid, t) in sliding_window_kept
-            for pid, t in zip(
-                flat_lists["all_pair_ids"],
-                flat_lists["all_timestep_indices"]
-            )
-        ]
-        log.warning(
-            f"Sliding window: {sum(flat_lists['sliding_window_kept'])} entries "
-            f"tagged as persistent anti-curvature."
-        )
-        # ── 6.4 Confidence filtering ─────────────────────────────────────────────
-        CONFIDENCE = args.antic_confidence #0.99
+
+        # ── 6.4 Confidence filtering ────────────────────────────────────────────
+        CONFIDENCE = args.antic_confidence
 
         normc_flat_conf = apply_confidence_filter(
             **{k: normc_flat[k] for k in
             ("curvatures","velocities","dV_forward","dV_backward","areas","pair_ids")},
-            mode       = "normc",
-            confidence = CONFIDENCE,
-            log        = log,
+            mode="normc", confidence=CONFIDENCE, log=log,
         )
         antic_flat_conf = apply_confidence_filter(
             **{k: antic_flat[k] for k in
             ("curvatures","velocities","dV_forward","dV_backward","areas","pair_ids")},
-            mode       = "antic",
-            confidence = CONFIDENCE,
-            log        = log,
+            mode="antic", confidence=CONFIDENCE, log=log,
         )
     else:
         flat_lists  = None
@@ -2014,11 +2472,81 @@ def main() -> None:
         else:
             log.warning("Skipping velocity debug plot — no velocity data.")
 
-    # ── Placeholder: downstream outputs go here ───────────────────────────
-    # plot_gbe_cdf(...)
-    # plot_gbe_histogram(...)
-    # plot_inclination_polar(...)
-    # plot_velocity_vs_curvature(...)
+
+
+    # ── 7. Final individual plots (--plot) ───────────────────────────────────
+    if args.plot:
+        stem = args.hdf5.stem
+
+        # 7.1  GBE CDF
+        plot_final_gbe_cdf(
+            gbe_values = gbe_values,
+            output_dir = args.output_dir,
+            stem       = stem,
+            mode       = args.gbe_mode,
+            log        = log,
+        )
+
+        # 7.2  GBE heatmap with TJ exclusion centres
+        plot_final_gbe_heatmap(
+            frame        = last_frame,
+            pixel_coords = pixel_coords,
+            gbe_values   = gbe_values,
+            tj_excluded  = tj_excluded,
+            mode         = args.gbe_mode,
+            output_dir   = args.output_dir,
+            stem         = stem,
+            log          = log,
+        )
+
+        # 7.3  Inclination polar plot
+        plot_final_inclination_polar(
+            theta_closed = theta_closed,
+            r_closed     = r_closed,
+            n_pixels     = len(inc_angles),
+            output_dir   = args.output_dir,
+            stem         = stem,
+            log          = log,
+        )
+
+        # 7.4  GBE histograms split by curvature sign
+        plot_final_gbe_histograms_by_curvature(
+            frame        = last_frame,
+            pixel_coords = pixel_coords,
+            gbe_values   = gbe_values,
+            output_dir   = args.output_dir,
+            stem         = stem,
+            mode         = args.gbe_mode,
+            log          = log,
+        )
+
+        # 7.5 & 7.6  Velocity plots — only if velocity was computed
+        if flat_lists is not None and len(flat_lists["all_velocities"]) > 0:
+
+            # 7.5  Confidence-filtered scatter
+            plot_final_velocity_scatter(
+                normc_flat_conf = normc_flat_conf,
+                antic_flat_conf = antic_flat_conf,
+                output_dir      = args.output_dir,
+                stem            = stem,
+                curvature_limit = args.min_curvature,
+                x_lim           = (0.0, 0.1),
+                log             = log,
+            )
+
+            # 7.6  Density + fits (post-confidence, post sign convention)
+            plot_final_velocity_density_with_fits(
+                normc_flat      = normc_flat_conf, #normc_flat for pre-confidence
+                antic_flat      = antic_flat_conf, #antic_flat for pre-confidence
+                output_dir      = args.output_dir,
+                stem            = stem,
+                curvature_limit = args.min_curvature,
+                x_lim           = (0.0, 0.1),
+                bin_interval    = 0.002,
+                log             = log,
+            )
+        else:
+            log.warning("Skipping final velocity plots — no velocity data available.")
 
     tf(ti, log, "Total: ")
 
