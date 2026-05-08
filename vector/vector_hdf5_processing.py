@@ -29,7 +29,7 @@ import math
 THETA_MAX_DEG = 62.0
 THETA_MAX_RAD = np.deg2rad(THETA_MAX_DEG)
 
-GBE_MODES = ("inclination_cosine", "inclination", "misorientation", "both")
+GBE_MODES = ("iso","inclination_cos", "inclination", "misorientation", "both")
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  CLI
@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
         "--inclination-anisotropy", "-a", type=float, default=0.05,
         metavar="A",
         help=(
-            "Anisotropy amplitude 'a' for the inclination_cosine GBE mode: "
+            "Anisotropy amplitude 'a' for the inclination_cos GBE mode: "
             "GBE = 1 + a * cos(2 * theta). Must be in [0, 0.95]."
         ),
     )
@@ -510,7 +510,10 @@ def compute_gbe_per_pixel(
 
         # ── Dispatch to energy function ───────────────────────────────────
         try:
-            if mode == "inclination_cosine":
+            if mode == "iso":
+                gbe = 1.0
+
+            elif mode == "inclination_cos":
                 gbe = compute_finclination_cosine(dx, dy, inclination_anisotropy)
 
             elif mode == "inclination":
@@ -1273,7 +1276,7 @@ def plot_gbe_debug(
         ax.legend(loc="upper right", fontsize=7, markerscale=3)
 
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("GBE (a.u.)", fontsize=10)
+    cbar.set_label("GBE", fontsize=10)
 
     tj_str = "TJ-excluded" if tj_exclude else "TJ-included"
     ax.set_title(
@@ -1840,7 +1843,7 @@ def plot_final_gbe_cdf(
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.plot(sorted_vals, cdf, linewidth=2, color="steelblue")
-    ax.set_xlabel("GBE (a.u.)", fontsize=12)
+    ax.set_xlabel("GBE", fontsize=12)
     ax.set_ylabel("Cumulative Fraction", fontsize=12)
     ax.set_title(
         f"GBE CDF — mode={mode}\n"
@@ -1905,7 +1908,7 @@ def plot_final_gbe_heatmap(
         vmax=float(np.nanmax(gbe_values)),
     )
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("GBE (a.u.)", fontsize=10)
+    cbar.set_label("GBE", fontsize=10)
 
     if len(frame.junction_pixels) > 0:
         jp = frame.junction_pixels
@@ -2035,7 +2038,7 @@ def plot_final_gbe_histograms_by_curvature(
             ax.axvline(float(np.mean(gbe_sub)), color="black", linewidth=1.5,
                        linestyle="--", label=f"mean={np.mean(gbe_sub):.4f}")
             ax.legend(fontsize=9)
-        ax.set_xlabel("GBE (a.u.)", fontsize=11)
+        ax.set_xlabel("GBE", fontsize=11)
         ax.set_ylabel("Pixel count", fontsize=11)
         ax.set_title(f"{label}\nN={n} pixels", fontsize=10)
 
@@ -2121,6 +2124,7 @@ def plot_final_velocity_density_with_fits(
     x_lim: tuple,
     bin_interval: float,
     log: logging.Logger,
+    filtered: bool,
 ) -> None:
     """
     Density contour plot of velocity vs |κ| with binned mean ± std and
@@ -2214,15 +2218,22 @@ def plot_final_velocity_density_with_fits(
     ax.set_xlim([curvature_limit, x_lim[1]])
     ax.set_xlabel("|κ| (px⁻¹)", fontsize=12)
     ax.set_ylabel("Velocity (px/s)", fontsize=12)
-    ax.set_title(
-        "Velocity vs Curvature — Density + Binned Fits\n"
-        "TJ-excluded  |  post-confidence filter",
-        fontsize=11,
-    )
+    if filtered:
+        ax.set_title(
+            "Velocity vs Curvature — Density + Binned Fits\n"
+            "TJ-excluded  |  post-confidence filter",
+            fontsize=11,
+        )
+    else:
+        ax.set_title(
+            "Velocity vs Curvature — Density + Binned Fits\n"
+            "TJ-excluded  |  pre-confidence filter",
+            fontsize=11,
+        )
     ax.legend(fontsize=9, loc="lower right")
     plt.tight_layout()
-
-    outpath = output_dir / f"{stem}_final_velocity_density.png"
+    filname = "" if filtered else "un"
+    outpath = output_dir / f"{stem}_final_{filname}filtered_velocity_density.png"
     fig.savefig(outpath, dpi=300, transparent=True)
     plt.close(fig)
     log.warning(f"Final velocity density plot saved: {outpath}")
@@ -2534,15 +2545,28 @@ def main() -> None:
                 log             = log,
             )
 
-            # 7.6  Density + fits (post-confidence, post sign convention)
+            # 7.6  Density + fits (pre-confidence, post sign convention)
             plot_final_velocity_density_with_fits(
-                normc_flat      = normc_flat_conf, #normc_flat for pre-confidence
-                antic_flat      = antic_flat_conf, #antic_flat for pre-confidence
+                normc_flat      = normc_flat,
+                antic_flat      = antic_flat,
                 output_dir      = args.output_dir,
                 stem            = stem,
                 curvature_limit = args.min_curvature,
                 x_lim           = (0.0, 0.1),
                 bin_interval    = 0.002,
+                filtered        = False,
+                log             = log,
+            )
+            # 7.6  Density + fits (POST-confidence, post sign convention)
+            plot_final_velocity_density_with_fits(
+                normc_flat      = normc_flat_conf,
+                antic_flat      = antic_flat_conf,
+                output_dir      = args.output_dir,
+                stem            = stem,
+                curvature_limit = args.min_curvature,
+                x_lim           = (0.0, 0.1),
+                bin_interval    = 0.002,
+                filtered        = True,
                 log             = log,
             )
         else:
