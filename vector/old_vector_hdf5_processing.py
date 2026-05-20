@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import h5py
@@ -101,11 +101,11 @@ def parse_args() -> argparse.Namespace:
     )
     gbe.add_argument(
         "--min-area", type=int, default=20, metavar="N",
-        help="Minimum TJ-filtered GB pixel area for keeping an entire ij GB pair. Lin used 100",
+        help="Minimum GB area in pixels to include in velocity calculation. Lin used 100",
     )
     gbe.add_argument(
         "--min-curvature", type=float, default=0.0, metavar="F",
-        help="Minimum absolute TJ-filtered average GB curvature for keeping an entire ij GB pair. Lin used 0.0182",
+        help="Minimum absolute avg_curvature to include in velocity calculation. Lin used 0.0182",
     )
     gbe.add_argument(
         "--antic-confidence", type=float, default=0.99, metavar="F",
@@ -186,7 +186,7 @@ class FrameData:
     P0:              np.ndarray   # (nx, ny)         grain ID map
     C:               np.ndarray   # (2, nx, ny)      C[0]=grain ID, C[1]=curvature
     P:               np.ndarray   # (3, nx, ny)      P[0]=grain ID, P[1]=dx, P[2]=dy
-    gb_dict:         dict         # pair_id -> np.array([avg_curv, gb_area, gid1, gid2, raw_gb_area])
+    gb_dict:         dict         # pair_id -> np.array([avg_curv, area, gid1, gid2])
     boundary_pixels: np.ndarray   # (N, 2)
     junction_pixels: np.ndarray   # (M, 2)
 
@@ -222,25 +222,7 @@ def load_hdf5_frames(filepath: Path, log: logging.Logger) -> list[FrameData]:
             # Reconstruct gb_dict from parallel arrays
             gb_grp   = fg["gb_dict"]
             pair_ids = gb_grp["pair_ids"][:]   # (K, 2)
-            data_arr = gb_grp["data"][:]        # (K, 4 legacy) or (K, 5 current)
-
-            # Current schema: [avg_curv, gb_area, gid1, gid2, raw_gb_area].
-            # Legacy schema:  [avg_curv, area,    gid1, gid2].  Preserve compatibility
-            # by treating legacy area as both gb_area and raw_gb_area.
-            if data_arr.size > 0 and data_arr.shape[1] == 4:
-                data_arr = np.column_stack([
-                    data_arr[:, 0],  # avg_curv
-                    data_arr[:, 1],  # gb_area fallback from legacy area
-                    data_arr[:, 2],  # gid1
-                    data_arr[:, 3],  # gid2
-                    data_arr[:, 1],  # raw_gb_area fallback
-                ])
-            elif data_arr.size == 0:
-                data_arr = np.empty((0, 5), dtype=np.float64)
-            elif data_arr.shape[1] != 5:
-                raise ValueError(
-                    f"Unexpected gb_dict/data shape {data_arr.shape}; expected Kx4 or Kx5."
-                )
+            data_arr = gb_grp["data"][:]        # (K, 4)
 
             gb_dict: dict[tuple[int, int], np.ndarray] = {
                 (int(pair_ids[k, 0]), int(pair_ids[k, 1])): data_arr[k]
@@ -266,90 +248,6 @@ def load_hdf5_frames(filepath: Path, log: logging.Logger) -> list[FrameData]:
 def get_last_frame(frames: list[FrameData]) -> FrameData:
     """Return the last frame — used for all single-frame analyses."""
     return frames[-1]
-
-
-def filter_gb_dict(
-    gb_dict: dict[tuple[int, int], np.ndarray],
-    *,
-    min_area: float = 0.0,
-    min_curvature: float = 0.0,
-    log: logging.Logger | None = None,
-    label: str = "",
-) -> dict[tuple[int, int], np.ndarray]:
-    """Filter entire GB pairs using TJ-filtered GB properties.
-
-    Expected gb_dict[pair_id] schema:
-        [avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area]
-
-    The filters are GB-level filters applied after TJ exclusion:
-        - gb_area >= min_area
-        - abs(avg_curvature) >= min_curvature
-    """
-    out: dict[tuple[int, int], np.ndarray] = {}
-    n_area = 0
-    n_curv = 0
-
-    for pair_id, data in gb_dict.items():
-        avg_curv = float(data[0])
-        gb_area = float(data[1])
-
-        if gb_area < min_area:
-            n_area += 1
-            continue
-        if abs(avg_curv) < min_curvature:
-            n_curv += 1
-            continue
-        out[pair_id] = data
-
-    if log is not None:
-        tag = f" {label}" if label else ""
-        log.warning(
-            f"GB filter{tag}: {len(out)}/{len(gb_dict)} kept, "
-            f"{n_area} removed by gb_area<{min_area}, "
-            f"{n_curv} removed by |avg_curvature|<{min_curvature}."
-        )
-    return out
-
-
-def filter_frames_gb_dicts(
-    frames: list[FrameData],
-    *,
-    min_area: float,
-    min_curvature: float,
-    log: logging.Logger,
-) -> list[FrameData]:
-    """Return FrameData copies whose gb_dict values pass the canonical GB filter."""
-    filtered: list[FrameData] = []
-    for idx, frame in enumerate(frames):
-        filtered.append(replace(
-            frame,
-            gb_dict=filter_gb_dict(
-                frame.gb_dict,
-                min_area=min_area,
-                min_curvature=min_curvature,
-                log=log,
-                label=f"frame {idx}",
-            ),
-        ))
-    return filtered
-
-
-def summarize_velocity_input(flat: dict, log: logging.Logger, label: str = "Velocity plot input") -> None:
-    """Print compact diagnostics for the filtered velocity lists feeding the plots."""
-    n = len(flat.get("all_curvatures", []))
-    if n == 0:
-        log.warning(f"{label}: 0 entries.")
-        return
-    curv = np.asarray(flat["all_curvatures"], dtype=float)
-    vel = np.asarray(flat["all_velocities"], dtype=float)
-    area = np.asarray(flat["all_areas"], dtype=float)
-    log.warning(
-        f"{label}: N={n}, "
-        f"|kappa| min/median/max={np.min(np.abs(curv)):.5g}/"
-        f"{np.median(np.abs(curv)):.5g}/{np.max(np.abs(curv)):.5g}, "
-        f"area min/median/max={np.min(area):.1f}/{np.median(area):.1f}/{np.max(area):.1f}, "
-        f"velocity min/median/max={np.min(vel):.5g}/{np.median(vel):.5g}/{np.max(vel):.5g}."
-    )
 
 
 def load_misorientation_parquet(
@@ -585,9 +483,10 @@ def compute_gbe_per_pixel(
     frame: FrameData,
     mode: str,
     tj_excluded: set[tuple[int, int]],
-    valid_gb_dict: dict[tuple[int, int], np.ndarray],
+    small_grains: set[int],
     misorientation_data: dict | None = None,
     inclination_anisotropy: float = 0.05,
+    min_curvature: float = 0.0,
     log: logging.Logger | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -598,12 +497,12 @@ def compute_gbe_per_pixel(
     frame               : FrameData  (last frame)
     mode                : one of GBE_MODES
     tj_excluded         : pre-built set from build_tj_proximity_set()
-    valid_gb_dict       : already-filtered GB dictionary. A pixel is kept only if
-                          its pair_id is present in this dict. This applies the
-                          GB-level min_area and min_curvature filters after TJ
-                          exclusion.
+    small_grains        : set of grain IDs whose total area < min_area;
+                          any pixel belonging to or neighboring these grains
+                          is excluded.
     misorientation_data : output of load_misorientation_parquet, or None
     inclination_anisotropy : float anisotropy amplitude
+    min_curvature       : minimum absolute per-pixel curvature to include
     log                 : logger
 
     Returns
@@ -623,7 +522,8 @@ def compute_gbe_per_pixel(
     gbe_values:   list[float]           = []
     n_skipped_tj         = 0
     n_skipped_no_data    = 0
-    n_skipped_pair_filter = 0
+    n_skipped_small      = 0
+    n_skipped_curvature  = 0
 
     for (i, j) in frame.boundary_pixels:
 
@@ -649,9 +549,15 @@ def compute_gbe_per_pixel(
         neighbor_id = next(iter(neighbors))
         pair_id = (min(central, neighbor_id), max(central, neighbor_id))
 
-        # ── Canonical GB-level filter ─────────────────────────────────────
-        if pair_id not in valid_gb_dict:
-            n_skipped_pair_filter += 1
+        # ── Small grain filter (grain area, not GB area) ──────────────────
+        if central in small_grains or neighbor_id in small_grains:
+            n_skipped_small += 1
+            continue
+
+        # ── Per-pixel curvature filter ────────────────────────────────────
+        local_curvature = float(C1[i, j])
+        if abs(local_curvature) < min_curvature:
+            n_skipped_curvature += 1
             continue
 
         # ── Compute inclination (dx, dy) via myInput.get_grad ─────────────
@@ -699,7 +605,8 @@ def compute_gbe_per_pixel(
     log.info(
         f"  GBE computed: {len(gbe_values)} pixels kept, "
         f"{n_skipped_tj} skipped (TJ proximity), "
-        f"{n_skipped_pair_filter} skipped (GB-level area/curvature filter), "
+        f"{n_skipped_small} skipped (small grain), "
+        f"{n_skipped_curvature} skipped (per-pixel curvature < {min_curvature}), "
         f"{n_skipped_no_data} skipped (no misorientation data)."
     )
 
@@ -709,7 +616,8 @@ def compute_gbe_per_pixel(
 def compute_inclination_per_pixel(
     frame: FrameData,
     tj_excluded: set[tuple[int, int]],
-    valid_gb_dict: dict[tuple[int, int], np.ndarray],
+    small_grains: set[int],
+    min_curvature: float = 0.0,
     log: logging.Logger | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -723,8 +631,8 @@ def compute_inclination_per_pixel(
     ----------
     frame         : FrameData (last frame)
     tj_excluded   : pre-built TJ proximity set — shared with GBE calculation
-    valid_gb_dict : already-filtered GB dictionary. A pixel is kept only if
-                    its pair_id is present in this dict.
+    small_grains  : set of grain IDs whose total area < min_area
+    min_curvature : minimum absolute per-pixel curvature to include
     log           : logger
 
     Returns
@@ -744,7 +652,8 @@ def compute_inclination_per_pixel(
     angles: list[float]           = []
     coords: list[tuple[int, int]] = []
     n_skipped_tj        = 0
-    n_skipped_pair_filter = 0
+    n_skipped_small     = 0
+    n_skipped_curvature = 0
 
     for (i, j) in frame.boundary_pixels:
 
@@ -766,11 +675,16 @@ def compute_inclination_per_pixel(
             continue
 
         neighbor_id = next(iter(neighbors))
-        pair_id = (min(central, neighbor_id), max(central, neighbor_id))
 
-        # ── Canonical GB-level filter ─────────────────────────────────────
-        if pair_id not in valid_gb_dict:
-            n_skipped_pair_filter += 1
+        # ── Small grain filter ────────────────────────────────────────────
+        if central in small_grains or neighbor_id in small_grains:
+            n_skipped_small += 1
+            continue
+
+        # ── Per-pixel curvature filter ────────────────────────────────────
+        local_curvature = float(C1[i, j])
+        if abs(local_curvature) < min_curvature:
+            n_skipped_curvature += 1
             continue
 
         dx, dy = myInput.get_grad(P, int(i), int(j))
@@ -781,7 +695,8 @@ def compute_inclination_per_pixel(
     log.info(
         f"  Inclination: {len(angles)} pixels computed, "
         f"{n_skipped_tj} skipped (TJ proximity), "
-        f"{n_skipped_pair_filter} skipped (GB-level area/curvature filter)."
+        f"{n_skipped_small} skipped (small grain), "
+        f"{n_skipped_curvature} skipped (per-pixel curvature < {min_curvature})."
     )
 
     return np.array(coords, dtype=np.int32), np.array(angles, dtype=np.float64)
@@ -876,6 +791,7 @@ def compute_dV_split(
 def compute_gb_velocity_one_interval(
     frame_current: FrameData,
     frame_next: FrameData,
+    small_grains: set[int],
     log: logging.Logger | None = None,
 ) -> dict[tuple[int, int], dict]:
     """
@@ -888,8 +804,8 @@ def compute_gb_velocity_one_interval(
     ----------
     frame_current : FrameData at time t
     frame_next    : FrameData at time t + dt
-    frame_current.gb_dict and frame_next.gb_dict are expected to already be
-    filtered with the canonical GB-level filters.
+    small_grains  : set of grain IDs whose total pixel count < min_area;
+                    any GB pair that includes one of these grains is excluded.
 
     Returns
     -------
@@ -917,6 +833,7 @@ def compute_gb_velocity_one_interval(
     P0_next    = np.rint(frame_next.P0).astype(np.int32)
 
     results: dict[tuple[int, int], dict] = {}
+    n_skipped_small = 0
     n_skipped_gone  = 0
 
     for pair_id, data_current in frame_current.gb_dict.items():
@@ -924,6 +841,11 @@ def compute_gb_velocity_one_interval(
         area          = float(data_current[1])
         grain_id1     = int(data_current[2])
         grain_id2     = int(data_current[3])
+
+        # ── Small grain filter (grain area, not GB area) ──────────────────
+        if grain_id1 in small_grains or grain_id2 in small_grains:
+            n_skipped_small += 1
+            continue
 
         if pair_id not in frame_next.gb_dict:
             n_skipped_gone += 1
@@ -950,13 +872,15 @@ def compute_gb_velocity_one_interval(
     log.info(
         f"  Velocity [{frame_current.step}->{frame_next.step}]: "
         f"{len(results)} pairs computed, "
-        f"{n_skipped_gone} skipped (not present after next-frame filters or GB gone)."
+        f"{n_skipped_small} skipped (small grain), "
+        f"{n_skipped_gone} skipped (GB gone)."
     )
     return results
 
 
 def compute_gb_velocity_averaged(
     frames: list[FrameData],
+    small_grains: set[int],
     log: logging.Logger | None = None,
 ) -> pd.DataFrame:
     """
@@ -964,7 +888,8 @@ def compute_gb_velocity_averaged(
 
     Parameters
     ----------
-    frames : all loaded frames (in time order), with gb_dict already filtered
+    frames       : all loaded frames (in time order)
+    small_grains : pre-built set of grain IDs below the area threshold
     """
     if log is None:
         log = logging.getLogger("VHP")
@@ -978,6 +903,7 @@ def compute_gb_velocity_averaged(
         interval_results = compute_gb_velocity_one_interval(
             frame_current = frames[i],
             frame_next    = frames[i + 1],
+            small_grains  = small_grains,
             log           = log,
         )
         for pair_id, res in interval_results.items():
@@ -1030,6 +956,7 @@ def compute_gb_velocity_averaged(
 
 def accumulate_velocity_flat_lists(
     frames: list[FrameData],
+    small_grains: set[int],
     log: logging.Logger | None = None,
 ) -> dict:
     """
@@ -1037,7 +964,8 @@ def accumulate_velocity_flat_lists(
 
     Parameters
     ----------
-    frames : all loaded frames (in time order), with gb_dict already filtered
+    frames       : all loaded frames (in time order)
+    small_grains : pre-built set of grain IDs below the area threshold
     """
     if log is None:
         log = logging.getLogger("VHP")
@@ -1057,6 +985,7 @@ def accumulate_velocity_flat_lists(
         interval_results = compute_gb_velocity_one_interval(
             frame_current = frames[i],
             frame_next    = frames[i + 1],
+            small_grains  = small_grains,
             log           = log,
         )
         flat["all_interval_results"].append(interval_results)
@@ -1579,12 +1508,10 @@ def plot_velocity_debug(
         x_centers = (x_edges[:-1] + x_edges[1:]) / 2
         y_centers = (y_edges[:-1] + y_edges[1:]) / 2
         X, Y = np.meshgrid(x_centers, y_centers)
-        hist_log = np.full_like(hist.T, np.nan, dtype=float)
-        nz = hist.T > 0
-        hist_log[nz] = np.log10(hist.T[nz])
-        cf = ax.contourf(X, Y, hist_log, levels=20,
+        hist.T[hist.T == 0] = 1
+        cf = ax.contourf(X, Y, np.log10(hist.T), levels=20,
                         cmap="coolwarm", alpha=0.9, vmin=0)
-        ax.contour(X, Y, hist_log, levels=20,
+        ax.contour(X, Y, np.log10(hist.T), levels=20,
                 cmap="gray", alpha=0.1, vmin=0)
         cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label(r"log$_{10}$(count)", fontsize=9)
@@ -2275,12 +2202,10 @@ def plot_final_velocity_density_with_fits(
     x_centers = (x_edges[:-1] + x_edges[1:]) / 2
     y_centers = (y_edges[:-1] + y_edges[1:]) / 2
     X, Y = np.meshgrid(x_centers, y_centers)
-    hist_log = np.full_like(hist.T, np.nan, dtype=float)
-    nz = hist.T > 0
-    hist_log[nz] = np.log10(hist.T[nz])
-    cf = ax.contourf(X, Y, hist_log, levels=20,
+    hist.T[hist.T == 0] = 1
+    cf = ax.contourf(X, Y, np.log10(hist.T), levels=20,
                      cmap="coolwarm", alpha=0.9, vmin=0)
-    ax.contour(X, Y, hist_log, levels=20,
+    ax.contour(X, Y, np.log10(hist.T), levels=20,
                cmap="gray", alpha=0.15, vmin=0)
     cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label(r"log$_{10}$(count)", fontsize=9)
@@ -2371,30 +2296,12 @@ def main() -> None:
     frames = load_hdf5_frames(args.hdf5, log)
     tf(t0, log, "HDF5 load: ")
 
-    raw_last_frame = get_last_frame(frames)
+    last_frame = get_last_frame(frames)
     log.warning(
-        f"Using raw last frame: step={raw_last_frame.step}, time={raw_last_frame.time:.6g}, "
-        f"boundary_pixels={len(raw_last_frame.boundary_pixels)}, "
-        f"junction_pixels={len(raw_last_frame.junction_pixels)}, "
-        f"gb_pairs={len(raw_last_frame.gb_dict)}"
-    )
-
-    # ── 1b. Apply canonical GB-level filters to every frame ────────────────
-    # HDF5 gb_dict entries are already TJ-excluded during HDF5 generation.
-    # The filters below remove whole ij pairs based on TJ-filtered GB area
-    # and TJ-filtered average curvature.
-    t0 = time.perf_counter()
-    frames_filtered = filter_frames_gb_dicts(
-        frames,
-        min_area=args.min_area,
-        min_curvature=args.min_curvature,
-        log=log,
-    )
-    tf(t0, log, "GB-level filtering: ")
-    last_frame = get_last_frame(frames_filtered)
-    log.warning(
-        f"Using filtered last frame: step={last_frame.step}, time={last_frame.time:.6g}, "
-        f"gb_pairs={len(last_frame.gb_dict)} after min_area/min_curvature."
+        f"Using last frame: step={last_frame.step}, time={last_frame.time:.6g}, "
+        f"boundary_pixels={len(last_frame.boundary_pixels)}, "
+        f"junction_pixels={len(last_frame.junction_pixels)}, "
+        f"gb_pairs={len(last_frame.gb_dict)}"
     )
 
     # ── 2. Load misorientation parquet (if needed) ─────────────────────────
@@ -2409,23 +2316,27 @@ def main() -> None:
 
     # ── 3. Build TJ exclusion set ONCE — shared by all per-pixel calculations ──
     tj_excluded: set[tuple[int, int]] = set()
-    if args.tj_exclude and len(raw_last_frame.junction_pixels) > 0:
+    if args.tj_exclude and len(last_frame.junction_pixels) > 0:
         t0 = time.perf_counter()
         tj_excluded = build_tj_proximity_set(
-            raw_last_frame.junction_pixels, args.tj_distance
+            last_frame.junction_pixels, args.tj_distance
         )
         tf(t0, log, "TJ exclusion set: ")
         log.warning(
             f"TJ exclusion: {len(tj_excluded)} coords excluded "
             f"(radius={args.tj_distance}px, "
-            f"from {len(raw_last_frame.junction_pixels)} junction pixels)"
+            f"from {len(last_frame.junction_pixels)} junction pixels)"
         )
 
+    # ── 3b. Compute grain areas and small grain set ONCE ──────────────────
+    t0 = time.perf_counter()
+    grain_areas  = compute_grain_areas(last_frame.P0)
+    small_grains = build_small_grain_set(grain_areas, args.min_area)
+    tf(t0, log, "Grain area filter: ")
     log.warning(
-        "Filter convention: --min-area is interpreted as TJ-filtered GB pixel area; "
-        "--min-curvature is interpreted as abs(TJ-filtered average GB curvature). "
-        "For velocity, --tj-distance is governed by the HDF5 gb_dict; regenerate the HDF5 "
-        "with a different --tj-distance to change the velocity TJ filtering."
+        f"Small grain filter: {len(small_grains)} grain(s) below "
+        f"{args.min_area} px excluded "
+        f"(out of {len(grain_areas)} total grains)."
     )
 
     # ── 4. Compute GBE per pixel ──────────────────────────────────────────
@@ -2434,9 +2345,10 @@ def main() -> None:
         frame                  = last_frame,
         mode                   = args.gbe_mode,
         tj_excluded            = tj_excluded,
-        valid_gb_dict          = last_frame.gb_dict,
+        small_grains           = small_grains,          # NEW
         misorientation_data    = misorientation_data,
         inclination_anisotropy = args.inclination_anisotropy,
+        min_curvature          = args.min_curvature,    # NEW (per-pixel)
         log                    = log,
     )
     tf(t0, log, "GBE calculation: ")
@@ -2472,7 +2384,8 @@ def main() -> None:
     inc_coords, inc_angles = compute_inclination_per_pixel(
         frame         = last_frame,
         tj_excluded   = tj_excluded,
-        valid_gb_dict = last_frame.gb_dict,
+        small_grains  = small_grains,       # NEW
+        min_curvature = args.min_curvature, # NEW (per-pixel)
         log           = log,
     )
     tf(t0, log, "Inclination calculation: ")
@@ -2503,14 +2416,16 @@ def main() -> None:
         t0 = time.perf_counter()
 
         flat_lists = accumulate_velocity_flat_lists(
-            frames       = frames_filtered,
+            frames       = frames,
+            small_grains = small_grains,   # replaces min_area + min_curvature
             log          = log,
         )
         vtf(t0, log, "Velocity flat accumulation: ")
 
         t02 = time.perf_counter()
         velocity_df = compute_gb_velocity_averaged(
-            frames       = frames_filtered,
+            frames       = frames,
+            small_grains = small_grains,   # replaces min_area + min_curvature
             log          = log,
         )
         vtf(t02, log, "Velocity averaged (secondary): ")
@@ -2526,7 +2441,6 @@ def main() -> None:
             flat_lists["all_dV_forward"],
             flat_lists["all_dV_backward"],
         )
-        summarize_velocity_input(flat_lists, log, label="Velocity plot input after GB filters")
 
         # ── 6.2 Sliding window filter (optional, --drop-isolated-antic) ─────────
         isolated_antic = find_isolated_anticurvature_events(
@@ -2607,7 +2521,7 @@ def main() -> None:
                 normc_flat_conf = normc_flat_conf,
                 antic_flat_conf = antic_flat_conf,
                 last_frame      = last_frame,
-                frames          = frames_filtered,
+                frames          = frames,
                 velocity_df     = velocity_df,
                 output_dir      = args.output_dir,
                 stem            = stem,

@@ -543,11 +543,8 @@ def accumulate_gb_properties(C: np.ndarray, TJ_distance_max: int = 6,
     Returns
     -------
     dict
-        pair_id (tuple) -> np.array([valid_count, sum_curvature, raw_area,
+        pair_id (tuple) -> np.array([valid_count, sum_curvature, total_area,
                                      grain_id1, grain_id2])
-
-        valid_count is the number of clean GB pixels that survive TJ exclusion.
-        raw_area is the number of clean GB pixels before TJ exclusion.
     """
     C0 = C[0]
     C1 = C[1]
@@ -600,10 +597,10 @@ def accumulate_gb_properties(C: np.ndarray, TJ_distance_max: int = 6,
             grain_id1, grain_id2 = pair_id
 
             if pair_id not in raw_gb_dict:
-                # [valid_count, sum_curvature, raw_area, grain_id1, grain_id2]
+                # [valid_count, sum_curvature, total_area, grain_id1, grain_id2]
                 raw_gb_dict[pair_id] = np.array([0.0, 0.0, 0.0,
                                                   float(grain_id1), float(grain_id2)])
-            raw_gb_dict[pair_id][2] += 1.0  # raw_area before TJ exclusion
+            raw_gb_dict[pair_id][2] += 1.0  # total_area
 
     # ------------------------------------------------------------------
     # PASS 2: Boundary pixels only — apply TJ filter and accumulate
@@ -672,10 +669,7 @@ def average_gb_properties(raw_gb_dict: dict) -> dict:
     Returns
     -------
     dict
-        pair_id (tuple) -> np.array([avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area])
-
-        gb_area is the TJ-filtered clean GB pixel count. raw_gb_area is retained
-        for diagnostics and backward comparison.
+        pair_id (tuple) -> np.array([avg_curvature, area, grain_id1, grain_id2])
     """
     gb_dict = {}
 
@@ -686,12 +680,11 @@ def average_gb_properties(raw_gb_dict: dict) -> dict:
             continue
 
         avg_curvature = data[1] / valid_count
-        gb_area       = valid_count        # TJ-filtered GB pixel area
-        raw_gb_area   = data[2]            # clean GB pixel area before TJ exclusion
+        area          = data[2]
         grain_id1     = data[3]
         grain_id2     = data[4]
 
-        gb_dict[pair_id] = np.array([avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area])
+        gb_dict[pair_id] = np.array([avg_curvature, area, grain_id1, grain_id2])
 
     return gb_dict
 
@@ -714,10 +707,7 @@ def compute_gb_curvature(C: np.ndarray, TJ_distance_max: int = 6,
     Returns
     -------
     dict
-        pair_id (tuple) -> np.array([avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area])
-
-        gb_area is the TJ-filtered clean GB pixel count. raw_gb_area is retained
-        for diagnostics and backward comparison.
+        pair_id (tuple) -> np.array([avg_curvature, area, grain_id1, grain_id2])
     """
     raw_gb_dict, boundary_pixels, junction_pixels = accumulate_gb_properties(
         C, TJ_distance_max=TJ_distance_max, signed=signed)
@@ -795,7 +785,7 @@ def _stream_frame_to_hdf5(filepath: str, frame_num: int, frame_tuple: tuple,
                                   compression="gzip")
         else:
             gb_grp.create_dataset("pair_ids", data=np.empty((0, 2), dtype=np.int32))
-            gb_grp.create_dataset("data",     data=np.empty((0, 5), dtype=np.float64))
+            gb_grp.create_dataset("data",     data=np.empty((0, 4), dtype=np.float64))
 
     if log:
         log.info(f"  Streamed frame_{frame_num:04d} (step={step}) to {filepath}.")
@@ -818,8 +808,8 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
                 junction_pixels      (M x 2 int array)
                 gb_dict/
                     pair_ids         (K x 2 int array)
-                    data             (K x 5 float array)
-                                     [avg_curv, gb_area, grain_id1, grain_id2, raw_gb_area]
+                    data             (K x 4 float array)
+                                     [avg_curv, area, grain_id1, grain_id2]
 
     Parameters
     ----------
@@ -868,7 +858,7 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
                 gb_grp.create_dataset("data",     data=data_arr, compression="gzip")
             else:
                 gb_grp.create_dataset("pair_ids", data=np.empty((0, 2), dtype=np.int32))
-                gb_grp.create_dataset("data",     data=np.empty((0, 5), dtype=np.float64))
+                gb_grp.create_dataset("data",     data=np.empty((0, 4), dtype=np.float64))
 
     if log:
         log.info(f"Saved {len(frames_data)} frames to {filepath}")
