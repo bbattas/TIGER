@@ -27,6 +27,8 @@ def parse_args():
                      help="Increase verbosity (-v, -vv, -vvv).")
     log.add_argument("-s", "--subdirs", action="store_true",
                      help="Search for *.e files one level down (./*/.e). If not set, only search current directory.")
+    log.add_argument("--input", "-i", type=str, default=None, metavar="PATTERN",
+                    help="Only process .e files whose name contains this string (e.g. 'job_042').")
 
     # ---- Target frame selection ----
     tim = p.add_argument_group("Target frame selection (choose one)")
@@ -126,19 +128,24 @@ def vtf(ti,log,extra=None):
         log.info(f"Time: {(time.perf_counter()-ti):.4}s")
 
 
-def find_exodus_files(*, subdirs: bool = False, pattern: str = "*.e") -> list[Path]:
+def find_exodus_files(*, subdirs: bool = False, pattern: str = "*.e", filter_str: str | None = None) -> list[Path]:
     """
     Find Exodus files in current directory or one-level-down subdirectories.
+    If filter_str is given, only return files whose name contains that string.
     Returns sorted list of Paths.
     """
     cwd = Path.cwd()
 
-    if subdirs:
-        files = sorted(cwd.glob(f"*/{pattern}"))
+    if filter_str:
+        glob_pattern = f"*{filter_str}*.e"
     else:
-        files = sorted(cwd.glob(pattern))
+        glob_pattern = pattern
 
-    # Optional: ignore hidden dirs/files or non-files
+    if subdirs:
+        files = sorted(cwd.glob(f"*/{glob_pattern}"))
+    else:
+        files = sorted(cwd.glob(glob_pattern))
+
     files = [p for p in files if p.is_file()]
     return files
 
@@ -529,7 +536,7 @@ def main():
 
 
     # exofile = glob.glob('*.e')[0]
-    exo_files = find_exodus_files(subdirs=args.subdirs)
+    exo_files = find_exodus_files(subdirs=args.subdirs, filter_str=args.input)
     if not exo_files:
         where = "subdirectories" if args.subdirs else "current directory"
         raise SystemExit(f"No .e files found in {where}.")
