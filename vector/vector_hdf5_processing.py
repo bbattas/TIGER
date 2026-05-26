@@ -2275,7 +2275,7 @@ def plot_final_velocity_density_with_fits(
     x_centers = (x_edges[:-1] + x_edges[1:]) / 2
     y_centers = (y_edges[:-1] + y_edges[1:]) / 2
     X, Y = np.meshgrid(x_centers, y_centers)
-    hist_log = np.full_like(hist.T, np.nan, dtype=float)
+    hist_log = np.full_like(hist.T, 0, dtype=float) #was np.nan not 1 meant no background
     nz = hist.T > 0
     hist_log[nz] = np.log10(hist.T[nz])
     cf = ax.contourf(X, Y, hist_log, levels=20,
