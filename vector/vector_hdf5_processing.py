@@ -405,6 +405,51 @@ def load_misorientation_parquet(
 #  Layer 2 — GBE energy functions
 # ──────────────────────────────────────────────────────────────────────────────
 
+# def compute_fmiso_single(
+#     angle_deg: float,
+#     ax_x: float,
+#     ax_y: float,
+#     ax_z: float,
+# ) -> float:
+#     """
+#     Misorientation-only GBE function f_miso for a single GB pair.
+
+#     1. Normalize misorientation axis.
+#     2. polar   = acos(ax_z)
+#        azimuth = atan2(ax_y, ax_x), remapped to [0, 2π)
+#     3. ang_energy = (θ/62°) * (1 - ln(θ/62°)), clamped to [0, 1]
+#        ax_energy  = |cos(polar)|^0.4 + |cos(azimuth/2)|^0.4, clamped to [0, 1]
+#     4. f_miso = 0.3 + 0.7 * (ang_energy * ax_energy)
+
+#     Returns f_miso in [0.3, ~1.0].
+#     """
+#     norm = np.sqrt(ax_x**2 + ax_y**2 + ax_z**2)
+#     if norm < 1e-12:
+#         return 0.3
+#     ax_x /= norm
+#     ax_y /= norm
+#     ax_z /= norm
+
+#     polar   = np.arccos(np.clip(ax_z, -1.0, 1.0))
+#     azimuth = np.arctan2(ax_y, ax_x)
+#     if azimuth < 0.0:
+#         azimuth += 2.0 * np.pi
+
+#     theta_rad = np.deg2rad(angle_deg)
+#     ratio     = theta_rad / THETA_MAX_RAD
+#     if ratio <= 0.0:
+#         ang_energy = 0.0
+#     elif ratio >= 1.0:
+#         ang_energy = 1.0
+#     else:
+#         ang_energy = ratio * (1.0 - np.log(ratio))
+#     ang_energy = min(ang_energy, 1.0)
+
+#     ax_energy = abs(np.cos(polar))**0.4 + abs(np.cos(azimuth / 2.0))**0.4
+#     ax_energy = min(ax_energy, 1.0)
+
+#     return float(0.3 + 0.7 * (ang_energy * ax_energy))
+
 def compute_fmiso_single(
     angle_deg: float,
     ax_x: float,
@@ -419,13 +464,13 @@ def compute_fmiso_single(
        azimuth = atan2(ax_y, ax_x), remapped to [0, 2π)
     3. ang_energy = (θ/62°) * (1 - ln(θ/62°)), clamped to [0, 1]
        ax_energy  = |cos(polar)|^0.4 + |cos(azimuth/2)|^0.4, clamped to [0, 1]
-    4. f_miso = 0.3 + 0.7 * (ang_energy * ax_energy)
+    4. f_miso = 0.5 + 0.5 * (ang_energy * ax_energy)
 
-    Returns f_miso in [0.3, ~1.0].
+    Returns f_miso in [0.5, ~1.0].
     """
     norm = np.sqrt(ax_x**2 + ax_y**2 + ax_z**2)
     if norm < 1e-12:
-        return 0.3
+        return 0.5
     ax_x /= norm
     ax_y /= norm
     ax_z /= norm
@@ -448,7 +493,7 @@ def compute_fmiso_single(
     ax_energy = abs(np.cos(polar))**0.4 + abs(np.cos(azimuth / 2.0))**0.4
     ax_energy = min(ax_energy, 1.0)
 
-    return float(0.3 + 0.7 * (ang_energy * ax_energy))
+    return float(0.5 + 0.5 * (ang_energy * ax_energy))
 
 
 def compute_finclination_cosine(dx: float, dy: float, a: float) -> float:
@@ -475,10 +520,16 @@ def compute_finclination_cosine(dx: float, dy: float, a: float) -> float:
 def compute_finclination(dx: float, dy: float) -> float:
     """
     Inclination-only GBE using a direct inclination-dependent function.
-    Placeholder — replace with your target formulation.
+    // 0.5 + A * B * w_inc + twist * (1 - w_inc)
+    // A (smooth) = 0.5 * (1 + cos (2 theta))
+    // B = twist + polar/(pi/2) * (tilt - twist)
+    Polar angle hardcoded for 2D at pi/2
     """
-    # TODO: implement direct inclination energy function
-    raise NotImplementedError("inclination GBE not yet implemented.")
+    theta = math.atan2(-dy, dx) + math.pi
+    # polar = = math.pi / 2
+    A = 0.5 * (1 + math.cos(2.0 * theta))
+    B = 0.5 + (0.2 - 0.5)
+    return 0.5 + A * B
 
 
 def compute_fboth(
@@ -491,10 +542,46 @@ def compute_fboth(
 ) -> float:
     """
     Combined inclination + misorientation GBE.
-    Placeholder — replace with your target formulation.
+    // 0.5 + A * B * w_inc + twist * (1 - w_inc)
+    // A (smooth) = 0.5 * (1 + cos (2 theta))
+    // B = twist + polar/(pi/2) * (tilt - twist)
+    Polar angle hardcoded for 2D at pi/2
     """
-    # TODO: implement combined inclination + misorientation energy function
-    raise NotImplementedError("'both' GBE not yet implemented.")
+    # MISO
+    norm = np.sqrt(ax_x**2 + ax_y**2 + ax_z**2)
+    if norm < 1e-12:
+        return 0.5
+    ax_x /= norm
+    ax_y /= norm
+    ax_z /= norm
+
+    polar   = np.arccos(np.clip(ax_z, -1.0, 1.0))
+    azimuth = np.arctan2(ax_y, ax_x)
+    if azimuth < 0.0:
+        azimuth += 2.0 * np.pi
+
+    theta_rad = np.deg2rad(angle_deg)
+    ratio     = theta_rad / THETA_MAX_RAD
+    if ratio <= 0.0:
+        ang_energy = 0.0
+    elif ratio >= 1.0:
+        ang_energy = 1.0
+    else:
+        ang_energy = ratio * (1.0 - np.log(ratio))
+    ang_energy = min(ang_energy, 1.0)
+
+    ax_energy = abs(np.cos(polar))**0.4 + abs(np.cos(azimuth / 2.0))**0.4
+    ax_energy = min(ax_energy, 1.0)
+    twist = 0.5 * ang_energy * ax_energy
+    tilt = 0.2 * ang_energy * ax_energy
+
+    # INC
+    theta_inc = math.atan2(-dy, dx) + math.pi
+    # polar = = math.pi / 2
+    A = 0.5 * (1 + math.cos(2.0 * theta_inc))
+    B = twist + (tilt - twist)
+    return 0.5 + A * B
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
