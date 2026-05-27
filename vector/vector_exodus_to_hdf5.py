@@ -756,6 +756,26 @@ def save_frame_times_csv(filepath: str, frames_data: list, exo,
         print(f"Frame times CSV written: {csv_path}")
 
 
+def _initialize_streamed_hdf5(filepath: str, args: argparse.Namespace,
+                               log: logging.Logger = None) -> None:
+    """
+    Create a new HDF5 file with the provenance group and an empty frames group.
+    Called once before streaming begins.
+    """
+    with h5py.File(filepath, 'w') as hf:
+        prov = hf.create_group("provenance")
+        prov.create_dataset("tj_distance",  data=int(args.tj_distance))
+        prov.create_dataset("loop_times",   data=int(args.loop_times))
+        prov.create_dataset("signed",       data=bool(args.signed))
+        prov.create_dataset("cpus",         data=int(args.cpus))
+        prov.create_dataset("hdf5_frames",  data=int(args.hdf5_frames))
+        prov.create_dataset("hdf5_dt",
+                            data=float(args.hdf5_dt) if args.hdf5_dt is not None else float("nan"))
+        hf.create_group("frames")
+
+    if log:
+        log.info(f"Initialized streamed HDF5 with provenance: {filepath}")
+
 
 def _stream_frame_to_hdf5(filepath: str, frame_num: int, frame_tuple: tuple,
                            log: logging.Logger = None) -> None:
@@ -802,34 +822,54 @@ def _stream_frame_to_hdf5(filepath: str, frame_num: int, frame_tuple: tuple,
 
 
 def save_hdf5_multiframe(filepath: str, frames_data: list,
-                         log: logging.Logger = None) -> None:
+                          args: argparse.Namespace,
+                          log: logging.Logger = None) -> None:
     """
     Save multi-frame grain boundary curvature data to an HDF5 file.
 
     HDF5 structure:
-        /frames/
-            frame_0000/
-                step                 (scalar int)
-                time                 (scalar float)
-                P0                   (nx x ny float array)
-                C                    (2 x nx x ny array)
-                P                    (3 x nx x ny array)
-                boundary_pixels      (N x 2 int array)
-                junction_pixels      (M x 2 int array)
-                gb_dict/
-                    pair_ids         (K x 2 int array)
-                    data             (K x 5 float array)
-                                     [avg_curv, gb_area, grain_id1, grain_id2, raw_gb_area]
+    /provenance/
+        tj_distance          (scalar int)
+        loop_times           (scalar int)
+        signed               (scalar bool)
+        cpus                 (scalar int)
+        hdf5_frames          (scalar int)
+        hdf5_dt              (scalar float or NaN if not set)
+    /frames/
+        frame_0000/
+            step                 (scalar int)
+            time                 (scalar float)
+            P0                   (nx x ny float array)
+            C                    (2 x nx x ny array)
+            P                    (3 x nx x ny array)
+            boundary_pixels      (N x 2 int array)
+            junction_pixels      (M x 2 int array)
+            gb_dict/
+                pair_ids         (K x 2 int array)
+                data             (K x 5 float array)
+                [avg_curv, gb_area, grain_id1, grain_id2, raw_gb_area]
 
     Parameters
     ----------
-    filepath : str
-        Output .h5 file path.
+    filepath    : str
     frames_data : list of tuples
         Each tuple: (step, time_val, P0, C, P, gb_dict, boundary_pixels, junction_pixels)
-    log : logging.Logger or None
+    args        : argparse.Namespace — Stage 1 CLI args for provenance
+    log         : logging.Logger or None
     """
     with h5py.File(filepath, 'w') as hf:
+
+        # ── Provenance group ──────────────────────────────────────────────
+        prov = hf.create_group("provenance")
+        prov.create_dataset("tj_distance",  data=int(args.tj_distance))
+        prov.create_dataset("loop_times",   data=int(args.loop_times))
+        prov.create_dataset("signed",       data=bool(args.signed))
+        prov.create_dataset("cpus",         data=int(args.cpus))
+        prov.create_dataset("hdf5_frames",  data=int(args.hdf5_frames))
+        prov.create_dataset("hdf5_dt",
+                            data=float(args.hdf5_dt) if args.hdf5_dt is not None else float("nan"))
+
+        # ── Frames group ──────────────────────────────────────────────────
         frames_grp = hf.create_group("frames")
 
         for frame_num, (step, time_val, P0, C, P, gb_dict,
@@ -838,11 +878,10 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
 
             fg.create_dataset("step",  data=int(step))
             fg.create_dataset("time",  data=float(time_val))
-            fg.create_dataset("P0",    data=np.rint(P0).astype(np.int32), compression="gzip") #data=P0
+            fg.create_dataset("P0",    data=np.rint(P0).astype(np.int32), compression="gzip")
             fg.create_dataset("C",     data=C, compression="gzip")
-            fg.create_dataset("P", data=P, compression="gzip")
+            fg.create_dataset("P",     data=P, compression="gzip")
 
-            # boundary/junction pixels
             if len(boundary_pixels) > 0:
                 fg.create_dataset("boundary_pixels",
                                   data=np.array(boundary_pixels, dtype=np.int32),
@@ -859,7 +898,6 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
                 fg.create_dataset("junction_pixels",
                                   data=np.empty((0, 2), dtype=np.int32))
 
-            # gb_dict as two parallel arrays
             gb_grp = fg.create_group("gb_dict")
             if gb_dict:
                 pair_ids = np.array(list(gb_dict.keys()), dtype=np.int32)
@@ -1221,8 +1259,7 @@ def main():
                 if args.stream:
                     frames_data_for_csv = []
                     # Initialize the file once, then append each frame
-                    with h5py.File(hdf5_path, 'w') as hf:
-                        hf.create_group("frames")
+                    _initialize_streamed_hdf5(hdf5_path, args, log=log)
 
                     for frame_num, (s, t) in progress(enumerate(frame_steps),
                                        desc="Streaming frames",
@@ -1250,7 +1287,7 @@ def main():
                         vtf(tif, log, extra=f"  Frame {frame_num} (step={s}) process: ")
                         frames_data.append(frame_tuple)
                     tif = time.perf_counter()
-                    save_hdf5_multiframe(hdf5_path, frames_data, log=log)
+                    save_hdf5_multiframe(hdf5_path, frames_data, args, log=log)
                     save_frame_times_csv(hdf5_path, frames_data, exo, log=log)
                     vtf(tif, log, extra=f"  Batch write ({len(frames_data)} frames): ")
                 log.info(f"HDF5 written: {hdf5_path} ({len(frames_data)} frames)")

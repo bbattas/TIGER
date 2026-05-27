@@ -101,7 +101,8 @@ def parse_args() -> argparse.Namespace:
     )
     gbe.add_argument(
         "--min-area", type=int, default=20, metavar="N",
-        help="Minimum TJ-filtered GB pixel area for keeping an entire ij GB pair. Lin used 100",
+        help=("Minimum grain pixel area. GB pairs where either participating grain "
+            "has fewer than N pixels are excluded. Lin used 100."),
     )
     gbe.add_argument(
         "--min-curvature", type=float, default=0.0, metavar="F",
@@ -195,17 +196,44 @@ class FrameData:
 #  Layer 1 — I/O
 # ──────────────────────────────────────────────────────────────────────────────
 
-def load_hdf5_frames(filepath: Path, log: logging.Logger) -> list[FrameData]:
+def load_hdf5_frames(filepath: Path, log: logging.Logger) -> tuple[list[FrameData], dict]:
     """
     Read all frames from an HDF5 file produced by vector_exodus_to_hdf5.py.
     Reconstructs gb_dict from the parallel pair_ids / data arrays stored
     under each frame's gb_dict group.
+
+    Returns
+    -------
+    frames     : list[FrameData]
+    provenance : dict of Stage 1 generation parameters, or empty dict if
+                 no provenance group exists (legacy HDF5 files).
     """
     frames: list[FrameData] = []
+    provenance: dict = {}
 
     with h5py.File(filepath, "r") as hf:
+
+        # ── Provenance ────────────────────────────────────────────────────
+        if "provenance" in hf:
+            prov = hf["provenance"]
+            provenance = {
+                "tj_distance": int(prov["tj_distance"][()]),
+                "loop_times":  int(prov["loop_times"][()]),
+                "signed":      bool(prov["signed"][()]),
+                "cpus":        int(prov["cpus"][()]),
+                "hdf5_frames": int(prov["hdf5_frames"][()]),
+                "hdf5_dt":     float(prov["hdf5_dt"][()]),  # may be NaN
+            }
+            log.warning(f"HDF5 provenance: {provenance}")
+        else:
+            log.warning(
+                "HDF5 provenance group not found — legacy file. "
+                "Stage 1 parameters are unknown; --tj-distance from CLI will be used."
+            )
+
+        # ── Frames ────────────────────────────────────────────────────────
         frames_grp = hf["frames"]
-        frame_keys = sorted(frames_grp.keys())  # frame_0000, frame_0001, ...
+        frame_keys = sorted(frames_grp.keys())
         log.info(f"HDF5 contains {len(frame_keys)} frame(s): {frame_keys}")
 
         for key in frame_keys:
@@ -219,21 +247,17 @@ def load_hdf5_frames(filepath: Path, log: logging.Logger) -> list[FrameData]:
             bp       = fg["boundary_pixels"][:]
             jp       = fg["junction_pixels"][:]
 
-            # Reconstruct gb_dict from parallel arrays
             gb_grp   = fg["gb_dict"]
-            pair_ids = gb_grp["pair_ids"][:]   # (K, 2)
-            data_arr = gb_grp["data"][:]        # (K, 4 legacy) or (K, 5 current)
+            pair_ids = gb_grp["pair_ids"][:]
+            data_arr = gb_grp["data"][:]
 
-            # Current schema: [avg_curv, gb_area, gid1, gid2, raw_gb_area].
-            # Legacy schema:  [avg_curv, area,    gid1, gid2].  Preserve compatibility
-            # by treating legacy area as both gb_area and raw_gb_area.
             if data_arr.size > 0 and data_arr.shape[1] == 4:
                 data_arr = np.column_stack([
-                    data_arr[:, 0],  # avg_curv
-                    data_arr[:, 1],  # gb_area fallback from legacy area
-                    data_arr[:, 2],  # gid1
-                    data_arr[:, 3],  # gid2
-                    data_arr[:, 1],  # raw_gb_area fallback
+                    data_arr[:, 0],
+                    data_arr[:, 1],
+                    data_arr[:, 2],
+                    data_arr[:, 3],
+                    data_arr[:, 1],
                 ])
             elif data_arr.size == 0:
                 data_arr = np.empty((0, 5), dtype=np.float64)
@@ -260,7 +284,8 @@ def load_hdf5_frames(filepath: Path, log: logging.Logger) -> list[FrameData]:
                 f"boundary_px={len(bp)}, junction_px={len(jp)}"
             )
 
-    return frames
+    return frames, provenance
+
 
 
 def get_last_frame(frames: list[FrameData]) -> FrameData:
@@ -273,27 +298,32 @@ def filter_gb_dict(
     *,
     min_area: float = 0.0,
     min_curvature: float = 0.0,
+    small_grain_set: set[int] | None = None,
     log: logging.Logger | None = None,
     label: str = "",
 ) -> dict[tuple[int, int], np.ndarray]:
     """Filter entire GB pairs using TJ-filtered GB properties.
 
     Expected gb_dict[pair_id] schema:
-        [avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area]
+    [avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area]
 
     The filters are GB-level filters applied after TJ exclusion:
-        - gb_area >= min_area
-        - abs(avg_curvature) >= min_curvature
+    - neither participating grain has pixel area < min_area (grain area filter)
+    - abs(avg_curvature) >= min_curvature
     """
     out: dict[tuple[int, int], np.ndarray] = {}
     n_area = 0
     n_curv = 0
 
-    for pair_id, data in gb_dict.items():
-        avg_curv = float(data[0])
-        gb_area = float(data[1])
+    if small_grain_set is None:
+        small_grain_set = set()
 
-        if gb_area < min_area:
+    for pair_id, data in gb_dict.items():
+        avg_curv  = float(data[0])
+        grain_id1 = int(data[2])
+        grain_id2 = int(data[3])
+
+        if grain_id1 in small_grain_set or grain_id2 in small_grain_set:
             n_area += 1
             continue
         if abs(avg_curv) < min_curvature:
@@ -305,7 +335,7 @@ def filter_gb_dict(
         tag = f" {label}" if label else ""
         log.warning(
             f"GB filter{tag}: {len(out)}/{len(gb_dict)} kept, "
-            f"{n_area} removed by gb_area<{min_area}, "
+            f"{n_area} removed by grain_area<{min_area}, "
             f"{n_curv} removed by |avg_curvature|<{min_curvature}."
         )
     return out
@@ -321,12 +351,19 @@ def filter_frames_gb_dicts(
     """Return FrameData copies whose gb_dict values pass the canonical GB filter."""
     filtered: list[FrameData] = []
     for idx, frame in enumerate(frames):
+        grain_areas     = compute_grain_areas(frame.P0)
+        small_grain_set = build_small_grain_set(grain_areas, min_area=int(min_area))
+        log.info(
+            f"  Frame {idx}: {len(small_grain_set)} grains below "
+            f"min_area={min_area} px out of {len(grain_areas)} total grains."
+        )
         filtered.append(replace(
             frame,
             gb_dict=filter_gb_dict(
                 frame.gb_dict,
                 min_area=min_area,
                 min_curvature=min_curvature,
+                small_grain_set=small_grain_set,
                 log=log,
                 label=f"frame {idx}",
             ),
@@ -676,40 +713,29 @@ def compute_gbe_per_pixel(
     misorientation_data: dict | None = None,
     inclination_anisotropy: float = 0.05,
     log: logging.Logger | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[tuple[int, int], float]]:
     """
     Compute GBE at every (non-excluded) boundary pixel in the last frame.
 
-    Parameters
-    ----------
-    frame               : FrameData  (last frame)
-    mode                : one of GBE_MODES
-    tj_excluded         : pre-built set from build_tj_proximity_set()
-    valid_gb_dict       : already-filtered GB dictionary. A pixel is kept only if
-                          its pair_id is present in this dict. This applies the
-                          GB-level min_area and min_curvature filters after TJ
-                          exclusion.
-    misorientation_data : output of load_misorientation_parquet, or None
-    inclination_anisotropy : float anisotropy amplitude
-    log                 : logger
-
     Returns
     -------
-    pixel_coords : np.ndarray  shape (N, 2)   — (i, j) of each kept pixel
-    gbe_values   : np.ndarray  shape (N,)     — GBE value at each pixel
+    pixel_coords    : np.ndarray  shape (N, 2)   — (i, j) of each kept pixel
+    gbe_values      : np.ndarray  shape (N,)     — GBE value at each pixel
+    avg_gbe_per_gb  : dict  pair_id -> float     — mean GBE per GB pair
     """
     if log is None:
         log = logging.getLogger("VHP")
 
-    C0 = frame.C[0]          # grain ID map
-    C1 = frame.C[1]          # curvature map
-    P  = frame.P              # normal-vector field
+    C0 = frame.C[0]
+    C1 = frame.C[1]
+    P  = frame.P
     nx, ny = C0.shape
 
     pixel_coords: list[tuple[int, int]] = []
     gbe_values:   list[float]           = []
-    n_skipped_tj         = 0
-    n_skipped_no_data    = 0
+    gbe_accumulator: dict[tuple[int, int], list[float]] = {}   # NEW
+    n_skipped_tj          = 0
+    n_skipped_no_data     = 0
     n_skipped_pair_filter = 0
 
     for (i, j) in frame.boundary_pixels:
@@ -783,6 +809,15 @@ def compute_gbe_per_pixel(
         pixel_coords.append((int(i), int(j)))
         gbe_values.append(gbe)
 
+        # NEW: accumulate per-GB GBE for averaging
+        gbe_accumulator.setdefault(pair_id, []).append(gbe)
+
+    # NEW: compute per-GB average GBE
+    avg_gbe_per_gb: dict[tuple[int, int], float] = {
+        pid: float(np.mean(vals))
+        for pid, vals in gbe_accumulator.items()
+    }
+
     log.info(
         f"  GBE computed: {len(gbe_values)} pixels kept, "
         f"{n_skipped_tj} skipped (TJ proximity), "
@@ -790,7 +825,11 @@ def compute_gbe_per_pixel(
         f"{n_skipped_no_data} skipped (no misorientation data)."
     )
 
-    return np.array(pixel_coords, dtype=np.int32), np.array(gbe_values, dtype=np.float64)
+    return (
+        np.array(pixel_coords, dtype=np.int32),
+        np.array(gbe_values,   dtype=np.float64),
+        avg_gbe_per_gb
+    )
 
 # Inclination
 def compute_inclination_per_pixel(
@@ -2251,6 +2290,83 @@ def plot_final_gbe_histograms_by_curvature(
     log.warning(f"Final GBE histograms saved: {outpath}")
 
 
+def plot_final_curvature_vs_gbe_scatter(
+    curv_gbe_points: list[tuple[float, float]],
+    output_dir: Path,
+    stem: str,
+    mode: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Scatter plot of per-GB average |curvature| vs per-GB average GBE,
+    accumulated across all frames.
+
+    Curvature is stored as signed but plotted as |κ| on the x-axis.
+    One point per GB per frame, consistent with the velocity scatter
+    accumulation strategy.
+
+    Parameters
+    ----------
+    curv_gbe_points : list of (signed_avg_curv, avg_gbe) tuples
+    output_dir      : output directory
+    stem            : filename prefix
+    mode            : GBE mode string — used in labels
+    log             : logger
+    """
+    import matplotlib.pyplot as plt
+
+    if not curv_gbe_points:
+        log.warning("plot_final_curvature_vs_gbe_scatter: no data, skipping.")
+        return
+
+    curvatures = np.abs(np.array([p[0] for p in curv_gbe_points], dtype=np.float64))
+    gbe_vals   = np.array([p[1] for p in curv_gbe_points], dtype=np.float64)
+
+    # ── 2D density contour overlay ────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    x_bins = np.linspace(curvatures.min(), np.percentile(curvatures, 99), 40)
+    y_bins = np.linspace(gbe_vals.min(),   np.percentile(gbe_vals,    99), 40)
+
+    hist, x_edges, y_edges = np.histogram2d(curvatures, gbe_vals,
+                                             bins=[x_bins, y_bins])
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+    X, Y = np.meshgrid(x_centers, y_centers)
+
+    hist_log = np.zeros_like(hist.T, dtype=float)
+    nz = hist.T > 0
+    hist_log[nz] = np.log10(hist.T[nz])
+
+    cf = ax.contourf(X, Y, hist_log, levels=20,
+                     cmap="coolwarm", alpha=0.9, vmin=0)
+    ax.contour(X, Y, hist_log, levels=20,
+               cmap="gray", alpha=0.15, vmin=0)
+    cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(r"log$_{10}$(count)", fontsize=9)
+
+    # ── Raw scatter underneath ────────────────────────────────────────────
+    ax.scatter(curvatures, gbe_vals,
+               s=4, alpha=0.25, color="steelblue", linewidths=0,
+               label=f"N={len(curv_gbe_points)} (GB × frame)")
+
+    ax.set_xlabel("|κ| (px⁻¹)", fontsize=12)
+    ax.set_ylabel("Avg GBE", fontsize=12)
+    ax.set_title(
+        f"Avg GB |Curvature| vs Avg GB Energy — mode={mode}\n"
+        f"TJ-excluded  |  all frames  |  N={len(curv_gbe_points)} points",
+        fontsize=11,
+    )
+    ax.legend(fontsize=9)
+    ax.grid(True, linestyle=":", alpha=0.4)
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_final_curvature_vs_gbe_scatter.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Final curvature vs GBE scatter saved: {outpath}")
+
+
 def plot_final_velocity_scatter(
     normc_flat_conf: dict,
     antic_flat_conf: dict,
@@ -2455,8 +2571,25 @@ def main() -> None:
 
     # ── 1. Load HDF5 ──────────────────────────────────────────────────────
     t0 = time.perf_counter()
-    frames = load_hdf5_frames(args.hdf5, log)
+    frames, provenance = load_hdf5_frames(args.hdf5, log)
     tf(t0, log, "HDF5 load: ")
+
+    # ── 1a. Reconcile tj_distance from provenance ──────────────────────────
+    if provenance:
+        stored_tj = provenance["tj_distance"]
+        if stored_tj != args.tj_distance:
+            log.warning(
+                f"\033[33mTJ distance mismatch:\033[0m "
+                f"HDF5 was generated with --tj-distance={stored_tj}, "
+                f"but --tj-distance={args.tj_distance} was passed to this script. "
+                f"Using stored value ({stored_tj}) to match the curvature averaging "
+                f"pixel set used during HDF5 generation."
+            )
+        args.tj_distance = stored_tj
+    else:
+        log.warning(
+            f"No provenance found in HDF5 — using CLI --tj-distance={args.tj_distance}."
+        )
 
     raw_last_frame = get_last_frame(frames)
     log.warning(
@@ -2509,7 +2642,8 @@ def main() -> None:
         )
 
     log.warning(
-        "Filter convention: --min-area is interpreted as TJ-filtered GB pixel area; "
+        "Filter convention: --min-area is interpreted as minimum grain pixel area; "
+        "GB pairs where either grain has fewer than --min-area pixels are excluded. "
         "--min-curvature is interpreted as abs(TJ-filtered average GB curvature). "
         "For velocity, --tj-distance is governed by the HDF5 gb_dict; regenerate the HDF5 "
         "with a different --tj-distance to change the velocity TJ filtering."
@@ -2517,7 +2651,7 @@ def main() -> None:
 
     # ── 4. Compute GBE per pixel ──────────────────────────────────────────
     t0 = time.perf_counter()
-    pixel_coords, gbe_values = compute_gbe_per_pixel(
+    pixel_coords, gbe_values, _ = compute_gbe_per_pixel(
         frame                  = last_frame,
         mode                   = args.gbe_mode,
         tj_excluded            = tj_excluded,
@@ -2533,6 +2667,28 @@ def main() -> None:
         f"min={gbe_values.min():.4f}, max={gbe_values.max():.4f}, "
         f"mean={gbe_values.mean():.4f}"
     )
+
+    # ── 4b. Collect per-frame avg curvature vs avg GBE across all frames ──
+    t0 = time.perf_counter()
+    curv_gbe_points: list[tuple[float, float]] = []  # (signed_avg_curv, avg_gbe) per GB per frame
+
+    for frame in frames_filtered:
+        _, _, frame_avg_gbe = compute_gbe_per_pixel(
+            frame                  = frame,
+            mode                   = args.gbe_mode,
+            tj_excluded            = tj_excluded,
+            valid_gb_dict          = frame.gb_dict,
+            misorientation_data    = misorientation_data,
+            inclination_anisotropy = args.inclination_anisotropy,
+            log                    = log,
+        )
+        for pair_id, avg_gbe in frame_avg_gbe.items():
+            if pair_id in frame.gb_dict:
+                avg_curv = float(frame.gb_dict[pair_id][0])   # signed avg curvature
+                curv_gbe_points.append((avg_curv, avg_gbe))
+
+    tf(t0, log, "Per-frame avg curvature vs GBE collection: ")
+    log.warning(f"Curvature vs GBE: {len(curv_gbe_points)} (GB, frame) points collected.")
 
     if args.debug_plot:
         stem = args.hdf5.stem
@@ -2793,6 +2949,16 @@ def main() -> None:
             )
         else:
             log.warning("Skipping final velocity plots — no velocity data available.")
+
+        # 7.7  Avg |curvature| vs avg GBE scatter (all frames)
+        if curv_gbe_points:
+            plot_final_curvature_vs_gbe_scatter(
+                curv_gbe_points = curv_gbe_points,
+                output_dir      = args.output_dir,
+                stem            = stem,
+                mode            = args.gbe_mode,
+                log             = log,
+            )
 
     tf(ti, log, "Total: ")
 
