@@ -29,7 +29,7 @@ import math
 THETA_MAX_DEG = 62.0
 THETA_MAX_RAD = np.deg2rad(THETA_MAX_DEG)
 
-GBE_MODES = ("iso","inclination_cos", "inclination", "misorientation", "both")
+GBE_MODES = ("iso","cos", "inc", "miso", "both")
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  CLI
@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     # ---- GBE ----
     gbe = p.add_argument_group("GBE")
     gbe.add_argument(
-        "--gbe-mode", type=str, default="misorientation", choices=GBE_MODES,
+        "--gbe-mode", type=str, default="iso", choices=GBE_MODES,
         help="Energy function to use for GBE calculation.",
     )
     gbe.add_argument(
@@ -85,10 +85,10 @@ def parse_args() -> argparse.Namespace:
         help="Exclude boundary pixels within --tj-distance of a triple junction.",
     )
     gbe.add_argument(
-        "--tj-distance", type=int, default=3, metavar="N",
+        "--tj-distance", type=int, default=6, metavar="N",
         help=(
             "Euclidean pixel distance threshold for TJ exclusion. "
-            "Matches the default used in vector_exodus_to_hdf5.py. Lin used 6"
+            "Automatically matches the value stored in the h5 file, otherwsie uses this one. Lin used 6"
         ),
     )
     gbe.add_argument(
@@ -97,6 +97,13 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Anisotropy amplitude 'a' for the inclination_cos GBE mode: "
             "GBE = 1 + a * cos(2 * theta). Must be in [0, 0.95]."
+        ),
+    )
+    gbe.add_argument(
+        "--gbe-frames", type=int, default=None, metavar="N",
+        help=(
+            "Use only the last N frames for curvature-vs-GBE collection. "
+            "If not specified, all frames are used."
         ),
     )
     gbe.add_argument(
@@ -138,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
 
     # ---- Cross-argument validation ----
-    if args.gbe_mode in ("misorientation", "both") and args.parquet is None:
+    if args.gbe_mode in ("miso", "both") and args.parquet is None:
         p.error(
             f"--gbe-mode '{args.gbe_mode}' requires --parquet to be specified."
         )
@@ -773,15 +780,15 @@ def compute_gbe_per_pixel(
         # ── Dispatch to energy function ───────────────────────────────────
         try:
             if mode == "iso":
-                gbe = 1.0
+                gbe = 0.5 #1.0
 
-            elif mode == "inclination_cos":
+            elif mode == "cos":
                 gbe = compute_finclination_cosine(dx, dy, inclination_anisotropy)
 
-            elif mode == "inclination":
+            elif mode == "inc":
                 gbe = compute_finclination(dx, dy)
 
-            elif mode == "misorientation":
+            elif mode == "miso":
                 if pair_id not in misorientation_data:
                     n_skipped_no_data += 1
                     continue
@@ -2023,6 +2030,159 @@ def plot_curvature_debug(
     )
 
 
+def plot_debug_avg_curvature_and_gbe_heatmap(
+    frame: FrameData,
+    avg_gbe_per_gb: dict[tuple[int, int], float],
+    tj_excluded: set[tuple[int, int]],
+    mode: str,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Two-panel debug heatmap overlaid on the grain structure.
+
+    Left panel  : per-GB average signed curvature painted onto every
+                  clean (TJ-excluded) boundary pixel of that GB.
+    Right panel : per-GB average GBE painted onto the same pixels.
+
+    Parameters
+    ----------
+    frame          : FrameData (last frame)
+    avg_gbe_per_gb : dict pair_id -> float, from compute_gbe_per_pixel
+    tj_excluded    : pre-built TJ proximity set
+    mode           : GBE mode string — used in title
+    output_dir     : output directory
+    stem           : filename prefix
+    log            : logger
+    """
+    import matplotlib.pyplot as plt
+
+    C0 = frame.C[0]
+    nx, ny = C0.shape
+
+    curv_map = np.full((nx, ny), np.nan, dtype=np.float64)
+    gbe_map  = np.full((nx, ny), np.nan, dtype=np.float64)
+
+    n_painted = 0
+
+    for (i, j) in frame.boundary_pixels:
+        # TJ exclusion
+        if (int(i), int(j)) in tj_excluded:
+            continue
+
+        central = int(C0[i, j])
+        ip = (i + 1) % nx;  im = (i - 1) % nx
+        jp = (j + 1) % ny;  jm = (j - 1) % ny
+        neighbors = {
+            int(C0[ip, j]), int(C0[im, j]),
+            int(C0[i, jp]), int(C0[i, jm]),
+        }
+        neighbors.discard(central)
+
+        # Skip junction pixels
+        if len(neighbors) != 1:
+            continue
+
+        neighbor_id = next(iter(neighbors))
+        pair_id = (min(central, neighbor_id), max(central, neighbor_id))
+
+        # Only paint pixels whose GB survived all filters
+        if pair_id not in frame.gb_dict:
+            continue
+        if pair_id not in avg_gbe_per_gb:
+            continue
+
+        avg_curv = float(frame.gb_dict[pair_id][0])
+        avg_gbe  = float(avg_gbe_per_gb[pair_id])
+
+        curv_map[i, j] = abs(avg_curv) #REMOVE ABS FOR +/- curvature
+        gbe_map[i, j]  = avg_gbe
+        n_painted += 1
+
+    if n_painted == 0:
+        log.warning(
+            "plot_debug_avg_curvature_and_gbe_heatmap: "
+            "no paintable pixels found — skipping."
+        )
+        return
+
+    # Robust color limits
+    # valid_curv = curv_map[~np.isnan(curv_map)]
+    # vabs_curv  = float(np.nanpercentile(np.abs(valid_curv), 98)) if len(valid_curv) > 0 else 1.0
+    valid_curv = curv_map[~np.isnan(curv_map)]
+    vabs_curv  = float(np.nanpercentile(valid_curv, 98)) if len(valid_curv) > 0 else 1.0
+
+    valid_gbe  = gbe_map[~np.isnan(gbe_map)]
+    gbe_vmin   = float(np.nanpercentile(valid_gbe,  2)) if len(valid_gbe) > 0 else 0.5
+    gbe_vmax   = float(np.nanpercentile(valid_gbe, 98)) if len(valid_gbe) > 0 else 1.0
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    # --- Left: avg curvature ---
+    ax = axes[0]
+    ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25,
+              interpolation="nearest")
+    # im0 = ax.imshow(
+    #     curv_map, origin="lower", cmap="RdBu",
+    #     interpolation="nearest", vmin=-vabs_curv, vmax=vabs_curv,
+    # )
+    im0 = ax.imshow(
+        curv_map, origin="lower", cmap="plasma",
+        interpolation="nearest", vmin=0.0, vmax=vabs_curv,
+    )
+    cbar0 = plt.colorbar(im0, ax=ax, fraction=0.046, pad=0.04)
+    # cbar0.set_label("Avg GB Curvature (px⁻¹)", fontsize=10)
+    # ax.set_title(
+    #     f"Per-GB Avg Curvature — TJ-excluded\n"
+    #     f"N={n_painted} pixels  |  "
+    #     f"mean={float(np.nanmean(valid_curv)):.5f}  "
+    #     f"98th |κ|={vabs_curv:.5f}",
+    #     fontsize=10,
+    # )
+    cbar0.set_label("Avg GB |Curvature| (px⁻¹)", fontsize=10)
+    ax.set_title(
+        f"Per-GB Avg |Curvature| — TJ-excluded\n"
+        f"N={n_painted} pixels  |  "
+        f"mean={float(np.nanmean(valid_curv)):.5f}  "
+        f"98th |κ|={vabs_curv:.5f}",
+        fontsize=10,
+    )
+    ax.set_xlabel("j (x)")
+    ax.set_ylabel("i (y)")
+
+    # --- Right: avg GBE ---
+    ax = axes[1]
+    ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25,
+              interpolation="nearest")
+    im1 = ax.imshow(
+        gbe_map, origin="lower", cmap="plasma",
+        interpolation="nearest", vmin=gbe_vmin, vmax=gbe_vmax,
+    )
+    cbar1 = plt.colorbar(im1, ax=ax, fraction=0.046, pad=0.04)
+    cbar1.set_label("Avg GB GBE", fontsize=10)
+    ax.set_title(
+        f"Per-GB Avg GBE — mode={mode}  |  TJ-excluded\n"
+        f"N={n_painted} pixels  |  "
+        f"mean={float(np.nanmean(valid_gbe)):.4f}  "
+        f"range=[{gbe_vmin:.4f}, {gbe_vmax:.4f}]",
+        fontsize=10,
+    )
+    ax.set_xlabel("j (x)")
+    ax.set_ylabel("i (y)")
+
+    fig.suptitle(
+        f"Per-GB Avg Curvature & GBE Overlay — {stem}  |  step={frame.step}",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_DEBUG_avg_curv_gbe_heatmap.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"Avg curvature & GBE debug heatmap saved: {outpath}")
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Output Writing
@@ -2077,6 +2237,10 @@ def plot_final_gbe_cdf(
     sorted_vals = np.sort(gbe_values)
     cdf = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
 
+    # Add manually specified 0.5 and 1 as min and max
+    sorted_vals = np.concatenate([[0.5], sorted_vals, [1.0]])
+    cdf         = np.concatenate([[0.0], cdf,          [1.0]])
+
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.plot(sorted_vals, cdf, linewidth=2, color="steelblue")
     ax.set_xlabel("GBE", fontsize=12)
@@ -2087,6 +2251,7 @@ def plot_final_gbe_cdf(
         f"(TJ-excluded)",
         fontsize=11,
     )
+    ax.set_xlim(0.49,1.01)
     ax.grid(True, linestyle=":", alpha=0.5)
     plt.tight_layout()
 
@@ -2279,7 +2444,7 @@ def plot_final_gbe_histograms_by_curvature(
         ax.set_title(f"{label}\nN={n} pixels", fontsize=10)
 
     fig.suptitle(
-        f"GBE Distribution by Curvature Sign — mode={mode}  |  TJ-excluded",
+        f"GBE Distribution by Curvature Sign 1 Frame — mode={mode}  |  TJ-excluded",
         fontsize=12, fontweight="bold",
     )
     plt.tight_layout()
@@ -2291,80 +2456,648 @@ def plot_final_gbe_histograms_by_curvature(
 
 
 def plot_final_curvature_vs_gbe_scatter(
-    curv_gbe_points: list[tuple[float, float]],
+    curv_gbe_points: list[tuple[float, float, float]],
     output_dir: Path,
     stem: str,
     mode: str,
     log: logging.Logger,
+    final_frame_points: list[tuple[float, float]] | None = None,
 ) -> None:
     """
-    Scatter plot of per-GB average |curvature| vs per-GB average GBE,
-    accumulated across all frames.
+    Scatter plot of per-GB average |curvature| vs per-GB average GBE.
 
-    Curvature is stored as signed but plotted as |κ| on the x-axis.
-    One point per GB per frame, consistent with the velocity scatter
-    accumulation strategy.
+    Positive curvature GBs plotted in blue, negative curvature GBs
+    plotted as |κ| in orange — both on the same axes.
+
+    If final_frame_points is provided, a second figure is also saved
+    showing only the final frame's data with the same color convention.
 
     Parameters
     ----------
-    curv_gbe_points : list of (signed_avg_curv, avg_gbe) tuples
-    output_dir      : output directory
-    stem            : filename prefix
-    mode            : GBE mode string — used in labels
-    log             : logger
+    curv_gbe_points     : list of (signed_avg_curv, avg_gbe) — all frames
+    output_dir          : output directory
+    stem                : filename prefix
+    mode                : GBE mode string — used in labels
+    log                 : logger
+    final_frame_points  : list of (signed_avg_curv, avg_gbe) — last frame only
     """
     import matplotlib.pyplot as plt
 
-    if not curv_gbe_points:
-        log.warning("plot_final_curvature_vs_gbe_scatter: no data, skipping.")
+    def _split_by_sign(points):
+        """Split (signed_curv, gbe) points into positive and negative curv lists."""
+        pos_curv, pos_gbe = [], []
+        neg_curv, neg_gbe = [], []
+        for (kappa, gbe, _) in points:
+            if kappa >= 0.0:
+                pos_curv.append(kappa)
+                pos_gbe.append(gbe)
+            else:
+                neg_curv.append(abs(kappa))
+                neg_gbe.append(gbe)
+        return pos_curv, pos_gbe, neg_curv, neg_gbe
+
+    def _render(points, title_suffix, out_suffix):
+        if not points:
+            log.warning(
+                f"plot_final_curvature_vs_gbe_scatter ({out_suffix}): no data, skipping."
+            )
+            return
+
+        pos_curv, pos_gbe, neg_curv, neg_gbe = _split_by_sign(points)
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        if pos_curv:
+            ax.scatter(
+                pos_gbe, pos_curv,
+                s=4, alpha=0.9, color="steelblue", linewidths=0,
+                label=f"κ ≥ 0  (N={len(pos_curv)})",
+            )
+        if neg_curv:
+            ax.scatter(
+                neg_gbe, neg_curv,
+                s=4, alpha=0.6, color="darkorange", linewidths=0,
+                label=f"κ < 0, plotted as |κ|  (N={len(neg_curv)})",
+            )
+
+        ax.set_xlim(0.48, 1.02)
+        ax.set_xlabel("GBE", fontsize=12)
+        ax.set_ylabel("|κ| (px⁻¹)", fontsize=12)
+        ax.set_title(
+            f"Avg GB |Curvature| vs Avg GB Energy — mode={mode}\n"
+            f"TJ-excluded  |  {title_suffix}  |  N={len(points)} points",
+            fontsize=11,
+        )
+        ax.legend(fontsize=9)
+        ax.grid(True, linestyle=":", alpha=0.4)
+        plt.tight_layout()
+
+        outpath = output_dir / f"{stem}_final_curvature_vs_gbe_scatter_{out_suffix}.png"
+        fig.savefig(outpath, dpi=300, transparent=True)
+        plt.close(fig)
+        log.warning(f"Final curvature vs GBE scatter saved: {outpath}")
+
+    # --- All frames ---
+    _render(
+        curv_gbe_points,
+        title_suffix=f"all frames",
+        out_suffix="all_frames",
+    )
+
+    # --- Final frame only ---
+    if final_frame_points is not None:
+        _render(
+            final_frame_points,
+            title_suffix="final frame only",
+            out_suffix="final_frame",
+        )
+
+
+def plot_curvature_gbe_histogram_combined(
+    curv_gbe_points:   list[tuple[float, float, float]],
+    frames_filtered:   list[FrameData],
+    output_dir:        Path,
+    stem:              str,
+    mode:              str,
+    log:               logging.Logger,
+    gb_areas:          list[float] | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    bins_shared = np.linspace(0.5, 1.0, 61)
+    use_weights = gb_areas is not None
+    ylabel = "Area-Weighted Count" if use_weights else "Normalized Count"
+
+    def _filter_by_curv(points, above: bool, threshold: float = 0.03):
+        if above:
+            return [(k, g, a) for (k, g, a) in points if abs(k) > threshold]
+        else:
+            return [(k, g, a) for (k, g, a) in points if abs(k) <= threshold]
+
+    def _compute_max_count(points, bins):
+        """Return the max bin count across all three curvature tiers."""
+        if not points:
+            return 1.0
+        max_count = 1.0
+        for subset in [
+            points,
+            _filter_by_curv(points, above=False),
+            _filter_by_curv(points, above=True),
+        ]:
+            if subset:
+                gbe_vals = np.array([p[1] for p in subset], dtype=np.float64)
+                weights  = np.array([p[2] for p in subset], dtype=np.float64) if use_weights else None
+                counts, _ = np.histogram(gbe_vals, bins=bins, weights=weights)
+                if counts.max() > max_count:
+                    max_count = float(counts.max())
+        return max_count
+
+    def _draw_panel(ax, points, panel_title: str, y_max_norm: float):
+        """Draw a single histogram panel into ax."""
+        if not points:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9)
+            ax.set_title(panel_title, fontsize=8)
+            return
+
+        gbe_vals = np.array([p[1] for p in points], dtype=np.float64)
+        weights  = np.array([p[2] for p in points], dtype=np.float64) if use_weights else None
+        counts, _ = np.histogram(gbe_vals, bins=bins_shared, weights=weights)
+        norm_factor = y_max_norm if y_max_norm > 0 else 1.0
+        norm_counts = counts / norm_factor
+
+        ax.bar(
+            bins_shared[:-1], norm_counts,
+            width=np.diff(bins_shared),
+            align="edge",
+            color="steelblue", alpha=0.85, edgecolor="none",
+        )
+        ax.axvline(float(np.mean(gbe_vals)), color="red", linewidth=1.2,
+                   linestyle="--", label=f"μ={np.mean(gbe_vals):.3f}")
+        ax.axvline(float(np.median(gbe_vals)), color="orange", linewidth=1.2,
+                   linestyle="--", label=f"med={np.median(gbe_vals):.3f}")
+        ax.set_xlim(0.5, 1.0)
+        ax.set_ylim(0.0, 1.05)
+        ax.set_title(panel_title, fontsize=8)
+        ax.legend(fontsize=7)
+        ax.grid(True, linestyle=":", alpha=0.4)
+
+    # -----------------------------------------------------------------------
+    # Figure: All frames — single column, 3 rows
+    # -----------------------------------------------------------------------
+    def _save_all_frames_figure(pts):
+        if not pts:
+            log.warning("plot_curvature_gbe_histogram_combined (all_frames): no data, skipping.")
+            return
+
+        y_max_norm = _compute_max_count(pts, bins_shared)
+
+        fig, axes = plt.subplots(3, 1, figsize=(8, 14), sharex=True)
+
+        _draw_panel(axes[0], pts,
+                    f"All κ  |  all frames  |  N={len(pts)}",
+                    y_max_norm)
+        _draw_panel(axes[1], _filter_by_curv(pts, above=False),
+                    f"|κ| ≤ 0.03  |  all frames",
+                    y_max_norm)
+        _draw_panel(axes[2], _filter_by_curv(pts, above=True),
+                    f"|κ| > 0.03  |  all frames",
+                    y_max_norm)
+
+        axes[2].set_xlabel("GBE", fontsize=11)
+        for ax in axes:
+            ax.set_ylabel(ylabel, fontsize=9)
+
+        weight_tag = "area-weighted" if use_weights else "normalized"
+        fig.suptitle(
+            f"GB Energy Distribution (Combined) — mode={mode}\n"
+            f"TJ-excluded  |  all frames  |  {weight_tag}",
+            fontsize=11, fontweight="bold",
+        )
+        plt.tight_layout()
+
+        outpath = output_dir / f"{stem}_curvature_gbe_histogram_combined_all_frames.png"
+        fig.savefig(outpath, dpi=300, transparent=True)
+        plt.close(fig)
+        log.warning(f"Combined GBE histogram saved: {outpath}")
+
+    # --- All frames ---
+    _save_all_frames_figure(curv_gbe_points)
+
+
+def plot_curvature_gbe_histogram_combined_per_frame(
+    curv_gbe_by_frame: dict[int, list[tuple[float, float, float]]],
+    frames_filtered:   list[FrameData],
+    output_dir:        Path,
+    stem:              str,
+    mode:              str,
+    log:               logging.Logger,
+    gb_areas:          list[float] | None = None,
+) -> None:
+    """Debug-only: per-frame combined GBE histograms (5 selected frames)."""
+    import matplotlib.pyplot as plt
+
+    bins_shared = np.linspace(0.5, 1.0, 61)
+    use_weights = gb_areas is not None
+    ylabel = "Area-Weighted Count" if use_weights else "Normalized Count"
+
+    def _filter_by_curv(points, above: bool, threshold: float = 0.03):
+        if above:
+            return [(k, g, a) for (k, g, a) in points if abs(k) > threshold]
+        else:
+            return [(k, g, a) for (k, g, a) in points if abs(k) <= threshold]
+
+    def _compute_max_count(points, bins):
+        if not points:
+            return 1.0
+        max_count = 1.0
+        for subset in [
+            points,
+            _filter_by_curv(points, above=False),
+            _filter_by_curv(points, above=True),
+        ]:
+            if subset:
+                gbe_vals = np.array([p[1] for p in subset], dtype=np.float64)
+                weights  = np.array([p[2] for p in subset], dtype=np.float64) if use_weights else None
+                counts, _ = np.histogram(gbe_vals, bins=bins, weights=weights)
+                if counts.max() > max_count:
+                    max_count = float(counts.max())
+        return max_count
+
+    def _draw_panel(ax, points, panel_title: str, y_max_norm: float):
+        if not points:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9)
+            ax.set_title(panel_title, fontsize=8)
+            return
+
+        gbe_vals = np.array([p[1] for p in points], dtype=np.float64)
+        weights  = np.array([p[2] for p in points], dtype=np.float64) if use_weights else None
+        counts, _ = np.histogram(gbe_vals, bins=bins_shared, weights=weights)
+        norm_factor = y_max_norm if y_max_norm > 0 else 1.0
+        norm_counts = counts / norm_factor
+
+        ax.bar(
+            bins_shared[:-1], norm_counts,
+            width=np.diff(bins_shared),
+            align="edge",
+            color="steelblue", alpha=0.85, edgecolor="none",
+        )
+        ax.axvline(float(np.mean(gbe_vals)), color="red", linewidth=1.2,
+                   linestyle="--", label=f"μ={np.mean(gbe_vals):.3f}")
+        ax.axvline(float(np.median(gbe_vals)), color="orange", linewidth=1.2,
+                   linestyle="--", label=f"med={np.median(gbe_vals):.3f}")
+        ax.set_xlim(0.5, 1.0)
+        ax.set_ylim(0.0, 1.05)
+        ax.set_title(panel_title, fontsize=8)
+        ax.legend(fontsize=7)
+        ax.grid(True, linestyle=":", alpha=0.4)
+
+    frame_items = list(curv_gbe_by_frame.items())
+    if not frame_items:
+        log.warning("plot_curvature_gbe_histogram_combined_per_frame: no frames, skipping.")
         return
 
-    curvatures = np.abs(np.array([p[0] for p in curv_gbe_points], dtype=np.float64))
-    gbe_vals   = np.array([p[1] for p in curv_gbe_points], dtype=np.float64)
+    n_cols = len(frame_items)
 
-    # ── 2D density contour overlay ────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(8, 6))
-
-    x_bins = np.linspace(curvatures.min(), np.percentile(curvatures, 99), 40)
-    y_bins = np.linspace(gbe_vals.min(),   np.percentile(gbe_vals,    99), 40)
-
-    hist, x_edges, y_edges = np.histogram2d(curvatures, gbe_vals,
-                                             bins=[x_bins, y_bins])
-    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-    X, Y = np.meshgrid(x_centers, y_centers)
-
-    hist_log = np.zeros_like(hist.T, dtype=float)
-    nz = hist.T > 0
-    hist_log[nz] = np.log10(hist.T[nz])
-
-    cf = ax.contourf(X, Y, hist_log, levels=20,
-                     cmap="coolwarm", alpha=0.9, vmin=0)
-    ax.contour(X, Y, hist_log, levels=20,
-               cmap="gray", alpha=0.15, vmin=0)
-    cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label(r"log$_{10}$(count)", fontsize=9)
-
-    # ── Raw scatter underneath ────────────────────────────────────────────
-    ax.scatter(curvatures, gbe_vals,
-               s=4, alpha=0.25, color="steelblue", linewidths=0,
-               label=f"N={len(curv_gbe_points)} (GB × frame)")
-
-    ax.set_xlabel("|κ| (px⁻¹)", fontsize=12)
-    ax.set_ylabel("Avg GBE", fontsize=12)
-    ax.set_title(
-        f"Avg GB |Curvature| vs Avg GB Energy — mode={mode}\n"
-        f"TJ-excluded  |  all frames  |  N={len(curv_gbe_points)} points",
-        fontsize=11,
+    # Normalization anchored to first selected frame
+    first_frame_idx, first_pts = frame_items[0]
+    per_frame_y_max_norm = _compute_max_count(first_pts, bins_shared)
+    log.warning(
+        f"Combined histogram per-frame normalization anchor: "
+        f"frame_idx={first_frame_idx} "
+        f"(step={frames_filtered[first_frame_idx].step}), "
+        f"y_max_norm={per_frame_y_max_norm:.1f}"
     )
-    ax.legend(fontsize=9)
-    ax.grid(True, linestyle=":", alpha=0.4)
-    plt.tight_layout()
 
-    outpath = output_dir / f"{stem}_final_curvature_vs_gbe_scatter.png"
+    tier_labels = ["All κ", "|κ| ≤ 0.03", "|κ| > 0.03"]
+
+    fig, axes = plt.subplots(
+        3, n_cols,
+        figsize=(4 * n_cols, 13),
+        sharex=True, sharey=True,
+    )
+
+    if n_cols == 1:
+        axes = np.array(axes).reshape(3, 1)
+
+    for col, (frame_idx, pts) in enumerate(frame_items):
+        step = frames_filtered[frame_idx].step
+
+        tier_pts = [
+            pts,
+            _filter_by_curv(pts, above=False),
+            _filter_by_curv(pts, above=True),
+        ]
+
+        for row in range(3):
+            ax = axes[row, col]
+            n = len(tier_pts[row])
+
+            # Column header on top row only
+            title = f"step={step}\n{tier_labels[row]}  N={n}"
+            _draw_panel(ax, tier_pts[row], title, per_frame_y_max_norm)
+
+            # y-axis label on leftmost column only
+            if col == 0:
+                ax.set_ylabel(ylabel, fontsize=9)
+            else:
+                ax.set_ylabel("")
+
+            # x-axis label on bottom row only
+            if row == 2:
+                ax.set_xlabel("GBE", fontsize=9)
+
+    weight_tag = "area-weighted" if use_weights else "normalized"
+    fig.suptitle(
+        f"GB Energy Distribution (Combined) — mode={mode}\n"
+        f"TJ-excluded  |  5 selected frames  |  "
+        f"norm anchored to step={frames_filtered[frame_items[0][0]].step}  |  {weight_tag}",
+        fontsize=11, fontweight="bold",
+    )
+    plt.tight_layout()
+    outpath = output_dir / f"{stem}_curvature_gbe_histogram_combined_selected_frames.png"
     fig.savefig(outpath, dpi=300, transparent=True)
     plt.close(fig)
-    log.warning(f"Final curvature vs GBE scatter saved: {outpath}")
+    log.warning(f"Combined GBE histogram (multi-frame) saved: {outpath}")
+
+
+def plot_curvature_gbe_histogram_split(
+    curv_gbe_points:   list[tuple[float, float, float]],
+    frames_filtered:   list[FrameData],
+    output_dir:        Path,
+    stem:              str,
+    mode:              str,
+    log:               logging.Logger,
+    gb_areas:          list[float] | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    bins_shared = np.linspace(0.5, 1.0, 61)
+    use_weights = gb_areas is not None
+    ylabel = "Area-Weighted Count" if use_weights else "Norm. Count"
+
+    def _split(points):
+        pos_gbe, neg_gbe = [], []
+        pos_w,   neg_w   = [], []
+        for (kappa, gbe, area) in points:
+            if kappa >= 0.0:
+                pos_gbe.append(gbe)
+                pos_w.append(area)
+            else:
+                neg_gbe.append(gbe)
+                neg_w.append(area)
+        return (
+            np.array(pos_gbe, dtype=np.float64),
+            np.array(neg_gbe, dtype=np.float64),
+            np.array(pos_w,   dtype=np.float64),
+            np.array(neg_w,   dtype=np.float64),
+        )
+
+    def _filter_by_curv(points, above: bool, threshold: float = 0.03):
+        if above:
+            return [(k, g, a) for (k, g, a) in points if abs(k) > threshold]
+        else:
+            return [(k, g, a) for (k, g, a) in points if abs(k) <= threshold]
+
+    def _compute_max_count(points, bins):
+        if not points:
+            return 1.0
+        max_count = 1.0
+        for subset in [
+            points,
+            _filter_by_curv(points, above=False),
+            _filter_by_curv(points, above=True),
+        ]:
+            if subset:
+                pos_gbe, neg_gbe, pos_w, neg_w = _split(subset)
+                for arr, w in ((pos_gbe, pos_w), (neg_gbe, neg_w)):
+                    if len(arr) > 0:
+                        weights = w if use_weights else None
+                        counts, _ = np.histogram(arr, bins=bins, weights=weights)
+                        if counts.max() > max_count:
+                            max_count = float(counts.max())
+        return max_count
+
+    def _draw_split_panel(ax_pos, ax_neg, points, tier_label: str, y_max_norm: float):
+        pos_gbe, neg_gbe, pos_w, neg_w = _split(points) if points else (
+            np.array([]), np.array([]), np.array([]), np.array([])
+        )
+        norm_factor = y_max_norm if y_max_norm > 0 else 1.0
+
+        for ax, arr, w_arr, label, color in [
+            (ax_pos, pos_gbe, pos_w, f"κ ≥ 0  (N={len(pos_gbe)})", "steelblue"),
+            (ax_neg, neg_gbe, neg_w, f"κ < 0  (N={len(neg_gbe)})", "darkorange"),
+        ]:
+            if len(arr) > 0:
+                weights = w_arr if use_weights else None
+                counts, _ = np.histogram(arr, bins=bins_shared, weights=weights)
+                norm_counts = counts / norm_factor
+                ax.bar(
+                    bins_shared[:-1], norm_counts,
+                    width=np.diff(bins_shared), align="edge",
+                    color=color, alpha=0.85, edgecolor="none",
+                    label=label,
+                )
+                ax.axvline(float(np.mean(arr)), color="red", linewidth=1.5,
+                           linestyle="--", label=f"mean={np.mean(arr):.4f}")
+                ax.axvline(float(np.median(arr)), color="orange", linewidth=1.5,
+                           linestyle="--", label=f"median={np.median(arr):.4f}")
+            else:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=9)
+
+            ax.set_xlim(0.5, 1.0)
+            ax.set_ylim(0.0, 1.05)
+            ax.set_ylabel(ylabel, fontsize=9)
+            ax.legend(fontsize=8)
+            ax.grid(True, linestyle=":", alpha=0.4)
+
+        ax_pos.set_title(f"{tier_label}  |  κ ≥ 0", fontsize=9)
+        ax_neg.set_title(f"{tier_label}  |  κ < 0", fontsize=9)
+
+    def _save_stacked_figure(pts, out_suffix: str, title_suffix: str,
+                             y_max_norm_override: float | None = None):
+        if not pts:
+            log.warning(
+                f"plot_curvature_gbe_histogram_split ({out_suffix}): no data, skipping."
+            )
+            return
+
+        y_max_norm = y_max_norm_override if y_max_norm_override is not None \
+            else _compute_max_count(pts, bins_shared)
+
+        fig, axes = plt.subplots(3, 2, figsize=(14, 14), sharex=True, sharey=True)
+
+        tiers = [
+            (pts,                               "All κ"),
+            (_filter_by_curv(pts, above=False), "|κ| ≤ 0.03"),
+            (_filter_by_curv(pts, above=True),  "|κ| > 0.03"),
+        ]
+
+        for row, (tier_pts, tier_label) in enumerate(tiers):
+            _draw_split_panel(
+                ax_pos=axes[row, 0],
+                ax_neg=axes[row, 1],
+                points=tier_pts,
+                tier_label=tier_label,
+                y_max_norm=y_max_norm,
+            )
+
+        axes[2, 0].set_xlabel("GBE", fontsize=11)
+        axes[2, 1].set_xlabel("GBE", fontsize=11)
+
+        weight_tag = "area-weighted" if use_weights else "normalized"
+        fig.suptitle(
+            f"GB Energy Distribution by Curvature Sign — mode={mode}\n"
+            f"TJ-excluded  |  {title_suffix}  |  {weight_tag}",
+            fontsize=11, fontweight="bold",
+        )
+        plt.tight_layout()
+
+        outpath = output_dir / f"{stem}_curvature_gbe_histogram_split_{out_suffix}.png"
+        fig.savefig(outpath, dpi=300, transparent=True)
+        plt.close(fig)
+        log.warning(f"Split GBE histogram saved: {outpath}")
+
+    # --- All frames ---
+    _save_stacked_figure(
+        pts=curv_gbe_points,
+        out_suffix="all_frames",
+        title_suffix="all frames",
+    )
+
+
+def plot_curvature_gbe_histogram_split_per_frame(
+    curv_gbe_by_frame: dict[int, list[tuple[float, float, float]]],
+    frames_filtered:   list[FrameData],
+    output_dir:        Path,
+    stem:              str,
+    mode:              str,
+    log:               logging.Logger,
+    gb_areas:          list[float] | None = None,
+) -> None:
+    """Debug-only: per-frame split GBE histograms (5 selected frames)."""
+    import matplotlib.pyplot as plt
+
+    bins_shared = np.linspace(0.5, 1.0, 61)
+    use_weights = gb_areas is not None
+    ylabel = "Area-Weighted Count" if use_weights else "Norm. Count"
+
+    def _split(points):
+        pos_gbe, neg_gbe = [], []
+        pos_w,   neg_w   = [], []
+        for (kappa, gbe, area) in points:
+            if kappa >= 0.0:
+                pos_gbe.append(gbe)
+                pos_w.append(area)
+            else:
+                neg_gbe.append(gbe)
+                neg_w.append(area)
+        return (
+            np.array(pos_gbe, dtype=np.float64),
+            np.array(neg_gbe, dtype=np.float64),
+            np.array(pos_w,   dtype=np.float64),
+            np.array(neg_w,   dtype=np.float64),
+        )
+
+    def _filter_by_curv(points, above: bool, threshold: float = 0.03):
+        if above:
+            return [(k, g, a) for (k, g, a) in points if abs(k) > threshold]
+        else:
+            return [(k, g, a) for (k, g, a) in points if abs(k) <= threshold]
+
+    def _compute_max_count(points, bins):
+        if not points:
+            return 1.0
+        max_count = 1.0
+        for subset in [
+            points,
+            _filter_by_curv(points, above=False),
+            _filter_by_curv(points, above=True),
+        ]:
+            if subset:
+                pos_gbe, neg_gbe, pos_w, neg_w = _split(subset)
+                for arr, w in ((pos_gbe, pos_w), (neg_gbe, neg_w)):
+                    if len(arr) > 0:
+                        weights = w if use_weights else None
+                        counts, _ = np.histogram(arr, bins=bins, weights=weights)
+                        if counts.max() > max_count:
+                            max_count = float(counts.max())
+        return max_count
+
+    def _draw_split_panel(ax_pos, ax_neg, points, tier_label: str, y_max_norm: float):
+        pos_gbe, neg_gbe, pos_w, neg_w = _split(points) if points else (
+            np.array([]), np.array([]), np.array([]), np.array([])
+        )
+        norm_factor = y_max_norm if y_max_norm > 0 else 1.0
+
+        for ax, arr, w_arr, label, color in [
+            (ax_pos, pos_gbe, pos_w, f"κ ≥ 0  (N={len(pos_gbe)})", "steelblue"),
+            (ax_neg, neg_gbe, neg_w, f"κ < 0  (N={len(neg_gbe)})", "darkorange"),
+        ]:
+            if len(arr) > 0:
+                weights = w_arr if use_weights else None
+                counts, _ = np.histogram(arr, bins=bins_shared, weights=weights)
+                norm_counts = counts / norm_factor
+                ax.bar(
+                    bins_shared[:-1], norm_counts,
+                    width=np.diff(bins_shared), align="edge",
+                    color=color, alpha=0.85, edgecolor="none",
+                    label=label,
+                )
+                ax.axvline(float(np.mean(arr)), color="red", linewidth=1.5,
+                           linestyle="--", label=f"mean={np.mean(arr):.4f}")
+                ax.axvline(float(np.median(arr)), color="orange", linewidth=1.5,
+                           linestyle="--", label=f"median={np.median(arr):.4f}")
+            else:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=9)
+
+            ax.set_xlim(0.5, 1.0)
+            ax.set_ylim(0.0, 1.05)
+            ax.set_ylabel(ylabel, fontsize=9)
+            ax.legend(fontsize=8)
+            ax.grid(True, linestyle=":", alpha=0.4)
+
+        ax_pos.set_title(f"{tier_label}  |  κ ≥ 0", fontsize=9)
+        ax_neg.set_title(f"{tier_label}  |  κ < 0", fontsize=9)
+
+    frame_items = list(curv_gbe_by_frame.items())
+    if not frame_items:
+        log.warning("plot_curvature_gbe_histogram_split_per_frame: no frames, skipping.")
+        return
+
+    first_frame_idx, first_pts = frame_items[0]
+    per_frame_y_max_norm = _compute_max_count(first_pts, bins_shared)
+    log.warning(
+        f"Split histogram per-frame normalization anchor: "
+        f"frame_idx={first_frame_idx} "
+        f"(step={frames_filtered[first_frame_idx].step}), "
+        f"y_max_norm={per_frame_y_max_norm:.1f}"
+    )
+
+    for frame_idx, pts in frame_items:
+        step = frames_filtered[frame_idx].step
+        if not pts:
+            log.warning(
+                f"plot_curvature_gbe_histogram_split_per_frame: "
+                f"no data for frame step={step}, skipping."
+            )
+            continue
+
+        fig, axes = plt.subplots(3, 2, figsize=(14, 14), sharex=True, sharey=True)
+
+        tiers = [
+            (pts,                               "All κ"),
+            (_filter_by_curv(pts, above=False), "|κ| ≤ 0.03"),
+            (_filter_by_curv(pts, above=True),  "|κ| > 0.03"),
+        ]
+
+        for row, (tier_pts, tier_label) in enumerate(tiers):
+            _draw_split_panel(
+                ax_pos=axes[row, 0],
+                ax_neg=axes[row, 1],
+                points=tier_pts,
+                tier_label=tier_label,
+                y_max_norm=per_frame_y_max_norm,
+            )
+
+        axes[2, 0].set_xlabel("GBE", fontsize=11)
+        axes[2, 1].set_xlabel("GBE", fontsize=11)
+
+        weight_tag = "area-weighted" if use_weights else "normalized"
+        fig.suptitle(
+            f"GB Energy Distribution by Curvature Sign — mode={mode}\n"
+            f"TJ-excluded  |  frame step={step}  |  {weight_tag}",
+            fontsize=11, fontweight="bold",
+        )
+        plt.tight_layout()
+
+        outpath = output_dir / f"{stem}_curvature_gbe_histogram_split_frame_{step:06d}.png"
+        fig.savefig(outpath, dpi=300, transparent=True)
+        plt.close(fig)
+        log.warning(f"Split GBE histogram (per-frame) saved: {outpath}")
 
 
 def plot_final_velocity_scatter(
@@ -2619,7 +3352,7 @@ def main() -> None:
 
     # ── 2. Load misorientation parquet (if needed) ─────────────────────────
     misorientation_data: dict = {}
-    if args.gbe_mode in ("misorientation", "both"):
+    if args.gbe_mode in ("miso", "both"):
         neighbor_pairs = set(last_frame.gb_dict.keys())
         t0 = time.perf_counter()
         misorientation_data = load_misorientation_parquet(
@@ -2651,7 +3384,7 @@ def main() -> None:
 
     # ── 4. Compute GBE per pixel ──────────────────────────────────────────
     t0 = time.perf_counter()
-    pixel_coords, gbe_values, _ = compute_gbe_per_pixel(
+    pixel_coords, gbe_values, avg_gbe_per_gb = compute_gbe_per_pixel(
         frame                  = last_frame,
         mode                   = args.gbe_mode,
         tj_excluded            = tj_excluded,
@@ -2668,11 +3401,41 @@ def main() -> None:
         f"mean={gbe_values.mean():.4f}"
     )
 
-    # ── 4b. Collect per-frame avg curvature vs avg GBE across all frames ──
+    # ── 4b. Collect per-frame avg curvature vs avg GBE across frames ──
     t0 = time.perf_counter()
-    curv_gbe_points: list[tuple[float, float]] = []  # (signed_avg_curv, avg_gbe) per GB per frame
+    curv_gbe_points: list[tuple[float, float, float]] = []  # all gbe frames
 
-    for frame in frames_filtered:
+    # ── Frame slicing for GBE collection ──────────────────────────────
+    gbe_frames = frames_filtered
+    if args.gbe_frames is not None:
+        gbe_frames = frames_filtered[-args.gbe_frames:]
+        log.warning(
+            f"--gbe-frames={args.gbe_frames}: using last {len(gbe_frames)} frames "
+            f"for curvature-vs-GBE collection "
+            f"(steps: {[f.step for f in gbe_frames]})"
+        )
+    else:
+        log.warning(
+            f"--gbe-frames not specified: using all {len(gbe_frames)} frames "
+            f"for curvature-vs-GBE collection."
+        )
+
+    # Select 5 evenly-spaced frame indices across gbe_frames
+    n_frames = len(gbe_frames)
+    selected_indices = sorted(set(
+        round(i * (n_frames - 1) / 4) for i in range(5)
+    ))
+    log.warning(
+        f"Selected frame indices for per-frame histograms: {selected_indices} "
+        f"(steps: {[gbe_frames[i].step for i in selected_indices]})"
+    )
+
+    # dict: position-in-gbe_frames -> list of (avg_curv, avg_gbe, gb_area)
+    curv_gbe_by_frame: dict[int, list[tuple[float, float, float]]] = {
+        idx: [] for idx in selected_indices
+    }
+
+    for frame_idx, frame in enumerate(gbe_frames):
         _, _, frame_avg_gbe = compute_gbe_per_pixel(
             frame                  = frame,
             mode                   = args.gbe_mode,
@@ -2682,13 +3445,24 @@ def main() -> None:
             inclination_anisotropy = args.inclination_anisotropy,
             log                    = log,
         )
+        is_selected = frame_idx in selected_indices
         for pair_id, avg_gbe in frame_avg_gbe.items():
             if pair_id in frame.gb_dict:
-                avg_curv = float(frame.gb_dict[pair_id][0])   # signed avg curvature
-                curv_gbe_points.append((avg_curv, avg_gbe))
+                avg_curv = float(frame.gb_dict[pair_id][0])
+                gb_area  = float(frame.gb_dict[pair_id][1])
+                curv_gbe_points.append((avg_curv, avg_gbe, gb_area))
+                if is_selected:
+                    curv_gbe_by_frame[frame_idx].append((avg_curv, avg_gbe, gb_area))
 
     tf(t0, log, "Per-frame avg curvature vs GBE collection: ")
-    log.warning(f"Curvature vs GBE: {len(curv_gbe_points)} (GB, frame) points collected.")
+    log.warning(
+        f"Curvature vs GBE: {len(curv_gbe_points)} (GB, frame) points collected. "
+        f"Selected frame point counts: "
+        + ", ".join(
+            f"idx={i}(step={gbe_frames[i].step}):{len(curv_gbe_by_frame[i])}"
+            for i in selected_indices
+        )
+    )
 
     if args.debug_plot:
         stem = args.hdf5.stem
@@ -2709,6 +3483,43 @@ def main() -> None:
             stem        = stem,
             log         = log,
         )
+        plot_debug_avg_curvature_and_gbe_heatmap(
+            frame          = last_frame,
+            avg_gbe_per_gb = avg_gbe_per_gb,
+            tj_excluded    = tj_excluded,
+            mode           = args.gbe_mode,
+            output_dir     = args.output_dir,
+            stem           = stem,
+            log            = log,
+        )
+        # Debug curvature vs GBE: scatter + per-frame histograms
+        if curv_gbe_points:
+            plot_final_curvature_vs_gbe_scatter(
+                curv_gbe_points    = curv_gbe_points,
+                output_dir         = args.output_dir,
+                stem               = stem,
+                mode               = args.gbe_mode,
+                log                = log,
+                final_frame_points = None,
+            )
+            plot_curvature_gbe_histogram_combined_per_frame(
+                curv_gbe_by_frame = curv_gbe_by_frame,
+                frames_filtered   = gbe_frames,
+                output_dir        = args.output_dir,
+                stem              = stem,
+                mode              = args.gbe_mode,
+                log               = log,
+                gb_areas          = [p[2] for p in curv_gbe_points],  # comment out to disable area weighting
+            )
+            plot_curvature_gbe_histogram_split_per_frame(
+                curv_gbe_by_frame = curv_gbe_by_frame,
+                frames_filtered   = gbe_frames,
+                output_dir        = args.output_dir,
+                stem              = stem,
+                mode              = args.gbe_mode,
+                log               = log,
+                gb_areas          = [p[2] for p in curv_gbe_points],  # comment out to disable area weighting
+            )
 
     # ── 5. Compute inclination per pixel ──────────────────────────────────
     t0 = time.perf_counter()
@@ -2950,14 +3761,25 @@ def main() -> None:
         else:
             log.warning("Skipping final velocity plots — no velocity data available.")
 
-        # 7.7  Avg |curvature| vs avg GBE scatter (all frames)
+        # 7.7  Curvature vs GBE histograms (all frames)
         if curv_gbe_points:
-            plot_final_curvature_vs_gbe_scatter(
-                curv_gbe_points = curv_gbe_points,
-                output_dir      = args.output_dir,
-                stem            = stem,
-                mode            = args.gbe_mode,
-                log             = log,
+            plot_curvature_gbe_histogram_combined(
+                curv_gbe_points  = curv_gbe_points,
+                frames_filtered  = gbe_frames,
+                output_dir       = args.output_dir,
+                stem             = stem,
+                mode             = args.gbe_mode,
+                log              = log,
+                gb_areas         = [p[2] for p in curv_gbe_points],  # comment out to disable area weighting
+            )
+            plot_curvature_gbe_histogram_split(
+                curv_gbe_points  = curv_gbe_points,
+                frames_filtered  = gbe_frames,
+                output_dir       = args.output_dir,
+                stem             = stem,
+                mode             = args.gbe_mode,
+                log              = log,
+                gb_areas         = [p[2] for p in curv_gbe_points],  # comment out to disable area weighting
             )
 
     tf(ti, log, "Total: ")
