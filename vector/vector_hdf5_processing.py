@@ -2210,6 +2210,260 @@ def save_inclination_csv(
     log.warning(f"Inclination CSV saved: {outpath}")
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Anti-curvature statistics (Block 5 / Block 6)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def report_anticurvature_statistics(
+    flat_lists:            dict,
+    normc_flat:            dict,
+    antic_flat:            dict,
+    normc_flat_conf:       dict,
+    antic_flat_conf:       dict,
+    total_GB_num_raw:      int,
+    total_GB_num_filtered: int,
+    confidence:            float,
+    output_dir:            Path,
+    stem:                  str,
+    log:                   logging.Logger,
+) -> None:
+    """
+    Compute and log Block 5 / Block 6 style anti-curvature statistics,
+    then write all values to a CSV file.
+
+    Block 5 : pre-confidence counts and ratios (sliding-window filtered only)
+    Block 6 : post-confidence counts and ratios (both denominators reported)
+
+    Also reports voxel-level statistics (Blocks 3 / 4 equivalents).
+
+    Denominator note
+    ----------------
+    total_GB_num_raw is summed from frames (raw HDF5 gb_dict entries),
+    which are already TJ-excluded during Stage 1 (vector_exodus_to_hdf5.py).
+    This means the conservative denominator is slightly higher than it would
+    be in a fully unfiltered count — Lin's total_GB_num includes all GB pairs
+    before any exclusion. This caveat is noted in the log and CSV output.
+    """
+    import csv
+
+    # ── Counts ────────────────────────────────────────────────────────────────
+    n_antic_pre  = len(antic_flat["curvatures"])
+    n_normc_pre  = len(normc_flat["curvatures"])
+    n_total_real = n_antic_pre + n_normc_pre
+
+    n_antic_post = len(antic_flat_conf["curvatures"])
+    n_normc_post = len(normc_flat_conf["curvatures"])
+
+    # ── Voxel counts — all analyzed GBs (Block 3 equivalent) ─────────────────
+    total_fwd    = sum(flat_lists["all_dV_forward"])
+    total_bwd    = sum(flat_lists["all_dV_backward"])
+    total_voxels = total_fwd + total_bwd
+    antic_voxel_ratio = (
+        total_bwd / total_voxels if total_voxels > 0 else float("nan")
+    )
+
+    # ── Voxel counts — norm-c GBs only (Block 4 equivalent) ──────────────────
+    normc_fwd          = sum(normc_flat["dV_forward"])
+    normc_bwd          = sum(normc_flat["dV_backward"])
+    normc_total_voxels = normc_fwd + normc_bwd
+    normc_antic_voxel_ratio = (
+        normc_bwd / normc_total_voxels if normc_total_voxels > 0 else float("nan")
+    )
+
+    # ── Voxel counts — post-confidence anti-c GBs (Block 6 voxel check) ──────
+    conf_antic_fwd   = sum(antic_flat_conf["dV_forward"])
+    conf_antic_bwd   = sum(antic_flat_conf["dV_backward"])
+    conf_antic_total = conf_antic_fwd + conf_antic_bwd
+    conf_antic_voxel_ratio = (
+        conf_antic_bwd / conf_antic_total if conf_antic_total > 0 else float("nan")
+    )
+
+    # ── Block 5 logging ───────────────────────────────────────────────────────
+    log.warning("=" * 70)
+    log.warning("ANTI-CURVATURE STATISTICS — Block 5 (pre-confidence filter)")
+    log.warning("=" * 70)
+    log.warning(f"  Anti-c GB instances (pre-confidence):          {n_antic_pre}")
+    log.warning(f"  Norm-c GB instances (pre-confidence):          {n_normc_pre}")
+    log.warning(f"  Total analyzed GBs  (real denominator):        {n_total_real}")
+    log.warning(
+        f"  Total raw GBs (conservative denominator):      {total_GB_num_raw}"
+    )
+    log.warning(
+        f"  NOTE: total_GB_num_raw is already TJ-excluded (Stage 1 filtering). "
+        f"Lin's total_GB_num includes all GB pairs before TJ exclusion, so "
+        f"this conservative denominator is slightly larger than Lin's, making "
+        f"the ratio a modest underestimate relative to Lin's convention."
+    )
+    log.warning(
+        f"  Anti-c ratio (real denom):   "
+        f"{n_antic_pre / n_total_real * 100:.4f}%  of {n_total_real}"
+    )
+    log.warning(
+        f"  Norm-c ratio (real denom):   "
+        f"{n_normc_pre / n_total_real * 100:.4f}%  of {n_total_real}"
+    )
+    log.warning(
+        f"  Anti-c ratio (raw denom):    "
+        f"{n_antic_pre / total_GB_num_raw * 100:.4f}%  of {total_GB_num_raw}"
+    )
+    log.warning(
+        f"  Filtered GB denom (post area/curvature filter): {total_GB_num_filtered}"
+    )
+    log.warning(
+        f"  Anti-c ratio (filtered denom): "
+        f"{n_antic_pre / total_GB_num_filtered * 100:.4f}%  of {total_GB_num_filtered}"
+    )
+
+    # ── Block 3/4 voxel logging ───────────────────────────────────────────────
+    log.warning("")
+    log.warning("VOXEL STATISTICS — All analyzed GBs (Block 3 equivalent)")
+    log.warning(
+        f"  Curvature-direction voxels:  {total_fwd}"
+        f"  Anti-direction voxels:       {total_bwd}"
+    )
+    log.warning(
+        f"  Anti-curvature voxel ratio:  "
+        f"{antic_voxel_ratio * 100:.4f}%  of {total_voxels} total voxels"
+    )
+    log.warning("")
+    log.warning("VOXEL STATISTICS — Norm-c GBs only (Block 4 equivalent)")
+    log.warning(
+        f"  Curvature-direction voxels:  {normc_fwd}"
+        f"  Anti-direction voxels:       {normc_bwd}"
+    )
+    log.warning(
+        f"  Anti-curvature voxel leakage on norm-c GBs: "
+        f"{normc_antic_voxel_ratio * 100:.4f}%  of {normc_total_voxels} voxels"
+    )
+
+    # ── Block 6 logging ───────────────────────────────────────────────────────
+    log.warning("")
+    log.warning(
+        f"ANTI-CURVATURE STATISTICS — Block 6 "
+        f"(post-confidence >{confidence * 100:.0f}% filter)"
+    )
+    log.warning("=" * 70)
+    log.warning(f"  Anti-c GB instances (post-confidence):   {n_antic_post}")
+    log.warning(f"  Norm-c GB instances (post-confidence):   {n_normc_post}")
+    log.warning(
+        f"  Anti-c ratio (real denom):      "
+        f"{n_antic_post / n_total_real * 100:.4f}%  of {n_total_real}"
+    )
+    log.warning(
+        f"  Norm-c ratio (real denom):      "
+        f"{n_normc_post / n_total_real * 100:.4f}%  of {n_total_real}"
+    )
+    log.warning(
+        f"  Anti-c ratio (raw denom):       "
+        f"{n_antic_post / total_GB_num_raw * 100:.4f}%  of {total_GB_num_raw}"
+        f"  [TJ-excluded raw — see Block 5 note]"
+    )
+    log.warning(
+        f"  Norm-c ratio (raw denom):       "
+        f"{n_normc_post / total_GB_num_raw * 100:.4f}%  of {total_GB_num_raw}"
+        f"  [TJ-excluded raw — see Block 5 note]"
+    )
+    log.warning(
+        f"  Anti-c ratio (filtered denom):  "
+        f"{n_antic_post / total_GB_num_filtered * 100:.4f}%  of {total_GB_num_filtered}"
+    )
+    log.warning("")
+    log.warning("VOXEL STATISTICS — Post-confidence anti-c GBs")
+    log.warning(
+        f"  Curvature-direction voxels:  {conf_antic_fwd}"
+        f"  Anti-direction voxels:       {conf_antic_bwd}"
+    )
+    log.warning(
+        f"  Anti-curvature voxel ratio (post-confidence anti-c GBs): "
+        f"{conf_antic_voxel_ratio * 100:.4f}%  of {conf_antic_total} voxels"
+    )
+
+    # ── CSV output ────────────────────────────────────────────────────────────
+    rows = [
+        # ── Denominators ──────────────────────────────────────────────────────
+        ("denom_total_analyzed_GBs_real",
+         n_total_real),
+        ("denom_total_raw_GBs_TJ_excluded_conservative",
+         total_GB_num_raw),
+        # ("denom_total_raw_GBs_TJ_excluded_NOTE",
+        #  "raw gb_dict already TJ-excluded in Stage 1; "
+        #  "slightly larger than Lin raw denom; ratio is modest underestimate"),
+        ("denom_total_filtered_GBs_post_area_curvature",
+         total_GB_num_filtered),
+
+        # ── Block 5 — pre-confidence ───────────────────────────────────────────
+        ("block5_antic_GB_count_pre_confidence",
+         n_antic_pre),
+        ("block5_normc_GB_count_pre_confidence",
+         n_normc_pre),
+        ("block5_antic_ratio_real_denom_pct",
+         n_antic_pre / n_total_real * 100),
+        ("block5_normc_ratio_real_denom_pct",
+         n_normc_pre / n_total_real * 100),
+        ("block5_antic_ratio_raw_TJexcl_denom_pct",
+         n_antic_pre / total_GB_num_raw * 100),
+        ("block5_antic_ratio_filtered_denom_pct",
+         n_antic_pre / total_GB_num_filtered * 100),
+
+        # ── Block 3 — voxels, all analyzed GBs ────────────────────────────────
+        ("voxels_all_GBs_curvature_direction",
+         total_fwd),
+        ("voxels_all_GBs_anti_direction",
+         total_bwd),
+        ("voxels_all_GBs_total",
+         total_voxels),
+        ("voxels_all_GBs_anti_ratio_pct",
+         antic_voxel_ratio * 100),
+
+        # ── Block 4 — voxels, norm-c GBs only ─────────────────────────────────
+        ("voxels_normc_GBs_curvature_direction",
+         normc_fwd),
+        ("voxels_normc_GBs_anti_direction",
+         normc_bwd),
+        ("voxels_normc_GBs_total",
+         normc_total_voxels),
+        ("voxels_normc_GBs_anti_leakage_ratio_pct",
+         normc_antic_voxel_ratio * 100),
+
+        # ── Block 6 — post-confidence ──────────────────────────────────────────
+        ("block6_confidence_threshold",
+         confidence),
+        ("block6_antic_GB_count_post_confidence",
+         n_antic_post),
+        ("block6_normc_GB_count_post_confidence",
+         n_normc_post),
+        ("block6_antic_ratio_real_denom_pct",
+         n_antic_post / n_total_real * 100),
+        ("block6_normc_ratio_real_denom_pct",
+         n_normc_post / n_total_real * 100),
+        ("block6_antic_ratio_raw_TJexcl_denom_pct",
+         n_antic_post / total_GB_num_raw * 100),
+        ("block6_normc_ratio_raw_TJexcl_denom_pct",
+         n_normc_post / total_GB_num_raw * 100),
+        ("block6_antic_ratio_filtered_denom_pct",
+         n_antic_post / total_GB_num_filtered * 100),
+        ("block6_normc_ratio_filtered_denom_pct",
+         n_normc_post / total_GB_num_filtered * 100),
+        ("block6_voxels_conf_antic_curvature_direction",
+         conf_antic_fwd),
+        ("block6_voxels_conf_antic_anti_direction",
+         conf_antic_bwd),
+        ("block6_voxels_conf_antic_total",
+         conf_antic_total),
+        ("block6_voxels_conf_antic_anti_ratio_pct",
+         conf_antic_voxel_ratio * 100),
+    ]
+
+    outpath = output_dir / f"{stem}_anticurvature_statistics.csv"
+    with open(outpath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["statistic", "value"])
+        for name, val in rows:
+            writer.writerow([name, val])
+    log.warning(f"Anti-curvature statistics CSV saved: {outpath}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Final Plots
 # ──────────────────────────────────────────────────────────────────────────────
@@ -3301,6 +3555,7 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log.info(f"Arguments: {args}")
+    stem = args.hdf5.stem
 
     # ── 1. Load HDF5 ──────────────────────────────────────────────────────
     t0 = time.perf_counter()
@@ -3348,6 +3603,21 @@ def main() -> None:
     log.warning(
         f"Using filtered last frame: step={last_frame.step}, time={last_frame.time:.6g}, "
         f"gb_pairs={len(last_frame.gb_dict)} after min_area/min_curvature."
+    )
+
+    # ── 1c. Count raw and filtered GB instances across all frames ───────────
+    # NOTE: frames[i].gb_dict entries are already TJ-excluded by Stage 1.
+    # This means total_GB_num_raw is a conservative denominator that is
+    # slightly larger than Lin's fully-unfiltered total_GB_num, because
+    # Stage 1 already removed TJ-adjacent-only GBs before writing the HDF5.
+    total_GB_num_raw      = sum(len(frame.gb_dict) for frame in frames)
+    total_GB_num_filtered = sum(len(frame.gb_dict) for frame in frames_filtered)
+    log.warning(
+        f"GB instance counts across all frames: "
+        f"raw (TJ-excluded by Stage 1) = {total_GB_num_raw}, "
+        f"post area/curvature filter = {total_GB_num_filtered}. "
+        f"Note: raw count is already TJ-excluded — see report_anticurvature_statistics "
+        f"for full denominator caveat."
     )
 
     # ── 2. Load misorientation parquet (if needed) ─────────────────────────
@@ -3465,7 +3735,6 @@ def main() -> None:
     )
 
     if args.debug_plot:
-        stem = args.hdf5.stem
         plot_gbe_debug(
             frame       = last_frame,
             pixel_coords= pixel_coords,
@@ -3536,11 +3805,9 @@ def main() -> None:
     )
 
     if args.inclination_csv:
-        stem = args.hdf5.stem
         save_inclination_csv(bin_centers_deg, freq, args.output_dir, stem, log)
 
     if args.debug_plot:
-        stem = args.hdf5.stem
         plot_inclination_polar(
             theta_closed = theta_closed,
             r_closed     = r_closed,
@@ -3645,6 +3912,21 @@ def main() -> None:
             ("curvatures","velocities","dV_forward","dV_backward","areas","pair_ids")},
             mode="antic", confidence=CONFIDENCE, log=log,
         )
+
+        # ── 6.5  Anti-curvature statistics (Block 5 / Block 6) ─────────────
+        report_anticurvature_statistics(
+            flat_lists            = flat_lists,
+            normc_flat            = normc_flat,
+            antic_flat            = antic_flat,
+            normc_flat_conf       = normc_flat_conf,
+            antic_flat_conf       = antic_flat_conf,
+            total_GB_num_raw      = total_GB_num_raw,
+            total_GB_num_filtered = total_GB_num_filtered,
+            confidence            = CONFIDENCE,
+            output_dir            = args.output_dir,
+            stem                  = stem,
+            log                   = log,
+        )
     else:
         flat_lists  = None
         velocity_df = None
@@ -3653,7 +3935,6 @@ def main() -> None:
 
     if args.debug_plot:
         if flat_lists is not None and len(flat_lists["all_velocities"]) > 0:
-            stem = args.hdf5.stem
             plot_velocity_debug(
                 flat_lists      = flat_lists,
                 normc_flat      = normc_flat,
@@ -3676,8 +3957,6 @@ def main() -> None:
 
     # ── 7. Final individual plots (--plot) ───────────────────────────────────
     if args.plot:
-        stem = args.hdf5.stem
-
         # 7.1  GBE CDF
         plot_final_gbe_cdf(
             gbe_values = gbe_values,
