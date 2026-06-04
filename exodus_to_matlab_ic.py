@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """
 exodus_to_matlab_ic.py
-
-Read gr0-gr5 nodal variables from a MOOSE ExodusII output at a selected
+Read grN nodal variables from a MOOSE ExodusII output at a selected
 timestep and save them as a .mat file for use as a MATLAB phase-field
 initial condition.
-
 Each variable is reshaped onto a 2D grid with axis 0 = x, axis 1 = y,
 matching the convention of the MATLAB solver (anisotropic_grgr_incl_in_gamma.m).
-
 Usage:
-    python exodus_to_matlab_ic.py                      # closest frame to t=0
-    python exodus_to_matlab_ic.py -t 0.5               # closest frame to t=0.5
-    python exodus_to_matlab_ic.py -i myjob -t 1.0      # filter by filename
-    python exodus_to_matlab_ic.py -s                   # search subdirectories
-    python exodus_to_matlab_ic.py -o my_ic.mat         # custom output filename
+python exodus_to_matlab_ic.py                      # closest frame to t=0
+python exodus_to_matlab_ic.py -t 0.5               # closest frame to t=0.5
+python exodus_to_matlab_ic.py -i myjob -t 1.0      # filter by filename
+python exodus_to_matlab_ic.py -s                   # search subdirectories
+python exodus_to_matlab_ic.py -o my_ic.mat         # custom output filename
+python exodus_to_matlab_ic.py -n 4                 # use only first 4 gr* vars
 """
-
 from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -30,25 +28,39 @@ from tqdm import tqdm
 
 from vector.ExodusBasics import ExodusBasics
 
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Convert MOOSE Exodus gr0-gr5 nodal variables to a MATLAB .mat IC file.",
+        description=(
+            "Convert MOOSE Exodus grN nodal variables to a MATLAB .mat IC file."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     # General
     gen = p.add_argument_group("General")
-    gen.add_argument("-v", "--verbose", action="count", default=0,
-                     help="Increase verbosity (-v, -vv, -vvv).")
-    gen.add_argument("-s", "--subdirs", action="store_true",
-                     help="Search for *.e files one level down (./*/*.e).")
-    gen.add_argument("--input", "-i", type=str, default=None, metavar="PATTERN",
-                     help="Only process .e files whose name contains this string.")
+    gen.add_argument(
+        "-v", "--verbose", action="count", default=0,
+        help="Increase verbosity (-v, -vv, -vvv).",
+    )
+    gen.add_argument(
+        "-s", "--subdirs", action="store_true",
+        help="Search for *.e files one level down (./*/*.e).",
+    )
+    gen.add_argument(
+        "--input", "-i", type=str, default=None, metavar="PATTERN",
+        help="Only process .e files whose name contains this string.",
+    )
+    gen.add_argument(
+        "-n", "--num-grains", type=int, default=None, metavar="N",
+        help=(
+            "Maximum number of gr* order parameters to extract. "
+            "Defaults to all grN variables found in the Exodus file."
+        ),
+    )
 
     # Frame selection
     tim = p.add_argument_group("Target frame selection")
@@ -65,8 +77,8 @@ def parse_args() -> argparse.Namespace:
     out.add_argument(
         "-o", "--output", type=str, default=None,
         help=(
-            "Output .mat filename. Defaults to '<exodus_stem>_ic_t<time>.mat' "
-            "in the current directory."
+            "Output .mat filename. Defaults to "
+            "'<exodus_stem>_ic_<N>gr_t<time>.mat' in the current directory."
         ),
     )
     out.add_argument(
@@ -75,7 +87,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     return p.parse_args()
-
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -90,9 +101,8 @@ def setup_logging(verbosity: int) -> logging.Logger:
     logging.basicConfig(level=level, format="%(message)s")
     return logging.getLogger("exo2mat")
 
-
 # ---------------------------------------------------------------------------
-# File discovery  (mirrors plotting_general.py pattern)
+# File discovery
 # ---------------------------------------------------------------------------
 
 def find_exodus_files(
@@ -118,9 +128,8 @@ def exodus_stem(exo_path: Path) -> str:
         name = name[:-4]
     return name
 
-
 # ---------------------------------------------------------------------------
-# Step selection  (mirrors plotting_general.py closest_index pattern)
+# Step selection
 # ---------------------------------------------------------------------------
 
 def closest_index(values: np.ndarray, target: float) -> int:
@@ -137,35 +146,65 @@ def select_step(times: np.ndarray, target_time: float, log: logging.Logger) -> i
     )
     return step
 
-
 # ---------------------------------------------------------------------------
 # Core: Exodus -> structured 2D grids
 # ---------------------------------------------------------------------------
 
-GR_NAMES = ["gr0", "gr1", "gr2", "gr3", "gr4", "gr5"]
+def discover_gr_names(available: list[str]) -> list[str]:
+    """Return numerically sorted list of all grN variables in available."""
+    return sorted(
+        [n for n in available if re.fullmatch(r"gr\d+", n)],
+        key=lambda s: int(s[2:]),
+    )
 
 
-def validate_varnames(available: list[str], log: logging.Logger) -> None:
-    missing = [n for n in GR_NAMES if n not in available]
-    if missing:
+def resolve_gr_names(
+    available: list[str],
+    num_grains: int | None,
+    log: logging.Logger,
+) -> list[str]:
+    """
+    Discover all grN variables from available nodal vars, apply optional
+    num_grains cap, warn on mismatches, and raise only if none are found.
+    """
+    found = discover_gr_names(available)
+
+    if not found:
         raise RuntimeError(
-            f"Expected nodal variables {GR_NAMES} but these are missing: {missing}. "
-            f"Available nodal vars: {available}"
+            f"No grN nodal variables found in file. Available vars: {available}"
         )
-    log.info(f"Confirmed nodal variables: {GR_NAMES}")
+
+    if num_grains is not None and num_grains < len(found):
+        log.warning(
+            f"WARNING: --num-grains={num_grains} requested but {len(found)} "
+            f"gr* variables found; truncating to {found[:num_grains]}."
+        )
+        found = found[:num_grains]
+    elif num_grains is not None and num_grains > len(found):
+        log.warning(
+            f"WARNING: --num-grains={num_grains} requested but only "
+            f"{len(found)} gr* variable(s) found in file: {found}. "
+            "Proceeding with available variables only."
+        )
+    else:
+        log.info(f"Auto-detected gr* variables: {found}")
+
+    log.warning(f"Extracting {len(found)} order parameter(s): {found}")
+    return found
 
 
 def build_eta_grids(
     exo: ExodusBasics,
     step: int,
+    gr_names: list[str],
     log: logging.Logger,
 ) -> dict[str, np.ndarray]:
     """
-    Read gr0-gr5 at `step` and scatter each flat nodal array onto a
-    structured 2D grid with shape (nx, ny) — axis 0 = x, axis 1 = y —
-    matching the MATLAB solver index convention.
+    Read each variable in gr_names at `step` and scatter each flat nodal
+    array onto a structured 2D grid with shape (nx, ny) — axis 0 = x,
+    axis 1 = y — matching the MATLAB solver index convention.
 
-    Returns dict: {'gr0': array(nx,ny), ..., 'gr5': array(nx,ny)}
+    Returns dict: {'gr0': array(nx,ny), ..., 'grN': array(nx,ny)}
     """
     x, y = exo.coords_xy()  # flat arrays, length = num_nodes
 
@@ -188,8 +227,8 @@ def build_eta_grids(
 
     grids: dict[str, np.ndarray] = {}
 
-    for gr_name in tqdm(GR_NAMES, desc="Reading order parameters", unit="var"):
-        vals = exo.nodal_var_at_step(gr_name, step)   # shape (num_nodes,)
+    for gr_name in tqdm(gr_names, desc="Reading order parameters", unit="var"):
+        vals = exo.nodal_var_at_step(gr_name, step)  # shape (num_nodes,)
 
         # Fill grid: G[ix, iy] -> axis 0 = x direction, axis 1 = y direction
         # This matches the MATLAB solver which left-multiplies rows for x-derivatives
@@ -204,7 +243,9 @@ def build_eta_grids(
             )
 
         grids[gr_name] = G
-        log.info(f"  {gr_name}: shape={G.shape}, min={vals.min():.4f}, max={vals.max():.4f}")
+        log.info(
+            f"  {gr_name}: shape={G.shape}, min={vals.min():.4f}, max={vals.max():.4f}"
+        )
 
     return grids
 
@@ -223,7 +264,6 @@ def validate_range(grids: dict[str, np.ndarray], log: logging.Logger) -> None:
         else:
             log.info(f"  {name}: range OK [{vmin:.4f}, {vmax:.4f}]")
 
-
 # ---------------------------------------------------------------------------
 # Save to .mat
 # ---------------------------------------------------------------------------
@@ -237,12 +277,12 @@ def save_mat(
     """
     Save order parameter grids to a MATLAB v5 .mat file.
 
-    The saved variables are named gr0..gr5 directly so MATLAB can load
+    The saved variables are named gr0..grN directly so MATLAB can load
     and assign them:
         data = load('ic_from_moose.mat');
         eta{1} = data.gr0;  % etc.
 
-    Metadata (source file, time, step) is saved as a struct field.
+    Metadata (source file, time, step) is saved alongside the grids.
     """
     save_dict: dict = {}
     for name, G in grids.items():
@@ -257,7 +297,6 @@ def save_mat(
 
     scipy.io.savemat(str(outpath), save_dict, format="5", do_compression=False)
     log.warning(f"Saved: {outpath}")
-
 
 # ---------------------------------------------------------------------------
 # Main
@@ -290,14 +329,16 @@ def main() -> None:
         try:
             with ExodusBasics(exo_path) as exo:
 
-                # --- Validate variable names ---
+                # --- Discover and resolve gr* variable names ---
                 available = exo.nodal_varnames()
                 log.info(f"Available nodal variables: {available}")
-                validate_varnames(available, log)
+                gr_names = resolve_gr_names(available, args.num_grains, log)
 
                 # --- Select timestep ---
                 times = exo.time()
-                log.info(f"Available timesteps: {len(times)}, times: {times[:]}")
+                log.info(
+                    f"Available timesteps: {len(times)}, times: {times[:]}"
+                )
 
                 target_time = args.time if args.time is not None else 0.0
                 step = select_step(times, target_time, log)
@@ -308,7 +349,7 @@ def main() -> None:
                 )
 
                 # --- Build 2D grids ---
-                grids = build_eta_grids(exo, step, log)
+                grids = build_eta_grids(exo, step, gr_names, log)
 
                 # --- Validate value ranges ---
                 if not args.no_validate:
@@ -318,7 +359,9 @@ def main() -> None:
                 if args.output:
                     outpath = Path(args.output)
                 else:
-                    outpath = Path(f"{stem}_ic_t{actual_time:.6g}.mat")
+                    outpath = Path(
+                        f"{stem}_ic_{len(gr_names)}gr_t{actual_time:.6g}.mat"
+                    )
 
                 # --- Save ---
                 nx, ny = next(iter(grids.values())).shape
