@@ -266,72 +266,69 @@ def open_mat_grainims(mat_path: str, var_name: str = "Grainims_id"):
 
 def get_mat_shape(ds) -> tuple:
     """
-    Return (n_steps, ny, nx) from the h5py dataset, accounting for
-    MATLAB's Fortran-order transposition.
+    Return (n_steps, ny, nx) from the h5py dataset.
 
-    MATLAB saves (n_steps, 1, ny, nx) but h5py reads it as (nx, ny, 1, n_steps).
-    We detect the layout by inspecting which axis is size-1 (the singleton).
-    If no axis is size 1, we assume the last axis is n_steps and the first
-    two are spatial.
-    """
-    shape = ds.shape  # h5py shape — Fortran-transposed from MATLAB
-    # MATLAB (1601, 1, 2400, 2400) -> h5py (2400, 2400, 1, 1601)
-    # Find the singleton axis
-    singleton_axes = [i for i, s in enumerate(shape) if s == 1]
-    if len(singleton_axes) == 1:
-        # Remove singleton, remaining are (spatial..., n_steps) or (n_steps, spatial...)
-        reduced = [s for i, s in enumerate(shape) if i not in singleton_axes]
-        # Convention: MATLAB stores timestep as slowest (first) axis,
-        # h5py transposes it to fastest (last) axis.
-        n_steps = reduced[-1]
-        spatial = reduced[:-1]  # [nx, ny] in h5py = [ny, nx] after transpose
-        ny, nx = spatial[1], spatial[0]
-    else:
-        # Fallback: assume shape is (nx, ny, n_steps)
-        n_steps = shape[-1]
-        ny, nx = shape[1], shape[0]
-    return n_steps, ny, nx
+    Supports two known layouts:
+      Layout A (no h5py transposition): (n_steps, 1, ny, nx)  <- your file
+      Layout B (h5py Fortran-transposed): (nx, ny, 1, n_steps)
 
-
-def read_mat_frame(ds, step: int) -> np.ndarray:
-    """
-    Read one frame from the h5py dataset and return it as a 2D int32 array
-    of shape (ny, nx), accounting for MATLAB's Fortran-order transposition.
-
-    MATLAB (n_steps, 1, ny, nx) is stored on disk as (nx, ny, 1, n_steps)
-    by h5py. We read ds[:, :, 0, step] and transpose to get (ny, nx).
-
-    Parameters
-    ----------
-    ds   : h5py Dataset
-    step : int — 0-based frame index
-
-    Returns
-    -------
-    np.ndarray, shape (ny, nx), dtype int32
+    We distinguish them by checking which axis holds the singleton AND
+    whether the singleton is axis 0/1 (Layout A) or axis 2/3 (Layout B).
     """
     shape = ds.shape
     singleton_axes = [i for i, s in enumerate(shape) if s == 1]
 
     if len(singleton_axes) == 1:
         sa = singleton_axes[0]
-        # Build a full index tuple; slice everything except singleton and step axes.
-        # For shape (nx, ny, 1, n_steps): read [:, :, 0, step] -> (nx, ny), then .T
-        idx = []
-        step_axis = len(shape) - 1  # last axis in h5py = first (n_steps) in MATLAB
-        for ax, s in enumerate(shape):
-            if ax == sa:
-                idx.append(0)
-            elif ax == step_axis:
-                idx.append(step)
-            else:
-                idx.append(slice(None))
-        frame = ds[tuple(idx)]          # shape (nx, ny)
-        frame = frame.T                 # -> (ny, nx)
+        if sa == 1:
+            # Layout A: (n_steps, 1, ny, nx) — axis 0 is steps
+            n_steps = shape[0]
+            ny      = shape[2]
+            nx      = shape[3]
+        else:
+            # Layout B: (nx, ny, 1, n_steps) — last axis is steps
+            n_steps = shape[-1]
+            spatial = [s for i, s in enumerate(shape) if i != sa and i != len(shape) - 1]
+            ny, nx  = spatial[1], spatial[0]
     else:
-        # Fallback: last axis = steps, first two = spatial
-        frame = ds[:, :, step]          # (nx, ny)
-        frame = frame.T                 # -> (ny, nx)
+        # Fallback: assume (n_steps, ny, nx)
+        n_steps = shape[0]
+        ny      = shape[1]
+        nx      = shape[2]
+
+    return n_steps, ny, nx
+
+
+def read_mat_frame(ds, step: int) -> np.ndarray:
+    """
+    Read one frame and return a 2D int32 array of shape (ny, nx).
+
+    Layout A: ds shape (n_steps, 1, ny, nx) -> ds[step, 0, :, :]  (no transpose needed)
+    Layout B: ds shape (nx, ny, 1, n_steps) -> ds[:, :, 0, step].T
+    """
+    shape = ds.shape
+    singleton_axes = [i for i, s in enumerate(shape) if s == 1]
+
+    if len(singleton_axes) == 1:
+        sa = singleton_axes[0]
+        if sa == 1:
+            # Layout A: (n_steps, 1, ny, nx)
+            frame = ds[step, 0, :, :]   # -> (ny, nx), no transpose needed
+        else:
+            # Layout B: (nx, ny, 1, n_steps)
+            idx = []
+            step_axis = len(shape) - 1
+            for ax, s in enumerate(shape):
+                if ax == sa:
+                    idx.append(0)
+                elif ax == step_axis:
+                    idx.append(step)
+                else:
+                    idx.append(slice(None))
+            frame = ds[tuple(idx)].T    # (nx, ny) -> (ny, nx)
+    else:
+        # Fallback
+        frame = ds[step, :, :] if shape[0] != max(shape) else ds[:, :, step].T
 
     return frame.astype(np.int32)
 
