@@ -179,41 +179,6 @@ def parse_args():
         ),
     )
 
-    # ---- Recovery mode ----
-    rec = p.add_argument_group(
-        "Recovery mode",
-        description=(
-            "Use when a MOOSE simulation was recovered and produced multiple "
-            ".e files that together form one continuous run."
-        ),
-    )
-    rec.add_argument(
-        "--recover", action="store_true", default=False,
-        help=(
-            "Enable recovery mode. Discovers all .e files in cwd and all "
-            "subdirectories (or in --recover-dirs if supplied), merges their "
-            "timesteps into a single deduplicated index, and treats the whole "
-            "set as one simulation."
-        ),
-    )
-    rec.add_argument(
-        "--recover-dirs", nargs="+", default=None, metavar="DIR",
-        dest="recover_dirs",
-        help=(
-            "Explicit list of directories to search for .e files in recovery "
-            "mode. If omitted, defaults to cwd + all subdirectories recursively. "
-            "Use this for sibling-directory layouts."
-        ),
-    )
-    rec.add_argument(
-        "--rebuild-index", action="store_true", default=False,
-        dest="rebuild_index",
-        help=(
-            "Force regeneration of recovery_index.csv even if it already "
-            "exists in the current directory."
-        ),
-    )
-
     # ---- Plot options ----
     plot = p.add_argument_group("Plotting")
     plot.add_argument(
@@ -457,312 +422,6 @@ def select_multi_frame_steps(
 
     return result
 
-
-# ---------------------------------------------------------------------------
-# Recovery mode — file discovery
-# ---------------------------------------------------------------------------
-
-def find_recovery_files(args, log: logging.Logger) -> list[Path]:
-    """
-    Discover all .e files for recovery mode.
-
-    If args.recover_dirs is provided, search each listed directory
-    non-recursively. Otherwise, search cwd and every subdirectory
-    recursively (Option 1 layout).
-
-    Returns sorted, deduplicated list of absolute Paths. Exits cleanly
-    if no files are found.
-    """
-    if args.recover_dirs:
-        found = []
-        for d in args.recover_dirs:
-            dp = Path(d).resolve()
-            if not dp.is_dir():
-                log.warning(
-                    f"  [recover] --recover-dirs entry is not a directory, "
-                    f"skipping: {dp}"
-                )
-                continue
-            found.extend(dp.glob("*.e"))
-    else:
-        found = list(Path.cwd().rglob("*.e"))
-
-    seen = set()
-    unique = []
-    for p in found:
-        rp = p.resolve()
-        if rp.is_file() and rp not in seen:
-            seen.add(rp)
-            unique.append(rp)
-    unique.sort()
-
-    if not unique:
-        dirs_desc = (
-            ", ".join(str(d) for d in args.recover_dirs)
-            if args.recover_dirs
-            else "cwd + subdirectories"
-        )
-        raise SystemExit(
-            f"Recovery mode: no .e files found in {dirs_desc}."
-        )
-
-    log.info(f"[recover] Found {len(unique)} .e file(s):")
-    for p in unique:
-        log.info(f"  {p}")
-    return unique
-
-
-# ---------------------------------------------------------------------------
-# Recovery mode — index build and I/O
-# ---------------------------------------------------------------------------
-
-def build_recovery_index(
-    exo_files: list[Path],
-    log: logging.Logger,
-) -> list[dict]:
-    """
-    Build a per-timestep index across all recovery .e files.
-
-    Reads time_whole and grain_tracker (if present) from each file cheaply,
-    sorts files by first timestep, then merges into a flat deduplicated table.
-    Overlapping time ranges are resolved by preferring the later file (the
-    canonical post-recovery continuation).
-
-    Returns list of dicts: {time, grain_count, file_path, file_step}
-    grain_count is -1 if grain_tracker is not present.
-    """
-    file_meta = []
-    for fp in exo_files:
-        try:
-            with ExodusBasics(str(fp)) as exo:
-                times = np.asarray(exo.time(), dtype=float)
-                glo_names = exo.glo_varnames()
-                if "grain_tracker" in glo_names:
-                    gt = np.rint(
-                        exo.glo_var_series("grain_tracker")
-                    ).astype(np.int64)
-                else:
-                    gt = None
-        except Exception as e:
-            log.warning(
-                f"  [recover] Could not read {fp}, skipping. Reason: {e}"
-            )
-            continue
-
-        if len(times) == 0:
-            log.warning(f"  [recover] {fp} has no timesteps, skipping.")
-            continue
-
-        file_meta.append({
-            "path":        fp,
-            "times":       times,
-            "grain_tracker": gt,
-            "first_time":  float(times[0]),
-        })
-        log.info(
-            f"  [recover] {fp.name}: {len(times)} steps, "
-            f"t=[{times[0]:.4g}, {times[-1]:.4g}]"
-        )
-
-    if not file_meta:
-        raise RuntimeError(
-            "Recovery index: no readable .e files with timesteps found."
-        )
-
-    file_meta.sort(key=lambda m: m["first_time"])
-
-    rows: list[dict] = []
-    for meta in file_meta:
-        fp_str   = str(meta["path"])
-        times    = meta["times"]
-        gt       = meta["grain_tracker"]
-        cut_time = meta["first_time"]
-
-        # Drop rows from earlier files that overlap with this file's range
-        rows = [r for r in rows if r["time"] < cut_time]
-
-        for step_idx, t in enumerate(times):
-            gc = int(gt[step_idx]) if gt is not None else -1
-            rows.append({
-                "time":        float(t),
-                "grain_count": gc,
-                "file_path":   fp_str,
-                "file_step":   step_idx,
-            })
-
-    rows.sort(key=lambda r: r["time"])
-    log.warning(
-        f"[recover] Index built: {len(rows)} unique timesteps across "
-        f"{len(file_meta)} file(s)."
-    )
-    return rows
-
-
-def save_recovery_index(
-    rows: list[dict],
-    index_path: Path,
-    log: logging.Logger,
-) -> None:
-    """Write recovery index to CSV: time, grain_count, file_path, file_step."""
-    with open(index_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["time", "grain_count", "file_path", "file_step"])
-        for r in rows:
-            writer.writerow([
-                r["time"], r["grain_count"], r["file_path"], r["file_step"],
-            ])
-    log.warning(
-        f"[recover] Recovery index written: {index_path} ({len(rows)} rows)"
-    )
-
-
-def load_recovery_index(index_path: Path, log: logging.Logger) -> list[dict]:
-    """Load a previously-saved recovery index CSV."""
-    rows = []
-    with open(index_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append({
-                "time":        float(row["time"]),
-                "grain_count": int(row["grain_count"]),
-                "file_path":   str(row["file_path"]),
-                "file_step":   int(row["file_step"]),
-            })
-    log.warning(
-        f"[recover] Loaded recovery index: {index_path} ({len(rows)} rows)"
-    )
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Recovery mode — timestep selection from merged index
-# ---------------------------------------------------------------------------
-
-def select_step_from_index(
-    rows: list[dict],
-    *,
-    grains: int | None = None,
-    time_value: float | None = None,
-    log: logging.Logger,
-) -> dict:
-    """
-    Select the single anchor row from the merged recovery index.
-    Recovery-mode replacement for select_step().
-    Returns the chosen row: {time, grain_count, file_path, file_step}
-    """
-    if time_value is not None:
-        times = np.array([r["time"] for r in rows], dtype=float)
-        idx   = closest_index(times, float(time_value))
-        row   = rows[idx]
-        log.info(
-            f"[recover] Anchor by time: requested={time_value}, "
-            f"chosen time={row['time']:.6g}, "
-            f"file={Path(row['file_path']).name}, "
-            f"file_step={row['file_step']}"
-        )
-        return row
-
-    gc_vals = np.array([r["grain_count"] for r in rows], dtype=np.int64)
-    if np.all(gc_vals == -1):
-        raise RuntimeError(
-            "Recovery mode: --grains requested but no file in the index "
-            "contains a 'grain_tracker' global variable."
-        )
-    idx = closest_index(gc_vals, int(grains))
-    row = rows[idx]
-    log.info(
-        f"[recover] Anchor by grains: requested={grains}, "
-        f"chosen grain_count={row['grain_count']}, "
-        f"time={row['time']:.6g}, "
-        f"file={Path(row['file_path']).name}, "
-        f"file_step={row['file_step']}"
-    )
-    return row
-
-
-def select_multi_frame_steps_from_index(
-    rows: list[dict],
-    anchor_row: dict,
-    n_frames: int,
-    dt: float | None = None,
-    mode: str = "end",
-    log: logging.Logger = None,
-) -> list[dict]:
-    """
-    Select up to n_frames rows from the merged index anchored to anchor_row.
-    Recovery-mode replacement for select_multi_frame_steps().
-    Returns list of index row dicts sorted ascending by time.
-    """
-    times      = np.array([r["time"] for r in rows], dtype=float)
-    n_total    = len(times)
-    t_anchor   = anchor_row["time"]
-    anchor_idx = closest_index(times, t_anchor)
-
-    if dt is None:
-        ref = t_anchor if t_anchor > 0 else times[-1]
-        dt  = ref * 0.01
-        if log:
-            log.info(
-                f"[recover] HDF5 dt defaulted to {dt:.4g} "
-                f"(1% of anchor time {ref:.4g})"
-            )
-
-    if mode == "end":
-        offsets     = np.arange(n_frames - 1, -1, -1)
-        ideal_times = t_anchor - offsets * dt
-    else:
-        half        = (n_frames - 1) / 2.0
-        ideal_times = t_anchor + np.arange(n_frames) * dt - half * dt
-
-    raw_indices = [closest_index(times, t) for t in ideal_times]
-
-    seen           = set()
-    unique_indices = []
-    for idx in raw_indices:
-        if idx not in seen:
-            seen.add(idx)
-            unique_indices.append(idx)
-
-    if len(unique_indices) < n_frames:
-        i_min = max(0, min(unique_indices))
-        i_max = min(n_total - 1, max(unique_indices))
-        if (i_max - i_min + 1) < n_frames:
-            i_min = max(0, i_max - (n_frames - 1))
-            i_max = min(n_total - 1, i_min + (n_frames - 1))
-        extra_indices  = list(np.unique(
-            np.round(np.linspace(i_min, i_max, n_frames)).astype(int)
-        ))
-        unique_indices = sorted(
-            set(unique_indices) | set(extra_indices)
-        )[:n_frames]
-        if log:
-            log.warning(
-                f"\033[31m[recover] HDF5:\033[0m dt={dt:.4g} too small/large — "
-                f"only {len(seen)} unique frames found. "
-                f"Filled to {len(unique_indices)} by spreading within "
-                f"[{times[i_min]:.4g}, {times[i_max]:.4g}]."
-            )
-
-    unique_indices = sorted(unique_indices)
-    result         = [rows[i] for i in unique_indices]
-
-    if log:
-        log.info(
-            f"[recover] Multi-frame: anchor t={t_anchor:.4g}, "
-            f"mode='{mode}', dt={dt:.4g}, "
-            f"requested={n_frames}, selected={len(result)}"
-        )
-        for r in result:
-            gc_str = (
-                f", grains={r['grain_count']}"
-                if r["grain_count"] != -1 else ""
-            )
-            log.info(
-                f"  time={r['time']:.6g}{gc_str}, "
-                f"file={Path(r['file_path']).name}, "
-                f"file_step={r['file_step']}"
-            )
-    return result
 
 # ---------------------------------------------------------------------------
 # Grid mapping
@@ -1516,37 +1175,27 @@ def compute_gb_curvature_fast(C: np.ndarray, TJ_distance_max: int = 6,
 # Frame processing — routes to standard or fast path based on args.fast
 # ---------------------------------------------------------------------------
 
-def process_frame(
-    exo_or_path,        # open ExodusBasics OR a file path string/Path
-    step: int,
-    args,
-    log: logging.Logger,
-) -> tuple:
+def process_frame(exo, step: int, args,
+                  log: logging.Logger) -> tuple:
     """
     Process a single exodus timestep into grids and GB data.
 
-    In standard mode, exo_or_path is an already-open ExodusBasics instance.
-    In recovery mode, exo_or_path is a file path (str or Path); this function
-    opens its own ExodusBasics context so frames from different files can be
-    processed without keeping all files open simultaneously.
+    Routes to the standard or fast path based on args.fast:
+      - Standard: get_both + compute_gb_curvature
+      - Fast:     get_both_fast + compute_gb_curvature_fast
 
-    Routes to the standard or fast path based on args.fast.
+    Parameters
+    ----------
+    exo  : open ExodusBasics instance
+    step : int — 0-based timestep index
+    args : argparse.Namespace
+    log  : Logger
 
     Returns
     -------
-    tuple : (step, time_val, P0, C, P, gb_dict, boundary_pixels, junction_pixels)
+    tuple : (step, time_val, P0, C, P, gb_dict,
+             boundary_pixels, junction_pixels)
     """
-    if isinstance(exo_or_path, (str, Path)):
-        # Recovery mode: open the file ourselves
-        with ExodusBasics(str(exo_or_path)) as exo:
-            return _process_frame_inner(exo, step, args, log)
-    else:
-        # Standard mode: use the already-open instance
-        return _process_frame_inner(exo_or_path, step, args, log)
-
-
-def _process_frame_inner(exo, step: int, args, log: logging.Logger) -> tuple:
-    """Inner frame processing logic shared by both call paths."""
     time_val = float(exo.time()[step])
 
     log.debug(f"  [process_frame] step={step}: reading mesh data...")
@@ -1562,12 +1211,15 @@ def _process_frame_inner(exo, step: int, args, log: logging.Logger) -> tuple:
             f"Starting get_both_fast..."
         )
         C, P = get_both_fast(P0, args=args)
+
         log.debug(
             f"  [process_frame] step={step}: get_both_fast done. "
             f"Starting compute_gb_curvature_fast..."
         )
         gb_dict, boundary_pixels, junction_pixels = compute_gb_curvature_fast(
-            C, TJ_distance_max=args.tj_distance, signed=args.signed,
+            C,
+            TJ_distance_max=args.tj_distance,
+            signed=args.signed,
         )
     else:
         log.debug(
@@ -1575,12 +1227,15 @@ def _process_frame_inner(exo, step: int, args, log: logging.Logger) -> tuple:
             f"Starting get_both..."
         )
         C, P = get_both(P0, args=args)
+
         log.debug(
             f"  [process_frame] step={step}: get_both done. "
             f"Starting compute_gb_curvature..."
         )
         gb_dict, boundary_pixels, junction_pixels = compute_gb_curvature(
-            C, TJ_distance_max=args.tj_distance, signed=args.signed,
+            C,
+            TJ_distance_max=args.tj_distance,
+            signed=args.signed,
         )
 
     log.debug(f"  [process_frame] step={step}: done.")
@@ -1591,71 +1246,31 @@ def _process_frame_inner(exo, step: int, args, log: logging.Logger) -> tuple:
 # HDF5 I/O
 # ---------------------------------------------------------------------------
 
-def save_frame_times_csv(
-    filepath: str,
-    frames_data: list,
-    exo_or_index_rows,          # open ExodusBasics OR list of index row dicts
-    log: logging.Logger = None,
-    recovery_mode: bool = False,
-) -> None:
+def save_frame_times_csv(filepath: str, frames_data: list, exo,
+                         log: logging.Logger = None) -> None:
     """
-    Write a CSV with step, time, grain count, and (in recovery mode)
-    source file path for each frame.
-
-    In standard mode, exo_or_index_rows is an open ExodusBasics instance
-    and grain counts are read from grain_tracker if present.
-
-    In recovery mode, exo_or_index_rows is the list of index row dicts;
-    grain counts are taken directly from the index (already read during
-    index build) and a source_file column is added.
+    Write a CSV with step, time, and grain count (if available) for each frame.
+    filepath should be the .h5 path — _times.csv will be substituted.
     """
     csv_path = filepath.replace(".h5", "_times.csv")
 
-    if recovery_mode:
-        # Build a lookup from (file_path, file_step) -> index row
-        index_rows = exo_or_index_rows
-        row_lookup = {
-            (r["file_path"], r["file_step"]): r for r in index_rows
-        }
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                ["frame", "step", "time", "grain_count", "source_file"]
-            )
-            for frame_num, frame in enumerate(frames_data):
-                # frames_data entries are either full tuples or (step, time_val)
-                if isinstance(frame, dict):
-                    # came directly from index rows
-                    step      = frame["file_step"]
-                    time_val  = frame["time"]
-                    gc        = frame["grain_count"]
-                    src       = Path(frame["file_path"]).name
-                else:
-                    step, time_val = frame[0], frame[1]
-                    # Try to look up grain count from index
-                    gc  = -1
-                    src = ""
-                writer.writerow([frame_num, step, time_val, gc, src])
-    else:
-        exo = exo_or_index_rows
-        glo_names = exo.glo_varnames()
-        has_gt    = "grain_tracker" in glo_names
-        gt        = (
-            np.rint(exo.glo_var_series("grain_tracker")).astype(np.int64)
-            if has_gt else None
-        )
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            if has_gt:
-                writer.writerow(["frame", "step", "time", "grains"])
-                for frame_num, (step, time_val, *_) in enumerate(frames_data):
-                    writer.writerow(
-                        [frame_num, step, time_val, int(gt[step])]
-                    )
-            else:
-                writer.writerow(["frame", "step", "time"])
-                for frame_num, (step, time_val, *_) in enumerate(frames_data):
-                    writer.writerow([frame_num, step, time_val])
+    glo_names = exo.glo_varnames()
+    has_gt = "grain_tracker" in glo_names
+    gt = (
+        np.rint(exo.glo_var_series("grain_tracker")).astype(np.int64)
+        if has_gt else None
+    )
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        if has_gt:
+            writer.writerow(["frame", "step", "time", "grains"])
+            for frame_num, (step, time_val, *_) in enumerate(frames_data):
+                writer.writerow([frame_num, step, time_val, int(gt[step])])
+        else:
+            writer.writerow(["frame", "step", "time"])
+            for frame_num, (step, time_val, *_) in enumerate(frames_data):
+                writer.writerow([frame_num, step, time_val])
 
     if log:
         log.info(f"Frame times CSV written: {csv_path}")
@@ -2106,9 +1721,9 @@ def debug_quiver(
 # ---------------------------------------------------------------------------
 
 def main():
-    ti   = time.perf_counter()
+    ti = time.perf_counter()
     args = parse_args()
-    log  = setup_logging(args.verbose)
+    log = setup_logging(args.verbose)
 
     log.info("Setup:")
     log.info(f"Arguments: {args}")
@@ -2116,166 +1731,10 @@ def main():
     if args.fast:
         log.warning(
             f"\033[32m--fast mode enabled\033[0m  "
-            f"(chunk_size={args.chunk_size}, loop_times={args.loop_times})"
+            f"(chunk_size={args.chunk_size}, "
+            f"loop_times={args.loop_times})"
         )
 
-    # -----------------------------------------------------------------------
-    # RECOVERY MODE BRANCH
-    # -----------------------------------------------------------------------
-    if args.recover:
-        log.warning("\033[1m\033[95m[recover] Recovery mode active.\033[0m")
-
-        index_path = Path.cwd() / "recovery_index.csv"
-
-        # Step 1: Load or build the merged timestep index
-        if index_path.exists() and not args.rebuild_index:
-            index_rows = load_recovery_index(index_path, log)
-        else:
-            rec_files  = find_recovery_files(args, log)
-            index_rows = build_recovery_index(rec_files, log)
-            save_recovery_index(index_rows, index_path, log)
-
-        # Step 2: Select anchor step and frame list from merged index
-        anchor_row = select_step_from_index(
-            index_rows,
-            grains=args.grains,
-            time_value=args.time,
-            log=log,
-        )
-        frame_rows = select_multi_frame_steps_from_index(
-            index_rows,
-            anchor_row,
-            n_frames=args.hdf5_frames,
-            dt=args.hdf5_dt,
-            mode="end",
-            log=log,
-        )
-
-        # Step 3: Resolve output HDF5 path
-        if args.out is not None:
-            hdf5_out  = Path(args.out)
-            hdf5_out.parent.mkdir(parents=True, exist_ok=True)
-            hdf5_path = (
-                str(hdf5_out)
-                if str(hdf5_out).endswith(".h5")
-                else str(hdf5_out) + ".h5"
-            )
-        else:
-            stem      = exodus_stem(Path(anchor_row["file_path"]))
-            hdf5_path = stem + "_recovery_multiframe.h5"
-
-        log.warning(f"[recover] Output HDF5: {hdf5_path}")
-        tih = time.perf_counter()
-
-        # Step 4: Process frames — each row carries its own file_path + file_step
-        try:
-            if args.stream:
-                frames_data_for_csv = []
-                _initialize_streamed_hdf5(hdf5_path, args, log=log)
-                anchor_frame_tuple = None
-
-                for frame_num, row in progress(
-                    enumerate(frame_rows),
-                    desc="[recover] Streaming frames",
-                    verbose=args.verbose,
-                    total=len(frame_rows),
-                ):
-                    log.info(
-                        f"  [recover] HDF5 frame {frame_num}: "
-                        f"file={Path(row['file_path']).name}, "
-                        f"file_step={row['file_step']}, "
-                        f"time={row['time']:.6g}"
-                    )
-                    tif = time.perf_counter()
-                    frame_tuple = process_frame(
-                        row["file_path"], row["file_step"], args, log
-                    )
-                    frames_data_for_csv.append(row)
-                    _stream_frame_to_hdf5(
-                        hdf5_path, frame_num, frame_tuple, log=log
-                    )
-                    vtf(tif, log,
-                        extra=f"  Frame {frame_num} "
-                              f"(file_step={row['file_step']}) process: ")
-
-                    # Retain anchor frame for debug plotting
-                    if row["file_path"] == anchor_row["file_path"] and \
-                            row["file_step"] == anchor_row["file_step"]:
-                        anchor_frame_tuple = frame_tuple
-
-                save_frame_times_csv(
-                    hdf5_path, frames_data_for_csv, index_rows,
-                    log=log, recovery_mode=True,
-                )
-
-            else:
-                frames_data     = []
-                anchor_frame_tuple = None
-
-                for frame_num, row in progress(
-                    enumerate(frame_rows),
-                    desc="[recover] Processing frames",
-                    verbose=args.verbose,
-                    total=len(frame_rows),
-                ):
-                    log.info(
-                        f"  [recover] HDF5 frame {frame_num}: "
-                        f"file={Path(row['file_path']).name}, "
-                        f"file_step={row['file_step']}, "
-                        f"time={row['time']:.6g}"
-                    )
-                    tif = time.perf_counter()
-                    frame_tuple = process_frame(
-                        row["file_path"], row["file_step"], args, log
-                    )
-                    vtf(tif, log,
-                        extra=f"  Frame {frame_num} "
-                              f"(file_step={row['file_step']}) process: ")
-                    frames_data.append(frame_tuple)
-
-                    if row["file_path"] == anchor_row["file_path"] and \
-                            row["file_step"] == anchor_row["file_step"]:
-                        anchor_frame_tuple = frame_tuple
-
-                tif = time.perf_counter()
-                save_hdf5_multiframe(hdf5_path, frames_data, args, log=log)
-                save_frame_times_csv(
-                    hdf5_path, frame_rows, index_rows,
-                    log=log, recovery_mode=True,
-                )
-                vtf(tif, log,
-                    extra=f"  Batch write ({len(frames_data)} frames): ")
-
-            log.info(
-                f"[recover] HDF5 written: {hdf5_path} "
-                f"({len(frame_rows)} frames)"
-            )
-            vtf(tih, log, "[recover] End of HDF5 generation: ")
-
-            # Step 5: Debug plot on anchor frame
-            if (args.debug_plot or args.verbose >= 2) \
-                    and anchor_frame_tuple is not None:
-                tid = time.perf_counter()
-                _, _, P0_dbg, C_dbg, P_dbg, gb_dict_dbg, \
-                    bp_dbg, jp_dbg = anchor_frame_tuple
-                stem = exodus_stem(Path(anchor_row["file_path"]))
-                plot_gb_curvature_debug(
-                    C_dbg, P_dbg, gb_dict_dbg, bp_dbg, jp_dbg,
-                    stem=stem + "_recovery",
-                    TJ_distance_max=args.tj_distance,
-                )
-                vtf(tid, log, "[recover] End of debug plotting: ")
-
-        except Exception as e:
-            log.exception(f"[recover] ERROR: {e}")
-            sys.exit(2)
-
-        tf(ti, log, extra="[recover] Total ")
-        return  # <-- exit main after recovery path
-
-    # -----------------------------------------------------------------------
-    # STANDARD MODE BRANCH (unchanged from original)
-    # -----------------------------------------------------------------------
     exo_files = find_exodus_files(subdirs=args.subdirs)
     if not exo_files:
         where = "subdirectories" if args.subdirs else "current directory"
@@ -2289,7 +1748,7 @@ def main():
     log.info(" ")
 
     for cnt, exofile in enumerate(exo_files):
-        til  = time.perf_counter()
+        til = time.perf_counter()
         stem = exodus_stem(exofile)
 
         if len(exo_files) > 1:
@@ -2348,6 +1807,8 @@ def main():
                         tif = time.perf_counter()
 
                         frame_tuple = process_frame(exo, s, args, log)
+
+                        # Keep only (step, time_val) for CSV
                         frames_data_for_csv.append(
                             (frame_tuple[0], frame_tuple[1])
                         )
@@ -2357,8 +1818,11 @@ def main():
                         vtf(tif, log,
                             extra=f"  Frame {frame_num} (step={s}) process: ")
 
+                        # Retain the target frame for debug plotting;
+                        # discard all others immediately.
                         if s == step:
                             frames_data = [frame_tuple]
+                        # frame_tuple goes out of scope — GC can collect it
 
                     save_frame_times_csv(
                         hdf5_path, frames_data_for_csv, exo, log=log
@@ -2439,7 +1903,7 @@ def main():
 
     if len(exo_files) > 1:
         log.warning(" ")
-        tf(ti, log, extra="Total ")
+    tf(ti, log, extra="Total ")
 
 
 if __name__ == "__main__":

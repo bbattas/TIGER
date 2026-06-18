@@ -116,6 +116,14 @@ def parse_args() -> argparse.Namespace:
         help="Minimum absolute TJ-filtered average GB curvature for keeping an entire ij GB pair. Lin used 0.0182",
     )
     gbe.add_argument(
+        "--min-gb-area", type=int, default=0, metavar="N",
+        help=(
+            "Minimum grain boundary pixel area (number of TJ-filtered pixels "
+            "on the GB itself). GB pairs with fewer than N pixels are excluded. "
+            "Default 0 includes all GBs not removed by other filters."
+        ),
+    )
+    gbe.add_argument(
         "--antic-confidence", type=float, default=0.99, metavar="F",
         help="Percent confidence for anticurvature calculation. Lin used 0.99",
     )
@@ -305,6 +313,7 @@ def filter_gb_dict(
     *,
     min_area: float = 0.0,
     min_curvature: float = 0.0,
+    min_gb_area: int = 0,
     small_grain_set: set[int] | None = None,
     log: logging.Logger | None = None,
     label: str = "",
@@ -317,16 +326,19 @@ def filter_gb_dict(
     The filters are GB-level filters applied after TJ exclusion:
     - neither participating grain has pixel area < min_area (grain area filter)
     - abs(avg_curvature) >= min_curvature
+    - gb_area (TJ-filtered pixel count on the GB) >= min_gb_area
     """
     out: dict[tuple[int, int], np.ndarray] = {}
-    n_area = 0
-    n_curv = 0
+    n_area    = 0
+    n_curv    = 0
+    n_gb_area = 0
 
     if small_grain_set is None:
         small_grain_set = set()
 
     for pair_id, data in gb_dict.items():
         avg_curv  = float(data[0])
+        gb_area   = float(data[1])
         grain_id1 = int(data[2])
         grain_id2 = int(data[3])
 
@@ -336,6 +348,9 @@ def filter_gb_dict(
         if abs(avg_curv) < min_curvature:
             n_curv += 1
             continue
+        if gb_area < min_gb_area:
+            n_gb_area += 1
+            continue
         out[pair_id] = data
 
     if log is not None:
@@ -343,7 +358,8 @@ def filter_gb_dict(
         log.warning(
             f"GB filter{tag}: {len(out)}/{len(gb_dict)} kept, "
             f"{n_area} removed by grain_area<{min_area}, "
-            f"{n_curv} removed by |avg_curvature|<{min_curvature}."
+            f"{n_curv} removed by |avg_curvature|<{min_curvature}, "
+            f"{n_gb_area} removed by gb_area<{min_gb_area}."
         )
     return out
 
@@ -353,6 +369,7 @@ def filter_frames_gb_dicts(
     *,
     min_area: float,
     min_curvature: float,
+    min_gb_area: int = 0,
     log: logging.Logger,
 ) -> list[FrameData]:
     """Return FrameData copies whose gb_dict values pass the canonical GB filter."""
@@ -370,6 +387,7 @@ def filter_frames_gb_dicts(
                 frame.gb_dict,
                 min_area=min_area,
                 min_curvature=min_curvature,
+                min_gb_area=min_gb_area,
                 small_grain_set=small_grain_set,
                 log=log,
                 label=f"frame {idx}",
@@ -3596,6 +3614,7 @@ def main() -> None:
         frames,
         min_area=args.min_area,
         min_curvature=args.min_curvature,
+        min_gb_area=args.min_gb_area,
         log=log,
     )
     tf(t0, log, "GB-level filtering: ")
