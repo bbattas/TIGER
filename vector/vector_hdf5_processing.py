@@ -21,6 +21,7 @@ import myInput
 import numpy as np
 import pandas as pd
 import math
+import matplotlib
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Constants
@@ -2572,13 +2573,23 @@ def plot_final_gbe_heatmap(
     fig, ax = plt.subplots(figsize=(8, 7))
     ax.imshow(C0, origin="lower", cmap="gray", alpha=0.25,
               interpolation="nearest")
+    # For non-cos modes GBE lives in [0.5, 1.0]; fix the colorbar range
+    # so spatial maps are directly comparable across runs and frames.
+    # For cos mode the range is data-driven since it is centred on 1.0.
+    if mode == "cos":
+        _vmin = float(np.nanmin(gbe_values))
+        _vmax = float(np.nanmax(gbe_values))
+    else:
+        _vmin = 0.5
+        _vmax = 1.0
+
     im = ax.imshow(
         gbe_map,
         origin="lower",
         cmap="plasma",
         interpolation="nearest",
-        vmin=float(np.nanmin(gbe_values)),
-        vmax=float(np.nanmax(gbe_values)),
+        vmin=_vmin,
+        vmax=_vmax,
     )
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("GBE", fontsize=10)
@@ -3559,6 +3570,412 @@ def plot_final_velocity_density_with_fits(
     log.warning(f"Final velocity density plot saved: {outpath}")
 
 
+def plot_gbe_time_series(
+    gbe_time_series: list[tuple[float, int, float, float]],
+    output_dir: Path,
+    stem: str,
+    mode: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Two-panel time-series plot showing how total and area-weighted mean GBE
+    evolve across all frames in gbe_frames.
+
+    Panel 1 (top)    : Total GBE = Σ (avg_gbe_per_gb × gb_area) over all
+                       GB pairs in that frame.
+    Panel 2 (bottom) : Area-weighted mean GBE = total_gbe / Σ gb_area.
+
+    Both are equivalent to pixel-level statistics (since avg_gbe_per_gb is
+    already the mean over the individual boundary pixels of each GB).
+
+    Parameters
+    ----------
+    gbe_time_series : list of (time, step, total_gbe, area_weighted_mean_gbe)
+                      one entry per frame from the gbe_frames loop.
+    output_dir      : output directory
+    stem            : filename prefix
+    mode            : GBE mode string — used in title
+    log             : logger
+    """
+    import matplotlib.pyplot as plt
+
+    if not gbe_time_series:
+        log.warning("plot_gbe_time_series: no data, skipping.")
+        return
+
+    times  = [pt[0] for pt in gbe_time_series]
+    steps  = [pt[1] for pt in gbe_time_series]
+    totals = [pt[2] for pt in gbe_time_series]
+    means  = [pt[3] for pt in gbe_time_series]
+
+    # Use step index on x-axis if all times are identical or degenerate
+    if len(set(times)) > 1 and not any(math.isnan(t) for t in times):
+        x      = times
+        xlabel = "Time"
+    else:
+        x      = steps
+        xlabel = "Step"
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+
+    # ── Panel 1: Total GBE ──────────────────────────────────────────────
+    ax = axes[0]
+    ax.plot(x, totals, "o-", color="steelblue", linewidth=2, markersize=5)
+    ax.set_ylabel("Total GBE  (Σ avg_gbe × gb_area)", fontsize=11)
+    ax.set_title(
+        f"Total GB Energy vs Time — mode={mode}\n"
+        f"(area-weighted sum over all surviving GB pairs per frame)",
+        fontsize=10,
+    )
+    ax.grid(True, linestyle=":", alpha=0.5)
+
+    # ── Panel 2: Area-weighted mean GBE ─────────────────────────────────
+    ax = axes[1]
+    ax.plot(x, means, "o-", color="darkorange", linewidth=2, markersize=5)
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel("Area-weighted mean GBE", fontsize=11)
+    ax.set_title(
+        f"Area-Weighted Mean GBE vs Time — mode={mode}",
+        fontsize=10,
+    )
+    ax.grid(True, linestyle=":", alpha=0.5)
+
+    fig.suptitle(
+        f"GBE Evolution — {stem}  |  {len(gbe_time_series)} frames  |  TJ-excluded",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_gbe_time_series.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"GBE time series saved: {outpath}")
+
+
+
+def plot_gbe_vs_gb_area_density_all_frames(
+    curv_gbe_points: list[tuple[float, float, float]],
+    output_dir: Path,
+    stem: str,
+    mode: str,
+    log: logging.Logger,
+    n_bins: int = 50,
+) -> None:
+    """
+    Single-panel 2D density map of per-GB average GBE (x) vs GB area in
+    pixels (y), pooling all frames in gbe_frames together.
+
+    Uses pcolormesh for the filled layer so zero-count bins are rendered
+    at the vmin color rather than left transparent — this fixes the empty
+    background that appears above the density ceiling when contourf is used.
+    A contour overlay is drawn on top for structure.  A binned mean area
+    per GBE bin is overlaid as a line.  The y-axis is log-scaled because
+    GB areas span orders of magnitude.
+
+    Parameters
+    ----------
+    curv_gbe_points : list of (avg_curv, avg_gbe, gb_area) — all gbe frames
+    output_dir      : output directory
+    stem            : filename prefix
+    mode            : GBE mode string — used in title
+    log             : logger
+    n_bins          : number of bins on each axis (default 50)
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+
+    if not curv_gbe_points:
+        log.warning("plot_gbe_vs_gb_area_density_all_frames: no data, skipping.")
+        return
+
+    gbe_vals  = np.array([p[1] for p in curv_gbe_points], dtype=np.float64)
+    area_vals = np.array([p[2] for p in curv_gbe_points], dtype=np.float64)
+
+    # Guard: area must be positive for log axis
+    valid = area_vals > 0
+    if valid.sum() < 2:
+        log.warning("plot_gbe_vs_gb_area_density_all_frames: insufficient valid data, skipping.")
+        return
+    gbe_vals  = gbe_vals[valid]
+    area_vals = area_vals[valid]
+
+    # ── Bin edges (y in log10 space) ────────────────────────────────────
+    x_bins = np.linspace(gbe_vals.min(),              gbe_vals.max(),              n_bins + 1)
+    # y_bins = np.linspace(np.log10(area_vals.min()),   np.log10(area_vals.max()),   n_bins + 1)
+    y_log_min = np.log10(area_vals.min())
+    y_log_max = max(np.log10(area_vals.max()), 3.0)   # always extend to at least 10^3
+    y_bins = np.linspace(y_log_min, y_log_max, n_bins + 1)
+    x_centers = (x_bins[:-1] + x_bins[1:]) / 2
+    y_centers = (y_bins[:-1] + y_bins[1:]) / 2
+
+    hist, _, _ = np.histogram2d(gbe_vals, np.log10(area_vals),
+                                 bins=[x_bins, y_bins])
+    # hist.T shape: (n_bins_y, n_bins_x)
+    # Initialize to 0 so empty bins get the vmin color, not transparency
+    hist_log = np.zeros_like(hist.T, dtype=float)
+    nz = hist.T > 0
+    hist_log[nz] = np.log10(hist.T[nz])
+
+    vmax_log = float(hist_log.max()) if hist_log.max() > 0 else 1.0
+    norm = mcolors.Normalize(vmin=0, vmax=vmax_log)
+    cmap = matplotlib.colormaps["coolwarm"]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # pcolormesh: covers every bin cell, including zeros → no empty background
+    pm = ax.pcolormesh(x_bins, y_bins, hist_log,
+                       cmap=cmap, norm=norm, shading="flat")
+
+    # Contour overlay for structure
+    if nz.sum() >= 3:
+        ax.contour(x_centers, y_centers, hist_log, levels=10,
+                   cmap="gray", alpha=0.25, vmin=0, vmax=vmax_log)
+
+    cbar = plt.colorbar(pm, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(r"log$_{10}$(count)", fontsize=9)
+
+    # ── Binned mean log10(area) per GBE bin ─────────────────────────────
+    bin_means_log = []
+    bin_ctrs      = []
+    for i in range(len(x_centers)):
+        mask = (gbe_vals >= x_bins[i]) & (gbe_vals < x_bins[i + 1])
+        if mask.sum() >= 5:
+            bin_means_log.append(float(np.log10(area_vals[mask]).mean()))
+            bin_ctrs.append(x_centers[i])
+
+    if bin_ctrs:
+        ax.plot(bin_ctrs, bin_means_log, "o-", color="black", linewidth=1.5,
+                markersize=4, label="Bin mean log₁₀(area)")
+        ax.legend(fontsize=9)
+
+    # ── y-axis ticks in real pixel units ────────────────────────────────
+    # y_tick_vals = np.arange(
+    #     math.floor(np.log10(area_vals.min())),
+    #     math.ceil(np.log10(area_vals.max())) + 1,
+    # )
+    y_tick_vals = np.arange(
+        math.floor(np.log10(area_vals.min())),
+        math.ceil(y_log_max) + 1,
+    )
+    ax.set_yticks(y_tick_vals)
+    ax.set_yticklabels([f"$10^{{{int(v)}}}$" for v in y_tick_vals])
+
+    ax.set_xlabel("Avg GB GBE", fontsize=12)
+    ax.set_ylabel("GB Area (px)", fontsize=12)
+    ax.set_title(
+        f"GB Area vs GBE Density — mode={mode}  |  all frames pooled\n"
+        f"TJ-excluded  |  N={len(gbe_vals)} GB-frame points",
+        fontsize=11,
+    )
+    ax.grid(True, linestyle=":", alpha=0.3)
+    plt.tight_layout()
+
+    outpath = output_dir / f"{stem}_gbe_vs_gb_area_density_all_frames.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"GBE vs GB area density (all frames) saved: {outpath}")
+
+
+
+def plot_gbe_vs_gb_area_density_per_frame(
+    curv_gbe_by_frame: dict[int, list[tuple[float, float, float]]],
+    curv_gbe_points:   list[tuple[float, float, float]],
+    gbe_frames:        list,
+    output_dir:        Path,
+    stem:              str,
+    mode:              str,
+    log:               logging.Logger,
+    n_bins:            int = 50,
+) -> None:
+    """
+    Single figure with one column per selected frame (up to 5) showing
+    the 2D density map of per-GB average GBE (x) vs GB area (y, log scale).
+
+    Axis limits and colorbar range are anchored globally to curv_gbe_points
+    (all pooled frames) so every column is directly comparable.
+
+    Uses pcolormesh for the filled layer so zero-count bins are rendered
+    at the vmin color rather than left transparent (avoids the empty
+    background above the density ceiling).
+
+    A binned mean line is overlaid on each panel.
+
+    The colorbar is placed in a manually added axes to the right of the
+    panel columns, avoiding the tight_layout incompatibility that arises
+    from using fig.colorbar(ax=axes) with a shared-axes figure.
+
+    Parameters
+    ----------
+    curv_gbe_by_frame : dict frame_idx -> [(avg_curv, avg_gbe, gb_area), ...]
+                        only the selected frames, from the gbe_frames loop.
+    curv_gbe_points   : all pooled (avg_curv, avg_gbe, gb_area) — used to
+                        anchor global axis limits and colorbar range.
+    gbe_frames        : the sliced frame list (gbe_frames in main), used to
+                        look up step numbers for panel titles.
+    output_dir        : output directory
+    stem              : filename prefix
+    mode              : GBE mode string — used in suptitle
+    log               : logger
+    n_bins            : number of bins on each axis (default 50)
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+
+    frame_items = list(curv_gbe_by_frame.items())
+    if not frame_items:
+        log.warning("plot_gbe_vs_gb_area_density_per_frame: no frames, skipping.")
+        return
+    if not curv_gbe_points:
+        log.warning("plot_gbe_vs_gb_area_density_per_frame: no global points, skipping.")
+        return
+
+    # ── Global axis limits from all pooled data ──────────────────────────
+    all_gbe  = np.array([p[1] for p in curv_gbe_points], dtype=np.float64)
+    all_area = np.array([p[2] for p in curv_gbe_points], dtype=np.float64)
+    valid_global = all_area > 0
+    if valid_global.sum() < 2:
+        log.warning("plot_gbe_vs_gb_area_density_per_frame: insufficient valid data, skipping.")
+        return
+    all_gbe  = all_gbe[valid_global]
+    all_area = all_area[valid_global]
+
+    x_min, x_max  = float(all_gbe.min()),          float(all_gbe.max())
+    y_min_log      = float(np.log10(all_area.min()))
+    y_max_log      = float(np.log10(all_area.max()))
+
+    x_bins = np.linspace(x_min,    x_max,     n_bins + 1)
+    y_bins = np.linspace(y_min_log, y_max_log, n_bins + 1)
+    x_centers = (x_bins[:-1] + x_bins[1:]) / 2
+    y_centers = (y_bins[:-1] + y_bins[1:]) / 2
+
+    # ── Global colorbar ceiling: max log10(count) across all selected frames ──
+    global_hist_max = 1.0
+    for _, pts in frame_items:
+        if not pts:
+            continue
+        gv = np.array([p[1] for p in pts], dtype=np.float64)
+        av = np.array([p[2] for p in pts], dtype=np.float64)
+        mask = av > 0
+        if mask.sum() < 2:
+            continue
+        h, _, _ = np.histogram2d(gv[mask], np.log10(av[mask]),
+                                  bins=[x_bins, y_bins])
+        nz_max = float(h.max())
+        if nz_max > global_hist_max:
+            global_hist_max = nz_max
+    vmax_log = math.log10(global_hist_max) if global_hist_max > 0 else 1.0
+    log.warning(
+        f"plot_gbe_vs_gb_area_density_per_frame: "
+        f"global colorbar vmax = log10({global_hist_max:.1f}) = {vmax_log:.3f}"
+    )
+
+    norm = mcolors.Normalize(vmin=0, vmax=vmax_log)
+    cmap = matplotlib.colormaps["coolwarm"]
+
+    # ── y-axis tick positions (shared across all panels) ────────────────
+    y_tick_vals = np.arange(
+        math.floor(y_min_log), math.ceil(y_max_log) + 1
+    )
+
+    n_cols = len(frame_items)
+    # Reserve right margin for the colorbar: 0.85 of figure width for panels
+    fig, axes = plt.subplots(
+        1, n_cols,
+        figsize=(4 * n_cols + 1, 5),   # +1 for colorbar margin
+        sharex=True, sharey=True,
+    )
+    if n_cols == 1:
+        axes = [axes]
+
+    # ── One panel per selected frame ────────────────────────────────────
+    last_pm = None  # keep a handle for the colorbar mappable
+    for col, (frame_idx, pts) in enumerate(frame_items):
+        ax   = axes[col]
+        step = gbe_frames[frame_idx].step
+
+        if not pts:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9)
+            ax.set_title(f"step={step}\nNo data", fontsize=8)
+            continue
+
+        gv = np.array([p[1] for p in pts], dtype=np.float64)
+        av = np.array([p[2] for p in pts], dtype=np.float64)
+        mask = av > 0
+        gv = gv[mask]
+        av = av[mask]
+
+        if len(gv) < 2:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9)
+            ax.set_title(f"step={step}\nN<2", fontsize=8)
+            continue
+
+        hist, _, _ = np.histogram2d(gv, np.log10(av),
+                                     bins=[x_bins, y_bins])
+        # hist.T shape: (n_bins_y, n_bins_x)
+        hist_log = np.zeros_like(hist.T, dtype=float)   # 0 = vmin color, not transparent
+        nz = hist.T > 0
+        hist_log[nz] = np.log10(hist.T[nz])
+
+        # pcolormesh covers every bin including zeros — no empty background
+        pm = ax.pcolormesh(x_bins, y_bins, hist_log,
+                           cmap=cmap, norm=norm, shading="flat")
+        last_pm = pm
+
+        # Contour overlay for structure (on top of pcolormesh)
+        # Only draw if there are enough non-zero bins
+        if nz.sum() >= 3:
+            ax.contour(x_centers, y_centers, hist_log, levels=10,
+                       cmap="gray", alpha=0.25, vmin=0, vmax=vmax_log)
+
+        # ── Binned mean log10(area) per GBE bin ─────────────────────────
+        bin_means_log = []
+        bin_ctrs      = []
+        for i in range(len(x_centers)):
+            bin_mask = (gv >= x_bins[i]) & (gv < x_bins[i + 1])
+            if bin_mask.sum() >= 5:
+                bin_means_log.append(float(np.log10(av[bin_mask]).mean()))
+                bin_ctrs.append(x_centers[i])
+        if bin_ctrs:
+            ax.plot(bin_ctrs, bin_means_log, "o-", color="black",
+                    linewidth=1.2, markersize=3, label="Bin mean")
+            ax.legend(fontsize=7)
+
+        ax.set_title(f"step={step}\nN={len(gv)}", fontsize=8)
+        ax.set_xlabel("Avg GB GBE", fontsize=9)
+
+        # y-axis ticks only on leftmost panel (shared y-axis)
+        if col == 0:
+            ax.set_yticks(y_tick_vals)
+            ax.set_yticklabels([f"$10^{{{int(v)}}}$" for v in y_tick_vals])
+            ax.set_ylabel("GB Area (px)", fontsize=9)
+
+        ax.grid(True, linestyle=":", alpha=0.3)
+
+    # Tight layout for the panel columns, then a narrow fixed colorbar
+    fig.subplots_adjust(left=0.07, right=0.91, top=0.85, bottom=0.15,
+                        wspace=0.08)
+    # Colorbar axes: narrow strip just outside the right edge of the panels
+    cbar_ax = fig.add_axes([0.925, 0.15, 0.012, 0.70])  # [left, bottom, width, height]
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label(r"log$_{10}$(count)", fontsize=9)
+
+    fig.suptitle(
+        f"GB Area vs GBE Density — mode={mode}  |  5 selected frames\n"
+        f"TJ-excluded  |  axis limits anchored to all pooled frames",
+        fontsize=11, fontweight="bold",
+    )
+
+    outpath = output_dir / f"{stem}_gbe_vs_gb_area_density_selected_frames.png"
+    fig.savefig(outpath, dpi=300, transparent=True)
+    plt.close(fig)
+    log.warning(f"GBE vs GB area density (selected frames) saved: {outpath}")
+
 
 
 
@@ -3724,6 +4141,10 @@ def main() -> None:
         idx: [] for idx in selected_indices
     }
 
+    # time-series accumulator (one entry per frame in gbe_frames)
+    # Each entry: (time, step, total_gbe, area_weighted_mean_gbe)
+    gbe_time_series: list[tuple[float, int, float, float]] = []
+
     for frame_idx, frame in enumerate(gbe_frames):
         _, _, frame_avg_gbe = compute_gbe_per_pixel(
             frame                  = frame,
@@ -3742,6 +4163,24 @@ def main() -> None:
                 curv_gbe_points.append((avg_curv, avg_gbe, gb_area))
                 if is_selected:
                     curv_gbe_by_frame[frame_idx].append((avg_curv, avg_gbe, gb_area))
+
+        # accumulate time-series scalars for this frame
+        frame_total_gbe  = sum(
+            frame_avg_gbe[pid] * float(frame.gb_dict[pid][1])
+            for pid in frame_avg_gbe
+            if pid in frame.gb_dict
+        )
+        frame_total_area = sum(
+            float(frame.gb_dict[pid][1])
+            for pid in frame_avg_gbe
+            if pid in frame.gb_dict
+        )
+        frame_mean_gbe = (
+            frame_total_gbe / frame_total_area
+            if frame_total_area > 0
+            else float("nan")
+        )
+        gbe_time_series.append((frame.time, frame.step, frame_total_gbe, frame_mean_gbe))
 
     tf(t0, log, "Per-frame avg curvature vs GBE collection: ")
     log.warning(
@@ -4078,6 +4517,34 @@ def main() -> None:
                 mode             = args.gbe_mode,
                 log              = log,
                 gb_areas         = [p[2] for p in curv_gbe_points],  # comment out to disable area weighting
+            )
+        # 7.8  GBE vs GB area density maps
+        if curv_gbe_points:
+            plot_gbe_vs_gb_area_density_all_frames(
+                curv_gbe_points = curv_gbe_points,
+                output_dir      = args.output_dir,
+                stem            = stem,
+                mode            = args.gbe_mode,
+                log             = log,
+            )
+            plot_gbe_vs_gb_area_density_per_frame(
+                curv_gbe_by_frame = curv_gbe_by_frame,
+                curv_gbe_points   = curv_gbe_points,
+                gbe_frames        = gbe_frames,
+                output_dir        = args.output_dir,
+                stem              = stem,
+                mode              = args.gbe_mode,
+                log               = log,
+            )
+
+        # 7.9  GBE time series (total + area-weighted mean)
+        if gbe_time_series:
+            plot_gbe_time_series(
+                gbe_time_series = gbe_time_series,
+                output_dir      = args.output_dir,
+                stem            = stem,
+                mode            = args.gbe_mode,
+                log             = log,
             )
 
     tf(ti, log, "Total: ")
