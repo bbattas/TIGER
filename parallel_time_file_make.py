@@ -30,8 +30,11 @@ n_cpu = int(sys.argv[1])
 
 # This is the 3d_plane_data but for when there are too many nemesis/-s files to open
 
-e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]#"*_out.e.*"#glob.glob("*_out.e.*") #first step
-s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.e-s*")] #after first step#x[:-8]
+# e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]#"*_out.e.*"#glob.glob("*_out.e.*") #first step
+# s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.e-s*")] #after first step#x[:-8]
+# CHANGED TO .n.*
+e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.n.*")]#"*_out.e.*"#glob.glob("*_out.e.*") #first step
+s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.n-s*")] #after first step#x[:-8]
 
 e_unq = np.unique(e_name)
 name_unq = np.unique(s_names)

@@ -52,12 +52,14 @@ class CalculationsV2:
         # Trim off the trailing CPU numbers on file names
         #   ex: nemesis.e.300.000 -> nemesis.e.300*
         #   ex: 2D_HYPRE_nemesis.e-s0002.300.000 -> nemesis.e-s0002*
-        e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
-        s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.e-s*")]
+        # e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.e.*")]
+        # s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.e-s*")]
+        e_name = [x.rsplit('.',1)[0]+"*" for x in glob.glob("*.n.*")]
+        s_names = [x.rsplit('.',2)[0]+"*" for x in glob.glob("*.n-s*")]
         e_unq = np.unique(e_name)
         name_unq = np.unique(s_names)
         if e_unq.size == 0:
-            raise ValueError('No files found ending with "*.e.*"')
+            raise ValueError('No files found ending with "*.n.*"')
         elif name_unq.size == 0:
             name_unq = e_unq
             self.adaptive_mesh = False
@@ -286,7 +288,7 @@ class CalculationsV2:
         self.t_steps = times_files[:,2].astype(int)
         self.file_names = np.unique(self.files)
         self.len_files = len(self.files)
-        if "*.e-s*" in self.file_names:
+        if "*.n-s*" in self.file_names:
             db('Adaptive Mesh files detected')
             self.adaptive_mesh = True
         else:
