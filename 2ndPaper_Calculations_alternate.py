@@ -210,7 +210,8 @@ if __name__ == "__main__":
 
 
         else:
-            para_results = [do_calculations(i, idx) for i, idx in enumerate(calc.idx_frames)]
+            # para_results = [do_calculations(i, idx) for i, idx in enumerate(calc.idx_frames)]
+            para_results = [do_calculations(i, idx, True) for i, idx in enumerate(calc.idx_frames)]
             saveloc = calc.outNameBase + '_calc_data.csv'
             print('Saving Data: ',saveloc)
             csv_header = ['time', 'grain_area', 'tot_mesh_area','curvature','ctr_dist']

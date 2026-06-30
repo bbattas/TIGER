@@ -4,7 +4,7 @@ import numpy as np
 
 class MultiExodusReader:
     def __init__(self,file_names):
-        self.file_names = glob.glob(file_names)
+        self.file_names = sorted(glob.glob(file_names))
         global_times = set()
         file_times = []
         exodus_readers = []
