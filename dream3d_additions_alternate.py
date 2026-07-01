@@ -16,6 +16,7 @@ import re
 import numpy as np
 from itertools import product
 import csv
+import io
 import math
 import time
 import logging
@@ -77,8 +78,10 @@ def parseArgs():
                              'seed behavior. Capped at N_pores - 1.')
     parser.add_argument('--relax', type=float, default=0.9,
                         help='Fraction to multiply min_sep by on each Bridson retry '
-                            'if domain exhaustion occurs. Default=0.5 (halves each attempt). '
+                            'if domain exhaustion occurs. Default=0.9. '
                             'Must be between 0 and 1.')
+    parser.add_argument('--attempts', type=int, default=5,
+                        help='Max number of attempts for relaxing the min_sep to retry.')
     cl_args = parser.parse_args()
     return cl_args
 
@@ -259,7 +262,7 @@ def distance(pt1, pt2):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def bridson_generate_centers(radii, mesh, min_sep, n_seeds, logger,
-                              attempt=1, max_relax_attempts=5, relax_factor=0.5):
+                 attempt=1, max_relax_attempts=5, relax_factor=0.5):
     '''Place pore centers using Bridson's Poisson Disk Sampling algorithm
     with multiple random seed points for improved domain coverage.
 
@@ -587,9 +590,6 @@ def generate_plots_2d(data_scaled, mesh, pore_ctrs_scaled, rads_scaled,
     ax.set_aspect('equal')
     ax.set_xlabel('x')
     ax.set_ylabel('y')
-    # ax.set_title(f'Grain Structure + Pores\n'
-    #              f'{cl_args.pores} pores, {cl_args.volume}% vol, '
-    #              f'spacing={cl_args.spacing}')
     ax.set_title(f'Grain Structure + Pores\n'
              f'{cl_args.pores} pores, {cl_args.volume}% vol, '
              f'spacing={effective_spacing:.3f}'
@@ -688,8 +688,6 @@ def _make_3d_figure(pore_ctrs_scaled, rads_scaled, mesh, scale, use_scatter,
                     include_phi, planes, title_suffix, effective_spacing):
     '''Build a 3-panel 3D figure. All geometry is in scaled coordinates.'''
     fig = plt.figure(figsize=(18, 6))
-    # fig.suptitle(f'{cl_args.pores} pores, {cl_args.volume}% vol — '
-    #              f'{title_suffix}', fontsize=11)
     fig.suptitle(f'{cl_args.pores} pores, {cl_args.volume}% vol, '
              f'spacing={effective_spacing:.3f}'
              + (f' (relaxed from {cl_args.spacing})'
@@ -756,6 +754,65 @@ def generate_plots_3d(mesh, pore_ctrs_scaled, rads_scaled, planes, scale,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FAST OUTPUT WRITER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def write_output(out_name, header, data, phi_txt, cl_args,
+                 coord_decimals_scaled, logger):
+    '''Write output file using numpy.savetxt for fast bulk writing.
+
+    Header rows (few lines) are written as plain text first.
+    Body and phi rows are assembled as a NumPy array and written
+    via np.savetxt, which is substantially faster than csv.writer
+    for large row counts.
+
+    Args:
+        out_name:              Output file path.
+        header:                List of header row token lists.
+        data:                  NumPy array of mesh body data (N x 9).
+        phi_txt:               List of external void row token lists (may be empty).
+        cl_args:               Parsed command line arguments.
+        coord_decimals_scaled: Number of decimal places for scaled coordinates.
+        logger:                Logger instance.
+    '''
+    coord_fmt = f'%.{coord_decimals_scaled}f'
+    body_fmt  = ['%d', '%d', '%d', coord_fmt, coord_fmt, coord_fmt,
+                 '%d', '%d', '%d']
+
+    # ── Write header lines (small — plain text is fine) ───────────────────────
+    with open(out_name, 'w') as f:
+        for row in header:
+            f.write(' '.join(row) + '\n')
+
+    # ── Build body array ──────────────────────────────────────────────────────
+    # Scale coordinate columns and collect integer columns in one shot.
+    # All columns are kept as float64 so np.column_stack works cleanly;
+    # the '%d' fmt entries in body_fmt drop the decimals on write.
+    body_arr = np.column_stack([
+        data[:, 0],                                              # col 0 int
+        data[:, 1],                                              # col 1 int
+        data[:, 2],                                              # col 2 int
+        np.round(data[:, 3] * cl_args.scale, coord_decimals_scaled),  # x scaled
+        np.round(data[:, 4] * cl_args.scale, coord_decimals_scaled),  # y scaled
+        np.round(data[:, 5] * cl_args.scale, coord_decimals_scaled),  # z scaled
+        data[:, 6],                                              # feature_id int
+        data[:, 7],                                              # phase int
+        data[:, 8],                                              # index int
+    ])
+
+    # ── Append body (and phi if present) via np.savetxt ──────────────────────
+    with open(out_name, 'ab') as f:
+        np.savetxt(f, body_arr, fmt=body_fmt, delimiter=' ')
+        if phi_txt:
+            # phi_txt is a list of string-token lists; convert to float array
+            phi_arr = np.array(phi_txt, dtype=float)
+            np.savetxt(f, phi_arr, fmt=body_fmt, delimiter=' ')
+
+    logger.info(f'Output written: {out_name}  '
+                f'({len(body_arr) + len(phi_txt)} rows)')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -808,6 +865,7 @@ if __name__ == '__main__':
         else:
             n_seeds = cl_args.seeds
             seeds_auto = False
+
         # Cap at n_pores - 1 so at least one pore is placed via propagation
         if n_seeds >= cl_args.pores:
             n_seeds = max(1, cl_args.pores - 1)
@@ -954,7 +1012,8 @@ if __name__ == '__main__':
         # ── Bridson placement (all in unscaled mesh coordinates) ──────────────
         t_start = time.time()
         pore_ctrs, used_min_sep, bstats = bridson_generate_centers(
-            rads, mesh, min_sep, n_seeds, logger, relax_factor=cl_args.relax)
+            rads, mesh, min_sep, n_seeds, logger, max_relax_attempts=cl_args.attempts,
+            relax_factor=cl_args.relax)
         t_end = time.time()
 
         # ── Scale pore geometry ONCE here ─────────────────────────────────────
@@ -1010,28 +1069,25 @@ if __name__ == '__main__':
         print('R: ', moose_r)
         print(moose_ctrs)
 
-        # ── Assign pore phase to mesh points (in unscaled coordinates) ────────
+        # ── Assign pore phase to mesh points (vectorized via KDTree) ──────────
+        # Build the tree once over all mesh point coordinates. For each pore,
+        # query_ball_point returns the indices of all points within loop_rad
+        # of the pore center — identical to the old distance() <= loop_rad
+        # check but executed in compiled C rather than a Python loop.
         pore_phase = int(3) if cl_args.phase3 else int(2)
+        pts  = data[:, 3:6]          # (N, 3) coordinate array — built once
+        tree = KDTree(pts)           # O(N log N) build, done once
+
+        t_assign_start = time.time()
         for pore in range(len(rads)):
             ctr      = pore_ctrs[pore]
             loop_rad = rads[pore]
             pore_id  = mesh.feature_id_max + 2 + pore
-            for row in data:
-                if distance([row[3], row[4], row[5]], ctr) <= loop_rad:
-                    row[6] = pore_id
-                    row[7] = pore_phase
-
-    # ── Rebuild body as list with scaling applied cleanly ─────────────────────
-    body_list = []
-    for row in data:
-        body_list.append([
-            str(row[0]), str(row[1]), str(row[2]),
-            fmt_coord(row[3] * cl_args.scale, coord_decimals_scaled),
-            fmt_coord(row[4] * cl_args.scale, coord_decimals_scaled),
-            fmt_coord(row[5] * cl_args.scale, coord_decimals_scaled),
-            str(row[6]).split('.')[0],
-            str(row[7]).split('.')[0],
-            str(row[8]).split('.')[0]])
+            idxs = tree.query_ball_point(ctr, loop_rad)  # C-level spatial query
+            data[idxs, 6] = pore_id
+            data[idxs, 7] = pore_phase
+        t_assign_end = time.time()
+        logger.info(f'Pore assignment wall time: {t_assign_end - t_assign_start:.3f} s')
 
     # ── Section D: Grain Structure Metrics ───────────────────────────────────
     log_section(logger, 'D — GRAIN STRUCTURE METRICS')
@@ -1044,9 +1100,6 @@ if __name__ == '__main__':
     logger.info(f'Actual pore vol fraction: {actual_frac:.3f}%  '
                 f'(target: {cl_args.volume}%)')
 
-    # ── Build output list and write file ─────────────────────────────────────
-    out_list = body_list + phi_txt
-
     # ── Section E: Output Summary ─────────────────────────────────────────────
     log_section(logger, 'E — OUTPUT SUMMARY')
     logger.info(f'Output file:           {out_name}')
@@ -1054,10 +1107,12 @@ if __name__ == '__main__':
                 f'({cl_args.planes} planes, +{cl_args.dir})')
     logger.info(f'Phase3 internal pores: {cl_args.phase3}')
 
-    with open(out_name, 'w') as file:
-        writer = csv.writer(file, delimiter=' ')
-        writer.writerows(header)
-        writer.writerows(out_list)
+    # ── Write output (vectorized body rebuild + np.savetxt) ───────────────────
+    t_write_start = time.time()
+    write_output(out_name, header, data, phi_txt, cl_args,
+                 coord_decimals_scaled, logger)
+    t_write_end = time.time()
+    logger.info(f'Write wall time: {t_write_end - t_write_start:.3f} s')
 
     logger.info('Done.')
     print('Done')
