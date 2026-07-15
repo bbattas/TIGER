@@ -2229,6 +2229,135 @@ def save_inclination_csv(
     log.warning(f"Inclination CSV saved: {outpath}")
 
 
+def save_final_velocity_csv(
+    normc_flat: dict,
+    antic_flat: dict,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Write pre-confidence, post-sign-convention velocity and curvature data
+    to CSV for later reproduction of the density + fits plot.
+
+    Columns: curvature, velocity, dV_forward, dV_backward, area, pair_id, group
+    group is 'normc' or 'antic'.
+    """
+    import csv
+
+    outpath = output_dir / f"{stem}_final_velocity_pre_confidence.csv"
+    with open(outpath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "curvature", "velocity", "dV_forward", "dV_backward",
+            "area", "pair_id", "group",
+        ])
+        for kappa, v, fwd, bwd, area, pid in zip(
+            normc_flat["curvatures"],
+            normc_flat["velocities"],
+            normc_flat["dV_forward"],
+            normc_flat["dV_backward"],
+            normc_flat["areas"],
+            normc_flat["pair_ids"],
+        ):
+            writer.writerow([kappa, v, fwd, bwd, area, pid, "normc"])
+        for kappa, v, fwd, bwd, area, pid in zip(
+            antic_flat["curvatures"],
+            antic_flat["velocities"],
+            antic_flat["dV_forward"],
+            antic_flat["dV_backward"],
+            antic_flat["areas"],
+            antic_flat["pair_ids"],
+        ):
+            writer.writerow([kappa, v, fwd, bwd, area, pid, "antic"])
+
+    n_total = len(normc_flat["curvatures"]) + len(antic_flat["curvatures"])
+    log.warning(
+        f"Final velocity CSV saved: {outpath}  "
+        f"({len(normc_flat['curvatures'])} normc + "
+        f"{len(antic_flat['curvatures'])} antic = {n_total} rows)"
+    )
+
+
+def save_final_gbe_time_series_csv(
+    gbe_time_series: list,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Write the GBE time series (one row per frame in gbe_frames) to CSV.
+
+    Columns: time, step, total_gbe, area_weighted_mean_gbe
+    """
+    import csv
+
+    outpath = output_dir / f"{stem}_final_gbe_time_series.csv"
+    with open(outpath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time", "step", "total_gbe", "area_weighted_mean_gbe"])
+        for time_val, step, total_gbe, mean_gbe in gbe_time_series:
+            writer.writerow([time_val, step, total_gbe, mean_gbe])
+
+    log.warning(
+        f"Final GBE time series CSV saved: {outpath}  "
+        f"({len(gbe_time_series)} rows)"
+    )
+
+
+def save_final_gb_data_csv(
+    last_frame: "FrameData",
+    avg_gbe_per_gb: dict,
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Write per-GB data for the final/selected frame to CSV.
+
+    Iterates over ALL pairs in last_frame.gb_dict (outer join).
+    Pairs with no entry in avg_gbe_per_gb receive avg_gbe = NaN.
+    The count of NaN rows is logged as a warning.
+
+    Columns: grain_id1, grain_id2, avg_curvature, gb_area, raw_gb_area, avg_gbe
+
+    gb_dict schema: [avg_curvature, gb_area, grain_id1, grain_id2, raw_gb_area]
+    """
+    import csv
+    import math
+
+    outpath = output_dir / f"{stem}_final_gb_data_last_frame.csv"
+    n_nan = 0
+
+    with open(outpath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "grain_id1", "grain_id2",
+            "avg_curvature", "gb_area", "raw_gb_area",
+            "avg_gbe",
+        ])
+        for pair_id, data in last_frame.gb_dict.items():
+            grain_id1     = int(data[2])
+            grain_id2     = int(data[3])
+            avg_curvature = float(data[0])
+            gb_area       = float(data[1])
+            raw_gb_area   = float(data[4])
+            avg_gbe       = avg_gbe_per_gb.get(pair_id, float("nan"))
+            if math.isnan(avg_gbe):
+                n_nan += 1
+            writer.writerow([
+                grain_id1, grain_id2,
+                avg_curvature, gb_area, raw_gb_area,
+                avg_gbe,
+            ])
+
+    n_total = len(last_frame.gb_dict)
+    log.warning(
+        f"Final GB data CSV saved: {outpath}  "
+        f"({n_total} rows, {n_nan} with NaN avg_gbe "
+        f"[no surviving pixels after TJ exclusion])"
+    )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Anti-curvature statistics (Block 5 / Block 6)
@@ -4107,6 +4236,16 @@ def main() -> None:
         f"mean={gbe_values.mean():.4f}"
     )
 
+    # ── 4a  Final CSV — per-GB data for last/selected frame (--final) ──
+    if args.final:
+        save_final_gb_data_csv(
+            last_frame     = last_frame,
+            avg_gbe_per_gb = avg_gbe_per_gb,
+            output_dir     = args.output_dir,
+            stem           = stem,
+            log            = log,
+        )
+
     # ── 4b. Collect per-frame avg curvature vs avg GBE across frames ──
     t0 = time.perf_counter()
     curv_gbe_points: list[tuple[float, float, float]] = []  # all gbe frames
@@ -4262,7 +4401,7 @@ def main() -> None:
         inc_angles
     )
 
-    if args.inclination_csv:
+    if args.inclination_csv or args.final:
         save_inclination_csv(bin_centers_deg, freq, args.output_dir, stem, log)
 
     if args.debug_plot:
@@ -4356,6 +4495,16 @@ def main() -> None:
 
         normc_flat = _extract(flat_lists, normc_indices)
         antic_flat = _extract(flat_lists, antic_indices)
+
+        # ── 6.3a  Final CSV — pre-confidence velocity data (--final) ────────
+        if args.final:
+            save_final_velocity_csv(
+                normc_flat = normc_flat,
+                antic_flat = antic_flat,
+                output_dir = args.output_dir,
+                stem       = stem,
+                log        = log,
+            )
 
         # ── 6.4 Confidence filtering ────────────────────────────────────────────
         CONFIDENCE = args.antic_confidence
@@ -4546,6 +4695,13 @@ def main() -> None:
                 mode            = args.gbe_mode,
                 log             = log,
             )
+            if args.final:
+                save_final_gbe_time_series_csv(
+                    gbe_time_series = gbe_time_series,
+                    output_dir      = args.output_dir,
+                    stem            = stem,
+                    log             = log,
+                )
 
     tf(ti, log, "Total: ")
 
