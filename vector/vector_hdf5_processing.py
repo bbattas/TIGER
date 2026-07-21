@@ -233,14 +233,38 @@ def load_hdf5_frames(filepath: Path, log: logging.Logger) -> tuple[list[FrameDat
         if "provenance" in hf:
             prov = hf["provenance"]
             provenance = {
+                # ── fields present in all schema versions ──────────────────
                 "tj_distance": int(prov["tj_distance"][()]),
                 "loop_times":  int(prov["loop_times"][()]),
                 "signed":      bool(prov["signed"][()]),
                 "cpus":        int(prov["cpus"][()]),
                 "hdf5_frames": int(prov["hdf5_frames"][()]),
-                "hdf5_dt":     float(prov["hdf5_dt"][()]),  # may be NaN
+                # ── legacy-only field (old schema: hdf5_dt stored) ─────────
+                "hdf5_dt":     float(prov["hdf5_dt"][()])
+                            if "hdf5_dt" in prov else float("nan"),
+                # ── new schema fields (not present in legacy files) ────────
+                "hdf5_t0":       float(prov["hdf5_t0"][()])
+                                if "hdf5_t0"       in prov else 0.0,
+                "actual_frames": int(prov["actual_frames"][()])
+                                if "actual_frames"  in prov else 0,
+                "fast_mode":     bool(prov["fast_mode"][()])
+                                if "fast_mode"      in prov else False,
+                "chunk_size":    int(prov["chunk_size"][()])
+                                if "chunk_size"     in prov else 1,
             }
-            log.warning(f"HDF5 provenance: {provenance}")
+            # Log which time scheme is active so it's clear in the run log
+            import math as _math
+            if not _math.isnan(provenance["hdf5_dt"]):
+                log.warning(
+                    f"HDF5 provenance (legacy schema): {provenance} | "
+                    f"time scheme: dt={provenance['hdf5_dt']}"
+                )
+            else:
+                log.warning(
+                    f"HDF5 provenance (new schema): {provenance} | "
+                    f"time scheme: t0={provenance['hdf5_t0']}, "
+                    f"actual_frames={provenance['actual_frames']}"
+                )
         else:
             log.warning(
                 "HDF5 provenance group not found — legacy file. "
@@ -4137,7 +4161,21 @@ def main() -> None:
                 f"Using stored value ({stored_tj}) to match the curvature averaging "
                 f"pixel set used during HDF5 generation."
             )
-        args.tj_distance = stored_tj
+            args.tj_distance = stored_tj
+        # Log which time scheme the HDF5 was generated with
+        import math as _math
+        if not _math.isnan(provenance.get("hdf5_dt", float("nan"))):
+            log.warning(
+                f"HDF5 time scheme: legacy  dt={provenance['hdf5_dt']}"
+            )
+        else:
+            log.warning(
+                f"HDF5 time scheme: new  "
+                f"t0={provenance.get('hdf5_t0', 'N/A')}, "
+                f"actual_frames={provenance.get('actual_frames', 'N/A')}, "
+                f"fast_mode={provenance.get('fast_mode', 'N/A')}, "
+                f"chunk_size={provenance.get('chunk_size', 'N/A')}"
+            )
     else:
         log.warning(
             f"No provenance found in HDF5 — using CLI --tj-distance={args.tj_distance}."
