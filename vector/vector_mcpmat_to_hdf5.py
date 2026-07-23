@@ -150,7 +150,9 @@ def parse_args():
         "--out", "-o", type=str, default=None, metavar="NAME",
         help=(
             "Output name for the HDF5 file (with or without .h5 extension). "
-            "If not set, defaults to <mat_stem>_multiframe.h5."
+            "If not set, defaults to <mat_stem>_<N>f_multiframe.h5. "
+            "The actual frame count used is always embedded in the filename "
+            "(e.g. my_output_50f.h5)."
         ),
     )
     mf.add_argument(
@@ -161,21 +163,18 @@ def parse_args():
         ),
     )
     mf.add_argument(
-        "--hdf5-frames", type=int, default=5, metavar="N",
+        "--hdf5-frames", type=int, default=100, metavar="N",
         help="Number of frames to save in the HDF5 file.",
     )
-    mf.add_argument(
-        "--hdf5-dt", type=float, default=None, metavar="DT",
+    mf.add_argument(                                        # CHANGED from --hdf5-dt / --mode
+        "--hdf5-t0", type=float, default=None, metavar="T0",
+        dest="hdf5_t0",
         help=(
-            "Target time spacing between saved frames. "
-            "If not set, defaults to 1%% of the anchor frame's synthesized time."
-        ),
-    )
-    mf.add_argument(
-        "--mode", type=str, default="end", choices=["end", "center"],
-        help=(
-            "Frame selection mode relative to the anchor step. "
-            "'end' = anchor is the last frame; 'center' = anchor is the middle frame."
+            "Start time for the multi-frame range. Frames are selected by "
+            "evenly spacing --hdf5-frames steps between T0 and the anchor "
+            "time chosen by -t / -g. "
+            "If not set, defaults to the first available timestep (t=0). "
+            "The anchor frame is always pinned as the final frame."
         ),
     )
 
@@ -426,102 +425,112 @@ def select_step_mat(ds, times: np.ndarray, *,
 
 
 def select_multi_frame_steps_mat(
-    ds,
     times: np.ndarray,
     target_step: int,
     n_frames: int,
-    dt=None,
-    mode: str = "end",
+    t_start: float | None = None,
     log: logging.Logger = None,
-) -> list:
+) -> tuple[list, int]:
     """
-    Select up to n_frames timestep indices anchored to target_step.
+    Select up to n_frames timestep indices spanning [t_start, t_anchor].
 
-    Mirrors select_multi_frame_steps() exactly, but uses the synthesized
-    times array and lazy grain count reads instead of an open ExodusBasics.
+    Direct port of select_multi_frame_steps() from the Exodus version.
+    The anchor frame (selected by -t / -g) is always the final frame in
+    the returned list. Frames are chosen by evenly spacing n_frames ideal
+    times between t_start and t_anchor via np.linspace, then snapping each
+    to the nearest available timestep.
+
+    If fewer than n_frames unique steps are available in that range, a
+    warning is emitted and the reduced set is returned as-is — the range
+    is never silently expanded.
 
     Parameters
     ----------
-    ds          : h5py Dataset (for optional grain count annotation in logs)
     times       : np.ndarray — synthesized time array
     target_step : int
+        The step selected by -t / -g. Pinned as the last frame.
     n_frames    : int
-    dt          : float or None — target time spacing between frames
-    mode        : "end" | "center"
-    log         : Logger or None
+        Desired number of frames (including the anchor frame).
+    t_start     : float or None
+        Start of the time range. If None, defaults to times[0].
+    log         : logging.Logger or None
 
     Returns
     -------
-    list of (step_index, time_value) tuples, sorted ascending.
+    tuple of:
+        list of (step_index, time_value) tuples, sorted ascending.
+        int : actual number of frames selected (may be < n_frames).
     """
-    times = np.asarray(times, dtype=float)
-    n_total = len(times)
-    t_anchor = times[target_step]
+    times      = np.asarray(times, dtype=float)
+    t_anchor   = times[target_step]
+    anchor_idx = target_step  # already exact — no need to search
 
-    # --- Default dt ---
-    if dt is None:
-        ref = t_anchor if t_anchor > 0 else times[-1]
-        dt = ref * 0.01
+    # --- Resolve t_start ---
+    if t_start is None:
+        t_start = float(times[0])
         if log:
             log.info(
-                f"HDF5 dt defaulted to {dt:.4g} "
-                f"(1% of anchor time {ref:.4g})"
+                f"HDF5 t_start defaulted to {t_start:.4g} "
+                f"(first available timestep)"
             )
 
-    # --- Build ideal target times ---
-    if mode == "end":
-        offsets = np.arange(n_frames - 1, -1, -1)
-        ideal_times = t_anchor - offsets * dt
-    else:  # "center"
-        half = (n_frames - 1) / 2.0
-        ideal_times = t_anchor + np.arange(n_frames) * dt - half * dt
+    if t_start > t_anchor:
+        raise ValueError(
+            f"--hdf5-t0 ({t_start:.4g}) is later than the anchor time "
+            f"({t_anchor:.4g}). t_start must be <= anchor time."
+        )
 
-    # --- Map each ideal time to the closest available step ---
+    # --- Build ideal times and snap to nearest available steps ---
+    ideal_times = np.linspace(t_start, t_anchor, n_frames)
     raw_indices = [closest_index(times, t) for t in ideal_times]
 
-    # --- Safety 1: remove duplicates while preserving order ---
-    seen = set()
+    # --- Deduplicate while preserving order ---
+    seen           = set()
     unique_indices = []
     for idx in raw_indices:
         if idx not in seen:
             seen.add(idx)
             unique_indices.append(idx)
 
-    # --- Safety 2: if dt collapsed frames, fill gaps ---
-    if len(unique_indices) < n_frames:
-        i_min = max(0, min(unique_indices))
-        i_max = min(n_total - 1, max(unique_indices))
-        if (i_max - i_min + 1) < n_frames:
-            i_min = max(0, i_max - (n_frames - 1))
-            i_max = min(n_total - 1, i_min + (n_frames - 1))
-        extra_indices = list(np.unique(
-            np.round(np.linspace(i_min, i_max, n_frames)).astype(int)
-        ))
-        unique_indices = sorted(
-            set(unique_indices) | set(extra_indices)
-        )[:n_frames]
+    # --- Anchor pin: ensure target_step is present and is the last frame ---
+    if anchor_idx not in seen:
+        unique_indices.append(anchor_idx)
         if log:
             log.warning(
-                f"\033[31mHDF5:\033[0m dt={dt:.4g} too small/large — "
-                f"only {len(seen)} unique frames found. "
-                f"Filled to {len(unique_indices)} by spreading within "
-                f"[{times[i_min]:.4g}, {times[i_max]:.4g}]."
+                f"\033[31mHDF5:\033[0m anchor step={anchor_idx} "
+                f"(t={t_anchor:.4g}) was not in snap result — pinned manually."
+            )
+    unique_indices = sorted(unique_indices)
+
+    # Guarantee anchor is last (explicit, not assumed from sort)
+    if unique_indices[-1] != anchor_idx:
+        unique_indices = [i for i in unique_indices if i != anchor_idx]
+        unique_indices.append(anchor_idx)
+
+    actual_n = len(unique_indices)
+
+    # --- Warn if fewer frames than requested ---
+    if actual_n < n_frames:
+        if log:
+            log.warning(
+                f"\033[31mHDF5:\033[0m Requested {n_frames} frames between "
+                f"t={t_start:.4g} and t={t_anchor:.4g}, but only "
+                f"{actual_n} unique timesteps are available in that range. "
+                f"Proceeding with {actual_n} frames."
             )
 
-    unique_indices = sorted(unique_indices)
     result = [(int(idx), float(times[idx])) for idx in unique_indices]
 
     if log:
         log.info(
-            f"HDF5 multi-frame: anchor step={target_step} t={t_anchor:.4g}, "
-            f"mode='{mode}', dt={dt:.4g}, "
-            f"requested={n_frames}, selected={len(result)}"
+            f"HDF5 multi-frame: anchor step={anchor_idx} t={t_anchor:.4g}, "
+            f"t_start={t_start:.4g}, "
+            f"requested={n_frames}, selected={actual_n}"
         )
         for idx, t in result:
             log.info(f"  step={idx}, time={t:.6g}")
 
-    return result
-
+    return result, actual_n
 
 # ---------------------------------------------------------------------------
 # Smoothing wrappers (identical to the Exodus version)
@@ -943,8 +952,27 @@ def process_frame_mat(ds, step: int, times: np.ndarray, args,
 # HDF5 I/O (identical to the Exodus version except provenance additions)
 # ---------------------------------------------------------------------------
 
+def _resolve_hdf5_path(out_arg: str | None, stem: str, actual_n: int) -> str:
+    """
+    Build the output HDF5 filepath, embedding the actual frame count.
+
+    Examples
+    --------
+    out_arg=None,           stem="myfile", actual_n=50  -> "myfile_50f_multiframe.h5"
+    out_arg="my_output",    actual_n=50                 -> "my_output_50f.h5"
+    out_arg="my_output.h5", actual_n=50                 -> "my_output_50f.h5"
+    """
+    if out_arg is not None:
+        base = out_arg
+        if base.endswith(".h5"):
+            base = base[:-3]          # strip extension
+        return f"{base}_{actual_n}f.h5"
+    else:
+        return f"{stem}_{actual_n}f_multiframe.h5"
+
 def _initialize_streamed_hdf5(filepath: str, args: argparse.Namespace,
                                mat_path: str,
+                               actual_n: int,                   # NEW
                                log: logging.Logger = None) -> None:
     """
     Create a new HDF5 file with the provenance group and an empty frames group.
@@ -957,10 +985,11 @@ def _initialize_streamed_hdf5(filepath: str, args: argparse.Namespace,
         prov.create_dataset("signed",       data=bool(args.signed))
         prov.create_dataset("cpus",         data=int(args.cpus))
         prov.create_dataset("hdf5_frames",  data=int(args.hdf5_frames))
-        prov.create_dataset(
-            "hdf5_dt",
-            data=float(args.hdf5_dt) if args.hdf5_dt is not None else float("nan"),
+        prov.create_dataset(                                     # CHANGED
+            "hdf5_t0",
+            data=float(args.hdf5_t0) if args.hdf5_t0 is not None else 0.0,
         )
+        prov.create_dataset("actual_frames", data=int(actual_n)) # NEW
         prov.create_dataset("fast_mode",    data=bool(args.fast))
         prov.create_dataset("chunk_size",   data=int(args.chunk_size))
         prov.create_dataset("source_file",  data=str(mat_path))
@@ -1035,6 +1064,7 @@ def _stream_frame_to_hdf5(filepath: str, frame_num: int,
 def save_hdf5_multiframe(filepath: str, frames_data: list,
                          args: argparse.Namespace,
                          mat_path: str,
+                         actual_n: int,                          # NEW
                          log: logging.Logger = None) -> None:
     """
     Save multi-frame grain boundary curvature data to an HDF5 file.
@@ -1047,7 +1077,8 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
         signed         (scalar bool)
         cpus           (scalar int)
         hdf5_frames    (scalar int)
-        hdf5_dt        (scalar float or NaN)
+        hdf5_t0        (scalar float)
+        actual_frames  (scalar int)
         fast_mode      (scalar bool)
         chunk_size     (scalar int)
         source_file    (string — path to the .mat file)
@@ -1076,15 +1107,18 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
         prov.create_dataset("signed",       data=bool(args.signed))
         prov.create_dataset("cpus",         data=int(args.cpus))
         prov.create_dataset("hdf5_frames",  data=int(args.hdf5_frames))
-        prov.create_dataset(
-            "hdf5_dt",
-            data=float(args.hdf5_dt) if args.hdf5_dt is not None
-            else float("nan"),
+        prov.create_dataset(                                     # CHANGED
+            "hdf5_t0",
+            data=float(args.hdf5_t0) if args.hdf5_t0 is not None else 0.0,
         )
+        prov.create_dataset("actual_frames", data=int(actual_n)) # NEW
         prov.create_dataset("fast_mode",    data=bool(args.fast))
         prov.create_dataset("chunk_size",   data=int(args.chunk_size))
         prov.create_dataset("source_file",  data=str(mat_path))
         prov.create_dataset("mat_dt",       data=float(args.mat_dt))
+
+        # Frames — unchanged below this point
+        frames_grp = hf.create_group("frames")
 
         # Frames
         frames_grp = hf.create_group("frames")
@@ -1404,29 +1438,20 @@ def main():
         log.info("Starting multi-frame HDF5 export...")
         tih = time.perf_counter()
 
-        frame_steps = select_multi_frame_steps_mat(
-            ds,
+        frame_steps, actual_n = select_multi_frame_steps_mat(
             times,
             target_step=step,
             n_frames=args.hdf5_frames,
-            dt=args.hdf5_dt,
-            mode=args.mode,
+            t_start=args.hdf5_t0,
             log=log,
         )
 
         # -------------------------------------------------------------------
         # Resolve output path
         # -------------------------------------------------------------------
+        hdf5_path = _resolve_hdf5_path(args.out, stem=stem, actual_n=actual_n)
         if args.out is not None:
-            hdf5_out = Path(args.out)
-            hdf5_out.parent.mkdir(parents=True, exist_ok=True)
-            hdf5_path = (
-                str(hdf5_out)
-                if str(hdf5_out).endswith(".h5")
-                else str(hdf5_out) + ".h5"
-            )
-        else:
-            hdf5_path = stem + "_multiframe.h5"
+            Path(hdf5_path).parent.mkdir(parents=True, exist_ok=True)
 
         # -------------------------------------------------------------------
         # Process frames and write HDF5
@@ -1437,7 +1462,7 @@ def main():
 
         if args.stream:
             frames_data_for_csv = []
-            _initialize_streamed_hdf5(hdf5_path, args, str(mat_path), log=log)
+            _initialize_streamed_hdf5(hdf5_path, args, str(mat_path), actual_n=actual_n, log=log)
 
             for frame_num, (s, t) in progress(
                 enumerate(frame_steps),
@@ -1489,7 +1514,8 @@ def main():
 
             tif = time.perf_counter()
             save_hdf5_multiframe(
-                hdf5_path, frames_data, args, str(mat_path), log=log
+                hdf5_path, frames_data, args, str(mat_path),
+                actual_n=actual_n, log=log
             )
             save_frame_times_csv_mat(
                 hdf5_path, frames_data, grain_counts_map, log=log
