@@ -89,6 +89,16 @@ def parse_args():
         "--mat-var", type=str, default="Grainims_id", metavar="VAR",
         help="Name of the variable inside the .mat file to load.",
     )
+    inp.add_argument(
+        "--transpose-spatial",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Swap the two spatial axes of each MAT frame after reading it. "
+            "Enable this to match mat_to_npy.py, which transposes each frame "
+            "from (ny, nx) to (nx, ny)."
+        ),
+    )
 
     # ---- Time selection ----
     tim = p.add_argument_group("Time (choose one)")
@@ -905,8 +915,24 @@ def process_frame_mat(ds, step: int, times: np.ndarray, args,
     """
     time_val = float(times[step])
 
+    # log.debug(f"  [process_frame_mat] step={step}: reading frame from .mat...")
+    # frame = read_mat_frame(ds, step)          # shape (ny, nx), int32
+    # P0 = frame.astype(np.float64)             # linear_class expects float
     log.debug(f"  [process_frame_mat] step={step}: reading frame from .mat...")
-    frame = read_mat_frame(ds, step)          # shape (ny, nx), int32
+
+    # read_mat_frame first normalizes the raw MAT layout to a 2D array.
+    frame = read_mat_frame(ds, step)          # normally shape (ny, nx), int32
+
+    # Optional compatibility transform matching mat_to_npy.py.
+    if args.transpose_spatial:
+        original_shape = frame.shape
+        frame = np.ascontiguousarray(frame.T)
+
+        log.debug(
+            f"  [process_frame_mat] step={step}: spatial transpose applied, "
+            f"shape {original_shape} -> {frame.shape}"
+        )
+
     P0 = frame.astype(np.float64)             # linear_class expects float
 
     log.debug(
@@ -994,6 +1020,7 @@ def _initialize_streamed_hdf5(filepath: str, args: argparse.Namespace,
         prov.create_dataset("chunk_size",   data=int(args.chunk_size))
         prov.create_dataset("source_file",  data=str(mat_path))
         prov.create_dataset("mat_dt",       data=float(args.mat_dt))
+        prov.create_dataset("spatial_transpose", data=bool(args.transpose_spatial))
         hf.create_group("frames")
 
     if log:
@@ -1083,6 +1110,7 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
         chunk_size     (scalar int)
         source_file    (string — path to the .mat file)
         mat_dt         (float  — dt used to synthesize time)
+        spatial_transpose  (bool — whether output spatial axes were swapped)
     /frames/
         frame_0000/
             step               (scalar int)
@@ -1115,6 +1143,7 @@ def save_hdf5_multiframe(filepath: str, frames_data: list,
         prov.create_dataset("fast_mode",    data=bool(args.fast))
         prov.create_dataset("chunk_size",   data=int(args.chunk_size))
         prov.create_dataset("source_file",  data=str(mat_path))
+        prov.create_dataset("spatial_transpose", data=bool(args.transpose_spatial))
         prov.create_dataset("mat_dt",       data=float(args.mat_dt))
 
         # Frames — unchanged below this point
