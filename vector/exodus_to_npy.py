@@ -16,6 +16,12 @@ Usage:
     # All .e files one subdirectory level down:
     python exodus_to_npy.py --subdirs
 
+    # Sample 121 evenly spaced timesteps instead of all:
+    python exodus_to_npy.py --sample-times
+
+    # Sample with a custom mismatch tolerance warning threshold:
+    python exodus_to_npy.py --sample-times --time-tol 0.01
+
     # Verbose output:
     python exodus_to_npy.py -v
     python exodus_to_npy.py --subdirs -v
@@ -34,9 +40,11 @@ from ExodusBasics import ExodusBasics
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-VAR_NAME     = "unique_grains"
-QUANTIZE_TOL = 1e-6   # snap float coords to avoid degenerate uniqueness
-EB           = 1      # default element block
+VAR_NAME          = "unique_grains"
+QUANTIZE_TOL      = 1e-6   # snap float coords to avoid degenerate uniqueness
+EB                = 1      # default element block
+SAMPLE_N_FRAMES   = 121    # number of evenly spaced frames when --sample-times is used
+DEFAULT_TIME_TOL  = 1e-3   # default warning threshold for time mismatch
 
 logger = logging.getLogger("exodus_to_npy")
 
@@ -106,6 +114,55 @@ def discover_files(args: argparse.Namespace) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
+# Timestep sampling
+# ---------------------------------------------------------------------------
+def select_time_steps(
+    times: np.ndarray,
+    n: int = SAMPLE_N_FRAMES,
+    tol: float = DEFAULT_TIME_TOL,
+) -> list[int]:
+    """
+    Select indices into `times` corresponding to `n` evenly spaced target
+    values ranging from times[0] to times[-1] (inclusive), using nearest-
+    neighbor matching.
+
+    Emits a WARNING for any selected step whose actual time deviates from
+    the intended target by more than `tol`.
+
+    Returns:
+        List of integer step indices (may contain duplicates if the file has
+        fewer unique timesteps than n).
+    """
+    t_min = float(times[0])
+    t_max = float(times[-1])
+    targets = np.linspace(t_min, t_max, n)
+
+    times_arr = np.asarray(times, dtype=float)
+    selected_steps = []
+
+    for i, t_target in enumerate(targets):
+        idx = int(np.argmin(np.abs(times_arr - t_target)))
+        t_actual = times_arr[idx]
+        deviation = abs(t_actual - t_target)
+
+        if deviation > tol:
+            logger.warning(
+                "  Sample %d/%d: target t=%.6g, nearest t=%.6g, "
+                "deviation=%.3g exceeds tolerance=%.3g (step index %d).",
+                i + 1, n, t_target, t_actual, deviation, tol, idx,
+            )
+        else:
+            logger.info(
+                "  Sample %d/%d: target t=%.6g -> step index %d (t=%.6g, dev=%.3g).",
+                i + 1, n, t_target, idx, t_actual, deviation,
+            )
+
+        selected_steps.append(idx)
+
+    return selected_steps
+
+
+# ---------------------------------------------------------------------------
 # Core processing
 # ---------------------------------------------------------------------------
 def build_index_map(
@@ -148,7 +205,7 @@ def build_index_map(
     return ix, iy, iz, nx, ny, nz
 
 
-def process_file(path: Path) -> None:
+def process_file(path: Path, args: argparse.Namespace) -> None:
     """Open one Exodus file, extract unique_grains, and save as .npy."""
     logger.info("=" * 60)
     logger.info("Processing: %s", path)
@@ -181,16 +238,33 @@ def process_file(path: Path) -> None:
             )
 
         # ---- Timesteps -------------------------------------------------
-        times     = exo.time()
-        n_frames  = len(times)
-        logger.info("Timesteps: %d", n_frames)
+        times    = exo.time()
+        n_all    = len(times)
+        logger.info("Timesteps in file: %d", n_all)
 
-        if n_frames == 0:
+        if n_all == 0:
             logger.warning("No timesteps found in %s. Skipping.", path.name)
             return
 
+        # ---- Select which steps to extract -----------------------------
+        if args.sample_times:
+            logger.warning(
+                "Sampling %d evenly spaced timesteps from t=%.6g to t=%.6g "
+                "(time-tol=%.3g).",
+                SAMPLE_N_FRAMES, float(times[0]), float(times[-1]), args.time_tol,
+            )
+            step_indices = select_time_steps(times, n=SAMPLE_N_FRAMES, tol=args.time_tol)
+        else:
+            step_indices = list(range(n_all))
+
+        n_frames = len(step_indices)
+        logger.info("Frames to extract: %d", n_frames)
+
         # ---- Grid construction -----------------------------------------
-        logger.info("Computing element centers (eb=%d, method='mean', quantize_tol=%s)...", EB, QUANTIZE_TOL)
+        logger.info(
+            "Computing element centers (eb=%d, method='mean', quantize_tol=%s)...",
+            EB, QUANTIZE_TOL,
+        )
         xc, yc, zc = exo.element_centers_xyz(
             eb=EB,
             method="mean",
@@ -212,10 +286,10 @@ def process_file(path: Path) -> None:
         logger.info("Allocated output array: shape=%s, dtype=%s", out.shape, out.dtype)
 
         # ---- Fill frames -----------------------------------------------
-        for step in range(n_frames):
+        for out_idx, step in enumerate(step_indices):
             vals = exo.elem_var_at_step(VAR_NAME, step, eb=EB)
-            out[step, ix, iy, iz] = vals.astype(np.int32)
-            logger.info("  Frame %d / %d done.", step + 1, n_frames)
+            out[out_idx, ix, iy, iz] = vals.astype(np.int32)
+            logger.info("  Frame %d / %d done (step index %d).", out_idx + 1, n_frames, step)
 
         # ---- Save ------------------------------------------------------
         np.save(output_path, out)
@@ -249,6 +323,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose (INFO-level) logging.",
     )
+    parser.add_argument(
+        "--sample-times",
+        action="store_true",
+        help=(
+            f"Instead of extracting all timesteps, select {SAMPLE_N_FRAMES} evenly "
+            "spaced time values from t_min to t_max using nearest-neighbor matching."
+        ),
+    )
+    parser.add_argument(
+        "--time-tol",
+        type=float,
+        default=DEFAULT_TIME_TOL,
+        metavar="TOL",
+        help=(
+            "When --sample-times is active, warn if a selected timestep deviates "
+            f"from its intended target by more than TOL (default: {DEFAULT_TIME_TOL})."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -266,7 +358,7 @@ def main() -> None:
 
     for path in files:
         try:
-            process_file(path)
+            process_file(path, args)
         except Exception as exc:
             logger.warning("Failed to process %s: %s", path, exc, exc_info=args.verbose)
 
