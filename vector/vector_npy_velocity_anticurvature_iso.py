@@ -1054,7 +1054,7 @@ if __name__ == '__main__':
     log.info('Plotting: Normal Curvature PDF (pre confidence filter)')
     os.makedirs(os.path.dirname("pics/"), exist_ok=True)
 
-    figure_name_all_bin = f"pics/2D_normc_voxel_distribution_{case_name}_5d_afterBin.png"
+    figure_name_all_bin = f"pics/2D_normc_voxel_distribution_{case_name}_gbLimit{area_limit}_5d_afterBin.png"
     plt.figure()
     fig = plt.figure(figsize=(7, 7))
     plt.xlim([0.5, 1.0])
@@ -1270,7 +1270,7 @@ if __name__ == '__main__':
     # =============================================================================
 
     # Create comprehensive scatter plot showing all GB data
-    figure_name_all = f"pics/2D_velocity_signedcurvature_{case_name}_5d.png"
+    figure_name_all = f"pics/2D_velocity_signedcurvature_{case_name}_gbLimit{area_limit}_5d.png"
     plt.figure()
     fig = plt.figure(figsize=(5, 5))
 
@@ -1359,7 +1359,7 @@ if __name__ == '__main__':
     # ADVANCED DENSITY PLOT WITH LINEAR FITTING
     # =============================================================================
 
-    figure_name_all = f"pics/2D_velocity_signedcurvature_hot_{case_name}_5d.png"
+    figure_name_all = f"pics/2D_velocity_signedcurvature_hot_{case_name}_gbLimit{area_limit}_5d.png"
     plt.figure()
     fig = plt.figure(figsize=(5, 5))
 
@@ -1438,7 +1438,7 @@ if __name__ == '__main__':
     # SAVE VELOCITY + CURVATURE CSV (mirrors --final in vector_hdf5_processing)
     # =============================================================================
 
-    csv_output_path = f"pics/velocity_curvature_density_{case_name}_data.csv"
+    csv_output_path = f"pics/velocity_curvature_density_{case_name}_gbLimit{area_limit}_data.csv"
     os.makedirs(os.path.dirname(csv_output_path), exist_ok=True)
 
     with open(csv_output_path, "w", newline="") as f:
