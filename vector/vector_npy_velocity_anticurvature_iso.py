@@ -53,7 +53,7 @@ def parse_args():
         help="Number of time steps to analyze."
     )
     parser.add_argument(
-        "--time-interval", type=int, default=30,
+        "--time-interval", type=float, default=30,
         help="Time interval between steps for velocity calculation."
     )
     parser.add_argument(
