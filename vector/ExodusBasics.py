@@ -2,6 +2,7 @@ from netCDF4 import Dataset
 import numpy as np
 import re
 
+
 def _decode_names(char_2d) -> list[str]:
     """
     Decode Exodus 'name_*_var' arrays (char[*,*]) into Python strings.
@@ -12,7 +13,8 @@ def _decode_names(char_2d) -> list[str]:
     for row in a:
         # row is like [b'u', b'n', ...]
         out.append(b"".join(row).decode("utf-8", "ignore").strip())
-    return out
+    return [name for name in out if name]  # [CHANGED] filter empty/padding-only entries
+
 
 class ExodusBasics:
     """
@@ -120,6 +122,50 @@ class ExodusBasics:
             }
         return meta
 
+    def element_type(self, eb: int = 1) -> str:
+        """
+        Return the Exodus element type for element block ``eb``.
+
+        Examples include ``QUAD4``, ``QUAD8``, and ``QUAD9``. The value is
+        normalized to an uppercase Python string, but otherwise retains the
+        spelling stored in the Exodus file.
+        """
+        self._require_open()
+        name = f"connect{eb}"
+        if name not in self.ds.variables:
+            raise KeyError(f"{name} not found. Available: {self.connect_varnames()}")
+
+        raw = getattr(self.ds.variables[name], "elem_type", "")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "ignore")
+        elif isinstance(raw, np.ndarray):
+            if raw.dtype.kind in {"S", "U"}:
+                raw = "".join(
+                    item.decode("utf-8", "ignore") if isinstance(item, bytes) else str(item)
+                    for item in raw.ravel()
+                )
+            else:
+                raw = str(raw)
+
+        elem_type = str(raw).strip().upper()
+        if not elem_type:
+            raise RuntimeError(f"Element type attribute is missing on {name}.")
+        return elem_type
+
+    def nodes_per_element(self, eb: int = 1) -> int:
+        """Return the number of connectivity entries per element in block ``eb``."""
+        self._require_open()
+        name = f"connect{eb}"
+        if name not in self.ds.variables:
+            raise KeyError(f"{name} not found. Available: {self.connect_varnames()}")
+
+        shape = self.ds.variables[name].shape
+        if len(shape) != 2:
+            raise RuntimeError(
+                f"Expected {name} to be a 2D connectivity array; found shape {shape}."
+            )
+        return int(shape[1])
+
     # ---- variable name tables ----
     def nodal_varnames(self) -> list[str]:
         self._require_open()
@@ -179,13 +225,96 @@ class ExodusBasics:
 
         return self.ds.variables[vname][step, :]
 
-    def var_at_step(self, name: str, step: int, eb: int = 1) -> np.ndarray:
+    # ---- nodal variable averaged to elements ----
+    def nodal_var_averaged_to_elements(
+        self,
+        name: str,
+        step: int,
+        eb: int = 1,
+        zero_based_connect: bool = True,
+    ) -> np.ndarray:
         """
-        Convenience: auto-detect nodal vs element.
-        For element vars, reads from element block `eb`.
+        Read a nodal variable at a single timestep and average it over each
+        element's nodes, returning one value per element in block `eb`.
+
+        This is useful for plotting nodal quantities on an element-centered mesh,
+        or for comparing nodal data against elemental data on the same grid.
+
+        Args:
+            name:               Exodus nodal variable name.
+            step:               Timestep index (0-based).
+            eb:                 Element block index (default 1).
+            zero_based_connect: If True, treat connectivity as 0-based indices.
+
+        Returns:
+            Array of shape (n_elem_in_block,) containing the per-element
+            average of the nodal variable.
+        """
+        self._require_open()
+        nodal_vals = self.nodal_var_at_step(name, step)           # (num_nodes,)
+        conn = self.connectivity(which=eb, zero_based=zero_based_connect)  # (n_elem, n_per_elem)
+        return nodal_vals[conn].mean(axis=1)                       # (n_elem,)
+
+    # [NEW]
+    def nodal_var_averaged_to_elements_series(
+        self,
+        name: str,
+        eb: int = 1,
+        zero_based_connect: bool = True,
+    ) -> np.ndarray:
+        """
+        Read a nodal variable across ALL timesteps and average it over each
+        element's nodes at every step.
+
+        Args:
+            name:               Exodus nodal variable name.
+            eb:                 Element block index (default 1).
+            zero_based_connect: If True, treat connectivity as 0-based indices.
+
+        Returns:
+            Array of shape (num_timesteps, n_elem_in_block,).
+        """
+        self._require_open()
+        names = self.nodal_varnames()
+        if name not in names:
+            raise KeyError(f"'{name}' not a nodal var. Available: {names}")
+
+        idx = names.index(name) + 1
+        vname = f"vals_nod_var{idx}"
+        all_nodal = self.ds.variables[vname][:]                    # (num_timesteps, num_nodes)
+
+        conn = self.connectivity(which=eb, zero_based=zero_based_connect)  # (n_elem, n_per_elem)
+
+        # Index and average: all_nodal[:, conn] -> (num_timesteps, n_elem, n_per_elem)
+        return all_nodal[:, conn].mean(axis=2)                     # (num_timesteps, n_elem)
+
+
+    def var_at_step(
+        self,
+        name: str,
+        step: int,
+        eb: int = 1,
+        elem_average: bool = False,
+    ) -> np.ndarray:
+        """
+        Convenience: auto-detect nodal vs element and return values at `step`.
+
+        Args:
+            name:         Exodus variable name.
+            step:         Timestep index (0-based).
+            eb:           Element block index for element vars, or the target
+                          block for nodal averaging when elem_average=True.
+            elem_average: If True and the variable is nodal, return values
+                          averaged to elements (shape: n_elem_in_block) rather
+                          than the raw per-node array. Ignored for element vars.
+
+        Returns:
+            np.ndarray of shape (num_nodes,) or (n_elem_in_block,).
         """
         kind = self.var_kind(name)
         if kind == "nodal":
+            if elem_average:
+                return self.nodal_var_averaged_to_elements(name, step, eb=eb)
             return self.nodal_var_at_step(name, step)
         else:
             return self.elem_var_at_step(name, step, eb=eb)
@@ -201,25 +330,36 @@ class ExodusBasics:
         zero_based_connect: bool = True,
         cache_centers: bool = True,
         quantize_tol: float | None = None,
+        elem_average: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Return plottable coordinates and values for variable `name` at timestep `step`.
 
-        For nodal variables:
-            returns nodal (x, y, z, c)
+        For nodal variables (elem_average=False, default):
+            returns nodal (x, y, z, c) — all arrays of shape (num_nodes,)
+
+        For nodal variables (elem_average=True):
+            returns element-centered (x, y, z, c) — all arrays of shape (n_elem,)
+            where c is the nodal variable averaged over each element's nodes,
+            and x/y/z are the element representative coordinates. This ensures
+            the coordinate and value arrays are aligned to the same grid.
 
         For elemental variables:
-            returns element-representative (x, y, z, c) for block `eb`,
-            where x/y/z are computed from the element node coordinates.
+            returns element-representative (x, y, z, c) for block `eb`.
+            elem_average is ignored.
 
         Args:
-            name: Exodus variable name
-            step: timestep index (0-based)
-            eb: element block index for elemental variables
-            elem_center_method: "min", "mean", or "bbox" for elemental coordinates
-            zero_based_connect: if True, treat connectivity as 0-based indices
-            cache_centers: cache computed elemental centers
-            quantize_tol: optional snapping tolerance for elemental coordinates
+            name:               Exodus variable name.
+            step:               Timestep index (0-based).
+            eb:                 Element block index for elemental variables,
+                                or target block when elem_average=True.
+            elem_center_method: "min", "mean", or "bbox" for elemental coordinates.
+            zero_based_connect: If True, treat connectivity as 0-based indices.
+            cache_centers:      Cache computed elemental centers.
+            quantize_tol:       Optional snapping tolerance for elemental coordinates.
+            elem_average:       If True and variable is nodal, average values to
+                                elements and return element-centered coordinates.
+                                Ignored for element variables.
 
         Returns:
             (x, y, z, c)
@@ -227,12 +367,14 @@ class ExodusBasics:
         self._require_open()
         kind = self.var_kind(name)
 
-        if kind == "nodal":
+        if kind == "nodal" and not elem_average:
+            # Default nodal path — unchanged
             x, y, z = self.coords_xyz()
             c = self.nodal_var_at_step(name, step)
             return x, y, z, c
 
-        # elemental
+        # Both elemental vars and nodal vars with elem_average=True share
+        # element-centered coordinates, so compute those first.
         x, y, z = self.element_centers_xyz(
             eb=eb,
             method=elem_center_method,
@@ -240,7 +382,15 @@ class ExodusBasics:
             cache=cache_centers,
             quantize_tol=quantize_tol,
         )
-        c = self.elem_var_at_step(name, step, eb=eb)
+
+        if kind == "nodal":
+            # elem_average=True: average nodal values onto the element grid
+            c = self.nodal_var_averaged_to_elements(
+                name, step, eb=eb, zero_based_connect=zero_based_connect
+            )
+        else:
+            c = self.elem_var_at_step(name, step, eb=eb)
+
         return x, y, z, c
 
 
