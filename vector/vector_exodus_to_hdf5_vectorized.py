@@ -19,6 +19,11 @@ Usage example (fast vectorized path):
         --fast --chunk-size 50000
         --out my_output -v
 
+--hdf5-all-frames uses every available timestep from --hdf5-t0 to the
+    anchor time. Overrides --hdf5-frames. Useful when you want no
+    subsampling at all.
+    Example output filename: my_output_312f.h5
+
 --hdf5-t0 sets the start of the multi-frame time range. Frames are
     evenly spaced between t0 and the anchor time (-t / -g). Defaults
     to the first available timestep if omitted.
@@ -180,6 +185,15 @@ def parse_args():
     mf.add_argument(
         "--hdf5-frames", type=int, default=100, metavar="N",
         help="Number of frames to save in the HDF5 file.",
+    )
+    mf.add_argument(
+        "--hdf5-all-frames", action="store_true", default=False,
+        dest="hdf5_all_frames",
+        help=(
+            "Use every available timestep from --hdf5-t0 (or t=0) up to "
+            "the anchor frame (-t / -g), ignoring --hdf5-frames. "
+            "The anchor frame is always pinned as the final frame."
+        ),
     )
     mf.add_argument(                                        # CHANGED from --hdf5-dt
         "--hdf5-t0", type=float, default=None, metavar="T0",
@@ -477,6 +491,73 @@ def select_multi_frame_steps(
 
     return result, actual_n
 
+
+def select_all_frame_steps(
+    exo,
+    target_step: int,
+    t_start: float | None = None,
+    log: logging.Logger = None,
+) -> tuple[list, int]:
+    """
+    Select every available timestep in [t_start, t_anchor].
+
+    Unlike select_multi_frame_steps, no subsampling is performed —
+    all unique steps in the range are returned, sorted ascending,
+    with the anchor pinned as the last frame.
+
+    Parameters
+    ----------
+    exo         : ExodusBasics open instance
+    target_step : int
+    t_start     : float or None — defaults to times[0]
+    log         : logging.Logger or None
+
+    Returns
+    -------
+    tuple of:
+        list of (step_index, time_value) tuples, sorted ascending.
+        int : actual number of frames selected.
+    """
+    times    = np.asarray(exo.time(), dtype=float)
+    t_anchor = times[target_step]
+
+    if t_start is None:
+        t_start = float(times[0])
+        if log:
+            log.info(f"HDF5 t_start defaulted to {t_start:.4g}")
+
+    if t_start > t_anchor:
+        raise ValueError(
+            f"--hdf5-t0 ({t_start:.4g}) is later than the anchor time "
+            f"({t_anchor:.4g})."
+        )
+
+    # Collect all indices in [t_start, t_anchor]
+    indices = [
+        i for i, t in enumerate(times)
+        if t_start <= t <= t_anchor + 1e-12
+    ]
+
+    # Anchor pin (should already be present, but be explicit)
+    if target_step not in indices:
+        indices.append(target_step)
+
+    indices = sorted(set(indices))
+
+    # Guarantee anchor is last
+    if indices[-1] != target_step:
+        indices = [i for i in indices if i != target_step]
+        indices.append(target_step)
+
+    actual_n = len(indices)
+    result   = [(int(i), float(times[i])) for i in indices]
+
+    if log:
+        log.info(
+            f"HDF5 all-frames: anchor step={target_step} t={t_anchor:.4g}, "
+            f"t_start={t_start:.4g}, selected={actual_n}"
+        )
+    return result, actual_n
 
 # ---------------------------------------------------------------------------
 # Recovery mode — file discovery
@@ -809,6 +890,48 @@ def select_multi_frame_steps_from_index(
                 f"file_step={r['file_step']}"
             )
 
+    return result, actual_n
+
+def select_all_frame_steps_from_index(
+    rows: list[dict],
+    anchor_row: dict,
+    t_start: float | None = None,
+    log: logging.Logger = None,
+) -> tuple[list[dict], int]:
+    """Recovery-mode equivalent of select_all_frame_steps."""
+    times    = np.array([r["time"] for r in rows], dtype=float)
+    t_anchor = anchor_row["time"]
+    anchor_idx = closest_index(times, t_anchor)
+
+    if t_start is None:
+        t_start = float(times[0])
+
+    if t_start > t_anchor:
+        raise ValueError(
+            f"[recover] --hdf5-t0 ({t_start:.4g}) > anchor ({t_anchor:.4g})."
+        )
+
+    indices = [
+        i for i, t in enumerate(times)
+        if t_start <= t <= t_anchor + 1e-12
+    ]
+
+    if anchor_idx not in indices:
+        indices.append(anchor_idx)
+
+    indices = sorted(set(indices))
+    if indices[-1] != anchor_idx:
+        indices = [i for i in indices if i != anchor_idx]
+        indices.append(anchor_idx)
+
+    actual_n = len(indices)
+    result   = [rows[i] for i in indices]
+
+    if log:
+        log.info(
+            f"[recover] All-frames: anchor t={t_anchor:.4g}, "
+            f"t_start={t_start:.4g}, selected={actual_n}"
+        )
     return result, actual_n
 
 
@@ -1746,6 +1869,7 @@ def _initialize_streamed_hdf5(filepath: str, args: argparse.Namespace,
         prov.create_dataset("loop_times",    data=int(args.loop_times))
         prov.create_dataset("signed",        data=bool(args.signed))
         prov.create_dataset("cpus",          data=int(args.cpus))
+        prov.create_dataset("hdf5_all_frames", data=bool(args.hdf5_all_frames))
         prov.create_dataset("hdf5_frames",   data=int(args.hdf5_frames))
         prov.create_dataset("hdf5_t0",
             data=float(args.hdf5_t0) if args.hdf5_t0 is not None else 0.0,
@@ -2213,13 +2337,21 @@ def main():
             time_value=args.time,
             log=log,
         )
-        frame_rows, actual_n = select_multi_frame_steps_from_index(
-            index_rows,
-            anchor_row,
-            n_frames=args.hdf5_frames,
-            t_start=args.hdf5_t0,
-            log=log,
-        )
+        if args.hdf5_all_frames:
+            frame_rows, actual_n = select_all_frame_steps_from_index(
+                index_rows,
+                anchor_row,
+                t_start=args.hdf5_t0,
+                log=log,
+            )
+        else:
+            frame_rows, actual_n = select_multi_frame_steps_from_index(
+                index_rows,
+                anchor_row,
+                n_frames=args.hdf5_frames,
+                t_start=args.hdf5_t0,
+                log=log,
+            )
 
         # Step 3: Resolve output HDF5 path
         hdf5_path = _resolve_hdf5_path(
@@ -2377,13 +2509,21 @@ def main():
                 log.info("Starting multi-frame HDF5 export...")
                 tih = time.perf_counter()
 
-                frame_steps, actual_n = select_multi_frame_steps(
-                    exo,
-                    target_step=step,
-                    n_frames=args.hdf5_frames,
-                    t_start=args.hdf5_t0,
-                    log=log,
-                )
+                if args.hdf5_all_frames:
+                    frame_steps, actual_n = select_all_frame_steps(
+                        exo,
+                        target_step=step,
+                        t_start=args.hdf5_t0,
+                        log=log,
+                    )
+                else:
+                    frame_steps, actual_n = select_multi_frame_steps(
+                        exo,
+                        target_step=step,
+                        n_frames=args.hdf5_frames,
+                        t_start=args.hdf5_t0,
+                        log=log,
+                    )
 
                 # Resolve output path
                 hdf5_path = _resolve_hdf5_path(args.out, stem=stem, actual_n=actual_n)
