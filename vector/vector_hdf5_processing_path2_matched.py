@@ -2597,6 +2597,39 @@ def save_final_gbe_time_series_csv(
     )
 
 
+def save_final_gbe_cdf_per_frame_csv(
+    gbe_cdf_by_frame: list[tuple[float, int, np.ndarray, np.ndarray]],
+    output_dir: Path,
+    stem: str,
+    log: logging.Logger,
+) -> None:
+    """
+    Write per-frame area-weighted GBE CDF data to a single CSV.
+
+    CDF is computed using raw (pre-TJ-exclusion) GB pixel count as the
+    area weight, so each CDF value represents the cumulative fraction of
+    total raw GB length at or below that GBE value.
+
+    Columns: time, step, gbe_value, cdf_value
+    """
+    import csv
+
+    outpath = output_dir / f"{stem}_final_gbe_cdf_per_frame.csv"
+    with open(outpath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time", "step", "gbe_value", "cdf_value"])
+        for time_val, step, gbe_sorted, cdf_vals in gbe_cdf_by_frame:
+            for gbe, cdf in zip(gbe_sorted, cdf_vals):
+                writer.writerow([time_val, step, f"{gbe:.8f}", f"{cdf:.8f}"])
+
+    n_frames = len(gbe_cdf_by_frame)
+    total_rows = sum(len(g) for _, _, g, _ in gbe_cdf_by_frame)
+    log.warning(
+        f"Final GBE CDF per-frame CSV saved: {outpath}  "
+        f"({n_frames} frames, {total_rows} total rows)"
+    )
+
+
 def save_final_gb_data_csv(
     last_frame: "FrameData",
     avg_gbe_per_gb: dict,
@@ -4592,6 +4625,9 @@ def main() -> None:
     # time-series accumulator (one entry per frame in gbe_frames)
     # Each entry: (time, step, total_gbe, area_weighted_mean_gbe)
     gbe_time_series: list[tuple[float, int, float, float]] = []
+    # CDF accumulator — one entry per frame in gbe_frames (--final only)
+    # Each entry: (time, step, gbe_sorted, cdf_vals)
+    gbe_cdf_by_frame: list[tuple[float, int, np.ndarray, np.ndarray]] = []
 
     for frame_idx, frame in enumerate(gbe_frames):
         _, _, frame_avg_gbe = compute_gbe_per_pixel(
@@ -4628,6 +4664,26 @@ def main() -> None:
             if frame_total_area > 0
             else float("nan")
         )
+        # -- Area-weighted CDF accumulation for --final output ---------------
+        if args.final:
+            _gbe_vals = np.array(
+                [v for pid, v in frame_avg_gbe.items() if pid in frame.gb_dict],
+                dtype=np.float64,
+            )
+            _raw_areas = np.array(
+                [float(frame.gb_dict[pid][4]) for pid in frame_avg_gbe
+                 if pid in frame.gb_dict],
+                dtype=np.float64,
+            )
+            if len(_gbe_vals) > 0 and _raw_areas.sum() > 0:
+                _sort_idx   = np.argsort(_gbe_vals)
+                _gbe_sorted = _gbe_vals[_sort_idx]
+                _area_sorted = _raw_areas[_sort_idx]
+                _cdf_vals   = np.cumsum(_area_sorted) / _area_sorted.sum()
+                gbe_cdf_by_frame.append(
+                    (frame.time, frame.step, _gbe_sorted, _cdf_vals)
+                )
+
         gbe_time_series.append((frame.time, frame.step, frame_total_gbe, frame_mean_gbe))
 
     tf(t0, log, "Per-frame avg curvature vs GBE collection: ")
@@ -4639,6 +4695,15 @@ def main() -> None:
             for i in selected_indices
         )
     )
+
+    # ── 4c  Final CSV — area-weighted GBE CDF per frame (--final) ──────────
+    if args.final and gbe_cdf_by_frame:
+        save_final_gbe_cdf_per_frame_csv(
+            gbe_cdf_by_frame = gbe_cdf_by_frame,
+            output_dir       = args.output_dir,
+            stem             = stem,
+            log              = log,
+        )
 
     if args.debug_plot:
         plot_gbe_debug(
