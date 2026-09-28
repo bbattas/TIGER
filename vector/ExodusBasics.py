@@ -74,6 +74,59 @@ class ExodusBasics:
 
         return x, y, z
 
+    def coords_xy_at_step(self, step: int) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Return nodal x/y coordinates at a given timestep, accounting for
+        displacement variables disp_x / disp_y if they are present in the file.
+
+        If disp_x / disp_y are nodal variables, the returned coordinates are:
+            x = coordx + disp_x[step]
+            y = coordy + disp_y[step]
+        Otherwise falls back to the static coordx / coordy.
+        """
+        self._require_open()
+        x = self.ds.variables["coordx"][:]
+        y = self.ds.variables["coordy"][:]
+
+        nod_vars = self.nodal_varnames()
+
+        if "disp_x" in nod_vars:
+            x = x + self.nodal_var_at_step("disp_x", step)
+        if "disp_y" in nod_vars:
+            y = y + self.nodal_var_at_step("disp_y", step)
+
+        return x, y
+
+
+    def coords_xyz_at_step(self, step: int) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Return nodal x/y/z coordinates at a given timestep, accounting for
+        displacement variables disp_x / disp_y / disp_z if they are present in the file.
+
+        If disp_x / disp_y are nodal variables, the returned coordinates are:
+            x = coordx + disp_x[step]
+            y = coordy + disp_y[step]
+        Otherwise falls back to the static coordx / coordy.
+        """
+        self._require_open()
+        x = self.ds.variables["coordx"][:]
+        y = self.ds.variables["coordy"][:]
+        if "coordz" in self.ds.variables:
+            z = self.ds.variables["coordz"][:]
+        else:
+            z = np.zeros_like(x)
+
+        nod_vars = self.nodal_varnames()
+
+        if "disp_x" in nod_vars:
+            x = x + self.nodal_var_at_step("disp_x", step)
+        if "disp_y" in nod_vars:
+            y = y + self.nodal_var_at_step("disp_y", step)
+        if "disp_z" in nod_vars:
+                    z = z + self.nodal_var_at_step("disp_z", step)
+
+        return x, y, z
+
     # ---- connectivity ----
     def connect_varnames(self) -> list[str]:
         """
@@ -369,7 +422,8 @@ class ExodusBasics:
 
         if kind == "nodal" and not elem_average:
             # Default nodal path — unchanged
-            x, y, z = self.coords_xyz()
+            # x, y, z = self.coords_xyz()
+            x, y, z = self.coords_xyz_at_step(step)
             c = self.nodal_var_at_step(name, step)
             return x, y, z, c
 
@@ -466,6 +520,7 @@ class ExodusBasics:
         zero_based_connect: bool = True,
         cache: bool = True,
         quantize_tol: float | None = None,
+        step: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute element representative x/y/z coordinates for element block `eb`.
@@ -493,7 +548,10 @@ class ExodusBasics:
         if cache and key in self._center_cache_3d:
             return self._center_cache_3d[key]
 
-        x, y, z = self.coords_xyz()
+        if step is not None:
+            x, y, z = self.coords_xyz_at_step(step)
+        else:
+            x, y, z = self.coords_xyz()
         conn = self.connectivity(which=eb, zero_based=zero_based_connect)
 
         # Gather element node coords (vectorized)
