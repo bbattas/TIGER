@@ -117,6 +117,358 @@ def discover_input_files(directory: Path) -> list[tuple[int, Path]]:
     return matches
 
 
+def load_ascii_cell_matrices(
+    path: Path,
+    variable_name: str,
+) -> list[np.ndarray]:
+    """
+    Load all matrices from a named Octave ASCII cell array.
+
+    Expected structure:
+
+        # name: eta
+        # type: cell
+        # rows: 1
+        # columns: 2
+        # name: <cell-element>
+        # type: matrix
+        # rows: 161
+        # columns: 161
+        ...
+    """
+    with path.open("r", encoding="utf-8") as stream:
+        lines = stream.readlines()
+
+    variable_start = None
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped.startswith("# name:"):
+            found_name = stripped.split(":", 1)[1].strip()
+
+            if found_name == variable_name:
+                variable_start = index
+                break
+
+    if variable_start is None:
+        raise KeyError(
+            f"{path}: cell variable {variable_name!r} was not found."
+        )
+
+    cell_type = None
+    cell_rows = None
+    cell_columns = None
+    search_start = None
+
+    for index in range(variable_start + 1, len(lines)):
+        stripped = lines[index].strip()
+
+        if stripped.startswith("# type:"):
+            cell_type = stripped.split(":", 1)[1].strip()
+
+        elif stripped.startswith("# rows:"):
+            cell_rows = int(stripped.split(":", 1)[1].strip())
+
+        elif stripped.startswith("# columns:"):
+            cell_columns = int(stripped.split(":", 1)[1].strip())
+            search_start = index + 1
+            break
+
+    if cell_type != "cell":
+        raise TypeError(
+            f"{path}: {variable_name!r} has type {cell_type!r}; "
+            "expected an Octave cell array."
+        )
+
+    if (
+        cell_rows is None
+        or cell_columns is None
+        or search_start is None
+    ):
+        raise ValueError(
+            f"{path}: incomplete cell metadata for {variable_name!r}."
+        )
+
+    expected_cell_count = cell_rows * cell_columns
+    matrices: list[np.ndarray] = []
+    index = search_start
+
+    while index < len(lines) and len(matrices) < expected_cell_count:
+        stripped = lines[index].strip()
+
+        if stripped != "# name: <cell-element>":
+            index += 1
+            continue
+
+        matrix_type = None
+        matrix_rows = None
+        matrix_columns = None
+        data_start = None
+        index += 1
+
+        while index < len(lines):
+            stripped = lines[index].strip()
+
+            if stripped.startswith("# type:"):
+                matrix_type = stripped.split(":", 1)[1].strip()
+
+            elif stripped.startswith("# rows:"):
+                matrix_rows = int(
+                    stripped.split(":", 1)[1].strip()
+                )
+
+            elif stripped.startswith("# columns:"):
+                matrix_columns = int(
+                    stripped.split(":", 1)[1].strip()
+                )
+                data_start = index + 1
+                break
+
+            index += 1
+
+        if matrix_type != "matrix":
+            raise TypeError(
+                f"{path}: cell element {len(matrices)} in "
+                f"{variable_name!r} has type {matrix_type!r}; "
+                "expected 'matrix'."
+            )
+
+        if (
+            matrix_rows is None
+            or matrix_columns is None
+            or data_start is None
+        ):
+            raise ValueError(
+                f"{path}: incomplete metadata for cell element "
+                f"{len(matrices)} in {variable_name!r}."
+            )
+
+        data_rows = []
+        index = data_start
+
+        while index < len(lines) and len(data_rows) < matrix_rows:
+            stripped = lines[index].strip()
+
+            if not stripped:
+                index += 1
+                continue
+
+            if stripped.startswith("#"):
+                raise ValueError(
+                    f"{path}: cell element {len(matrices)} ended "
+                    f"after {len(data_rows)} rows; expected "
+                    f"{matrix_rows}."
+                )
+
+            values = np.fromstring(
+                stripped,
+                sep=" ",
+                dtype=np.float64,
+            )
+
+            if values.size != matrix_columns:
+                raise ValueError(
+                    f"{path}: cell element {len(matrices)}, row "
+                    f"{len(data_rows)}, expected {matrix_columns} "
+                    f"columns but found {values.size}."
+                )
+
+            data_rows.append(values)
+            index += 1
+
+        if len(data_rows) != matrix_rows:
+            raise ValueError(
+                f"{path}: cell element {len(matrices)} declares "
+                f"{matrix_rows} rows, but only "
+                f"{len(data_rows)} were read."
+            )
+
+        matrix = np.vstack(data_rows)
+
+        if not np.all(np.isfinite(matrix)):
+            raise ValueError(
+                f"{path}: cell element {len(matrices)} in "
+                f"{variable_name!r} contains NaN or infinite values."
+            )
+
+        matrices.append(matrix)
+
+    if len(matrices) != expected_cell_count:
+        raise ValueError(
+            f"{path}: {variable_name!r} declares "
+            f"{expected_cell_count} cell elements, but only "
+            f"{len(matrices)} were read."
+        )
+
+    return matrices
+
+
+def element_grid_to_nodal_grid(
+    element_values: np.ndarray,
+) -> np.ndarray:
+    """
+    Map an (ny, nx) element-grid field onto the script's
+    (ny + 1, nx + 1) node grid.
+
+    Existing values are placed on corresponding lower-left nodes.
+    The last row and column are extended to the outer boundary.
+    """
+    return np.pad(
+        element_values,
+        pad_width=((0, 1), (0, 1)),
+        mode="edge",
+    )
+
+
+def validate_eta_fields(
+    fields: list[np.ndarray],
+    path: Path,
+) -> list[np.ndarray]:
+    validated = []
+
+    for index, field in enumerate(fields):
+        field = np.squeeze(np.asarray(field))
+
+        if field.ndim != 2:
+            raise ValueError(
+                f"{path}: eta cell {index} must be two-dimensional; "
+                f"found shape {field.shape}."
+            )
+
+        if not np.issubdtype(field.dtype, np.number):
+            raise TypeError(
+                f"{path}: eta cell {index} is not numeric."
+            )
+
+        if np.iscomplexobj(field):
+            raise TypeError(
+                f"{path}: eta cell {index} contains complex values."
+            )
+
+        field = np.asarray(field, dtype=np.float64)
+
+        if not np.all(np.isfinite(field)):
+            raise ValueError(
+                f"{path}: eta cell {index} contains NaN or "
+                "infinite values."
+            )
+
+        validated.append(field)
+
+    if not validated:
+        raise ValueError(f"{path}: eta contains no grain fields.")
+
+    return validated
+
+
+def load_eta_fields(path: Path) -> list[np.ndarray]:
+    """
+    Load the matrices stored in the MATLAB/Octave cell variable 'eta'.
+
+    Supports:
+      * MATLAB binary MAT files readable by scipy
+      * MATLAB v7.3 HDF5 MAT files
+      * Octave ASCII files
+    """
+    with path.open("rb") as stream:
+        signature = stream.read(128)
+
+    errors = []
+
+    # Octave text files should be sent directly to the ASCII parser.
+    if signature.lstrip().startswith(b"#"):
+        try:
+            return validate_eta_fields(
+                load_ascii_cell_matrices(path, "eta"),
+                path,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"{path}: failed to read eta from the Octave "
+                f"ASCII file: {error}"
+            ) from error
+
+    # Try ordinary MATLAB binary formats.
+    try:
+        contents = loadmat(
+            str(path),
+            variable_names=["eta"],
+            appendmat=False,
+            squeeze_me=True,
+            struct_as_record=False,
+        )
+
+        if "eta" not in contents:
+            available = sorted(
+                name for name in contents
+                if not name.startswith("__")
+            )
+            raise KeyError(
+                f"eta was not found; available variables: {available}"
+            )
+
+        eta = np.asarray(contents["eta"])
+
+        if eta.dtype != object:
+            raise TypeError(
+                f"eta is not a MATLAB cell array; "
+                f"found dtype {eta.dtype} and shape {eta.shape}"
+            )
+
+        # MATLAB cell arrays use column-major ordering.
+        fields = [
+            np.asarray(cell)
+            for cell in eta.ravel(order="F")
+        ]
+
+        return validate_eta_fields(fields, path)
+
+    except Exception as error:
+        errors.append(f"scipy.io.loadmat: {error}")
+
+    # Try MATLAB v7.3, which uses HDF5.
+    try:
+        import h5py
+
+        with h5py.File(path, "r") as matlab_file:
+            if "eta" not in matlab_file:
+                raise KeyError(
+                    "eta was not found; available variables: "
+                    f"{sorted(matlab_file.keys())}"
+                )
+
+            eta_dataset = matlab_file["eta"]
+            references = np.asarray(eta_dataset)
+
+            fields = []
+
+            # Reverse HDF5's representation of MATLAB dimensions.
+            for reference in references.T.ravel(order="C"):
+                if not reference:
+                    raise ValueError(
+                        "eta contains an empty cell."
+                    )
+
+                field = np.asarray(matlab_file[reference])
+
+                if field.ndim == 2:
+                    field = field.T
+
+                fields.append(field)
+
+        return validate_eta_fields(fields, path)
+
+    except Exception as error:
+        errors.append(f"h5py: {error}")
+
+    raise RuntimeError(
+        f"{path}: could not read eta. The file does not appear to "
+        "be a supported Octave ASCII, MATLAB binary, or MATLAB "
+        "v7.3 file.\n" + "\n".join(errors)
+    )
+
+
 def load_ascii_matrix(path: Path, variable_name: str) -> np.ndarray:
     """
     Load a named matrix from an Octave text-format file.
@@ -407,10 +759,27 @@ def create_exodus_file(
 ) -> None:
     first_step, first_path = frames[0]
     first_data = load_matlab_variable(first_path, matlab_variable)
+    # first_eta = load_ascii_cell_matrices(first_path, "eta")
+    first_eta = load_eta_fields(first_path)
 
     number_of_rows, number_of_columns = first_data.shape
+    number_of_grains = len(first_eta)
+
+    if number_of_grains == 0:
+        raise ValueError(
+            f"{first_path}: eta does not contain any grain fields."
+        )
+
+    for grain_index, grain_data in enumerate(first_eta):
+        if grain_data.shape != first_data.shape:
+            raise ValueError(
+                f"{first_path}: eta cell {grain_index} has shape "
+                f"{grain_data.shape}, but microstructure has shape "
+                f"{first_data.shape}."
+            )
+
     number_of_elements = number_of_rows * number_of_columns
-    number_of_nodes = (number_of_rows + 1) * (number_of_columns + 1)
+    number_of_nodes = ((number_of_rows + 1) * (number_of_columns + 1))
 
     coord_x, coord_y, connectivity = make_mesh(
         number_of_rows,
@@ -443,6 +812,7 @@ def create_exodus_file(
         exodus.createDimension("num_el_in_blk1", number_of_elements)
         exodus.createDimension("num_nod_per_el1", 4)
         exodus.createDimension("num_elem_var", 1)
+        exodus.createDimension("num_nod_var", number_of_grains)
 
         # Time.
         time_whole = exodus.createVariable(
@@ -535,28 +905,82 @@ def create_exodus_file(
             ("time_step", "num_el_in_blk1"),
         )
 
+        # Declare the nodal grain order-parameter variables:
+        # gr0, gr1, ..., grN.
+        nodal_names = exodus.createVariable(
+            "name_nod_var",
+            "S1",
+            ("num_nod_var", "len_string"),
+        )
+
+        nodal_variables = []
+
+        for grain_index in range(number_of_grains):
+            grain_name = f"gr{grain_index}"
+            write_text_row(nodal_names, grain_index, grain_name)
+
+            nodal_variable = exodus.createVariable(
+                f"vals_nod_var{grain_index + 1}",
+                "f8",
+                ("time_step", "num_nodes"),
+            )
+            nodal_variables.append(nodal_variable)
+
         # Write all frames in ascending nn{step} order.
         for frame_index, (step, input_path) in enumerate(frames):
             if frame_index == 0:
                 data = first_data
+                eta_fields = first_eta
             else:
                 data = load_matlab_variable(
                     input_path,
                     matlab_variable,
                 )
+                # eta_fields = load_ascii_cell_matrices(
+                #     input_path,
+                #     "eta",
+                # )
+                eta_fields = load_eta_fields(input_path)
 
             if data.shape != first_data.shape:
                 raise ValueError(
-                    f"{input_path}: shape {data.shape} does not match "
-                    f"the first frame's shape {first_data.shape}."
+                    f"{input_path}: microstructure shape "
+                    f"{data.shape} does not match the first frame's "
+                    f"shape {first_data.shape}."
                 )
 
-            time_whole[frame_index] = timestep_size * step
+            if len(eta_fields) != number_of_grains:
+                raise ValueError(
+                    f"{input_path}: eta contains {len(eta_fields)} "
+                    f"grain fields, but the first frame contains "
+                    f"{number_of_grains}."
+                )
+
+            time_value = timestep_size * step
+            time_whole[frame_index] = time_value
+
+            # Elemental variable.
             unique_grains[frame_index, :] = data.ravel(order="C")
+
+            # Nodal variables.
+            for grain_index, eta_field in enumerate(eta_fields):
+                if eta_field.shape != first_data.shape:
+                    raise ValueError(
+                        f"{input_path}: eta cell {grain_index} has "
+                        f"shape {eta_field.shape}; expected "
+                        f"{first_data.shape}."
+                    )
+
+                nodal_grid = element_grid_to_nodal_grid(eta_field)
+
+                nodal_variables[grain_index][frame_index, :] = (
+                    nodal_grid.ravel(order="C")
+                )
 
             print(
                 f"Wrote frame {frame_index + 1}/{len(frames)}: "
-                f"step={step}, time={timestep_size * step:g}, "
+                f"step={step}, time={time_value:g}, "
+                f"grains={number_of_grains}, "
                 f"file={input_path.name}"
             )
 
