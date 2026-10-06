@@ -39,6 +39,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.path import Path as MplPath
 import numpy as np
 from tqdm import tqdm
 
@@ -182,6 +183,52 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    geometry = parser.add_argument_group("geometry measurement")
+
+    geometry.add_argument(
+        "--geometry-source",
+        choices=("unique-grains", "order-parameter"),
+        default="unique-grains",
+        help=(
+            "Field used to calculate center-grain area, x length, y length, "
+            "and aspect ratio. Inclination always uses unique_grains."
+        ),
+    )
+    geometry.add_argument(
+        "--eta0-variable",
+        default="gr0",
+        help=(
+            "Exodus variable containing the first order parameter when "
+            "--geometry-source=order-parameter."
+        ),
+    )
+    geometry.add_argument(
+        "--eta1-variable",
+        default="gr1",
+        help=(
+            "Exodus variable containing the second order parameter when "
+            "--geometry-source=order-parameter."
+        ),
+    )
+    geometry.add_argument(
+        "--contour-level",
+        type=float,
+        default=0.5,
+        help=(
+            "Contour level applied to eta0^2/(eta0^2+eta1^2) when using "
+            "order-parameter geometry."
+        ),
+    )
+    geometry.add_argument(
+        "--order-parameter-epsilon",
+        type=float,
+        default=1.0e-14,
+        help=(
+            "Minimum eta0^2+eta1^2 denominator accepted when constructing "
+            "the order-parameter ratio."
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.element_block < 1:
@@ -198,6 +245,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--plot-dpi must be at least 1.")
     if args.debug and args.skip_inclination:
         parser.error("--debug cannot be combined with --skip-inclination.")
+    if not 0.0 < args.contour_level < 1.0:
+        parser.error("--contour-level must be between 0 and 1.")
+    if args.order_parameter_epsilon <= 0.0:
+        parser.error("--order-parameter-epsilon must be positive.")
 
     return args
 
@@ -269,6 +320,288 @@ def normalize_step(step: int, number_of_steps: int) -> int:
         )
 
     return normalized
+
+
+def read_scalar_variable(
+    exo: ExodusBasics,
+    variable: str,
+    step: int,
+    element_block: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Read a nodal or elemental scalar variable and its physical coordinates.
+
+    Nodal variables are returned at nodal coordinates. Elemental variables
+    are returned at element-center coordinates.
+
+    Returns
+    -------
+    x, y, values
+        One-dimensional arrays with matching lengths.
+    """
+
+    kind = exo.var_kind(variable)
+
+    if kind == "nodal":
+        x, y = exo.coords_xy_at_step(step)
+        values = exo.nodal_var_at_step(variable, step)
+    else:
+        x, y = exo.element_centers_xy(
+            eb=element_block,
+            method="mean",
+        )
+        values = exo.elem_var_at_step(
+            variable,
+            step=step,
+            eb=element_block,
+        )
+
+    return (
+        np.asarray(x, dtype=float),
+        np.asarray(y, dtype=float),
+        np.asarray(values, dtype=float),
+    )
+
+
+def scalar_values_to_grid(
+    values: np.ndarray,
+    row_indices: np.ndarray,
+    column_indices: np.ndarray,
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Map scalar nodal or elemental values onto a structured grid."""
+
+    values = np.asarray(values, dtype=float)
+
+    if values.size != row_indices.size:
+        raise ValueError(
+            "Scalar field size does not match its structured-grid mapping: "
+            f"{values.size} values versus {row_indices.size} positions."
+        )
+
+    grid = np.full(shape, np.nan, dtype=float)
+    grid[row_indices, column_indices] = values
+    return grid
+
+
+def calculate_order_parameter_ratio(
+    eta0: np.ndarray,
+    eta1: np.ndarray,
+    epsilon: float,
+) -> np.ndarray:
+    """
+    Calculate eta0^2 / (eta0^2 + eta1^2).
+
+    Grid locations with a denominator smaller than ``epsilon`` are assigned
+    NaN and excluded from contour interpolation.
+    """
+
+    eta0 = np.asarray(eta0, dtype=float)
+    eta1 = np.asarray(eta1, dtype=float)
+
+    if eta0.shape != eta1.shape:
+        raise ValueError(
+            "The two order-parameter grids must have matching shapes; "
+            f"found {eta0.shape} and {eta1.shape}."
+        )
+
+    eta0_squared = np.square(eta0)
+    eta1_squared = np.square(eta1)
+    denominator = eta0_squared + eta1_squared
+
+    ratio = np.full(eta0.shape, np.nan, dtype=float)
+    valid = (
+        np.isfinite(eta0_squared)
+        & np.isfinite(eta1_squared)
+        & np.isfinite(denominator)
+        & (denominator > epsilon)
+    )
+
+    ratio[valid] = eta0_squared[valid] / denominator[valid]
+    return ratio
+
+
+def polygon_area(vertices: np.ndarray) -> float:
+    """Calculate the unsigned area of a two-dimensional polygon."""
+
+    vertices = np.asarray(vertices, dtype=float)
+
+    if vertices.ndim != 2 or vertices.shape[0] < 3 or vertices.shape[1] != 2:
+        return 0.0
+
+    x = vertices[:, 0]
+    y = vertices[:, 1]
+
+    return 0.5 * abs(
+        float(
+            np.dot(x, np.roll(y, -1))
+            - np.dot(y, np.roll(x, -1))
+        )
+    )
+
+
+def close_contour(
+    vertices: np.ndarray,
+    tolerance: float,
+) -> np.ndarray | None:
+    """
+    Return a closed contour polygon, or None if the segment is genuinely open.
+
+    Matplotlib normally repeats the first contour point at the end of a closed
+    segment, but this function also accepts endpoints separated only by
+    numerical roundoff.
+    """
+
+    vertices = np.asarray(vertices, dtype=float)
+
+    if vertices.ndim != 2 or vertices.shape[0] < 3 or vertices.shape[1] != 2:
+        return None
+
+    finite = np.all(np.isfinite(vertices), axis=1)
+    vertices = vertices[finite]
+
+    if vertices.shape[0] < 3:
+        return None
+
+    endpoint_distance = float(np.linalg.norm(vertices[-1] - vertices[0]))
+
+    if endpoint_distance <= tolerance:
+        vertices = vertices.copy()
+        vertices[-1] = vertices[0]
+    else:
+        return None
+
+    if polygon_area(vertices) <= 0.0:
+        return None
+
+    return vertices
+
+
+def extract_center_contour(
+    ratio_grid: np.ndarray,
+    x_axis: np.ndarray,
+    y_axis: np.ndarray,
+    level: float,
+) -> np.ndarray | None:
+    """
+    Extract the closed contour surrounding the center of the domain.
+
+    If numerical noise prevents a contour from being identified as containing
+    the exact domain center, the largest closed contour is used as a fallback.
+
+    Returns
+    -------
+    ndarray or None
+        Array with shape ``(N, 2)`` containing physical ``(x, y)`` contour
+        coordinates.
+    """
+
+    ratio_grid = np.asarray(ratio_grid, dtype=float)
+    x_axis = np.asarray(x_axis, dtype=float)
+    y_axis = np.asarray(y_axis, dtype=float)
+
+    finite = ratio_grid[np.isfinite(ratio_grid)]
+
+    if finite.size == 0:
+        return None
+
+    if level < float(np.min(finite)) or level > float(np.max(finite)):
+        return None
+
+    figure, axis = plt.subplots()
+
+    try:
+        contour_set = axis.contour(
+            x_axis,
+            y_axis,
+            np.ma.masked_invalid(ratio_grid),
+            levels=[level],
+        )
+        segments = contour_set.allsegs[0]
+    finally:
+        plt.close(figure)
+
+    if not segments:
+        return None
+
+    coordinate_scale = max(
+        float(np.ptp(x_axis)),
+        float(np.ptp(y_axis)),
+        1.0,
+    )
+    closure_tolerance = 1.0e-8 * coordinate_scale
+
+    closed_segments = []
+
+    for segment in segments:
+        polygon = close_contour(segment, closure_tolerance)
+
+        if polygon is not None:
+            closed_segments.append(polygon)
+
+    if not closed_segments:
+        return None
+
+    center_point = (
+        0.5 * (float(np.min(x_axis)) + float(np.max(x_axis))),
+        0.5 * (float(np.min(y_axis)) + float(np.max(y_axis))),
+    )
+
+    containing_segments = [
+        polygon
+        for polygon in closed_segments
+        if MplPath(polygon).contains_point(
+            center_point,
+            radius=closure_tolerance,
+        )
+    ]
+
+    candidates = containing_segments if containing_segments else closed_segments
+
+    # The center grain should be represented by the center-containing curve.
+    # Selecting the largest candidate suppresses tiny contours caused by noise.
+    return max(candidates, key=polygon_area)
+
+
+def measure_contour_geometry(
+    contour_vertices: np.ndarray | None,
+) -> tuple[
+    float,
+    float,
+    float,
+    float,
+    tuple[float, float, float, float] | None,
+]:
+    """
+    Measure area and bounding dimensions from an interpolated contour.
+
+    Returns
+    -------
+    area, x_length, y_length, aspect_ratio, bounds
+        ``bounds`` is ``(x_min, x_max, y_min, y_max)``.
+    """
+
+    if contour_vertices is None or len(contour_vertices) < 3:
+        return 0.0, 0.0, 0.0, math.nan, None
+
+    contour_vertices = np.asarray(contour_vertices, dtype=float)
+
+    x = contour_vertices[:, 0]
+    y = contour_vertices[:, 1]
+
+    x_min = float(np.min(x))
+    x_max = float(np.max(x))
+    y_min = float(np.min(y))
+    y_max = float(np.max(y))
+
+    area = polygon_area(contour_vertices)
+    x_length = x_max - x_min
+    y_length = y_max - y_min
+    aspect_ratio = x_length / y_length if y_length > 0.0 else math.nan
+
+    bounds = (x_min, x_max, y_min, y_max)
+
+    return area, x_length, y_length, aspect_ratio, bounds
 
 
 def categorical_ids(values: np.ndarray) -> np.ndarray:
@@ -784,6 +1117,7 @@ def inclination_histogram(
 def write_metrics_csv(
     output_path: Path,
     rows: Iterable[tuple[int, float, float, float, float, float]],
+    geometry_source: str,
 ) -> None:
     """Write center-grain geometric measurements."""
 
@@ -797,9 +1131,12 @@ def write_metrics_csv(
                 "x_length",
                 "y_length",
                 "aspect_ratio_x_over_y",
+                "geometry_source",
             ]
         )
-        writer.writerows(rows)
+
+        for row in rows:
+            writer.writerow([*row, geometry_source])
 
 
 def write_inclination_csv(
@@ -859,105 +1196,78 @@ def draw_length_overlay(
     frame: dict,
     target_id: int,
 ) -> None:
-    """Draw a grain map with measured x and y dimensions overlaid."""
+    """
+    Draw the selected geometry field with measured dimensions overlaid.
 
-    grain_grid = frame["grain_grid"]
-    x_axis = frame["x_axis"]
-    y_axis = frame["y_axis"]
+    For unique-grains geometry, the center-grain categorical mask is shown.
+    For order-parameter geometry, the continuous ratio field and interpolated
+    contour are shown.
+    """
+
+    geometry_source = frame["geometry_source"]
     bounds = frame["bounds"]
 
-    center_mask = (grain_grid == target_id).astype(float)
+    if geometry_source == "order-parameter":
+        geometry_x_axis = frame["geometry_x_axis"]
+        geometry_y_axis = frame["geometry_y_axis"]
+        ratio_grid = frame["ratio_grid"]
+        contour_vertices = frame["contour_vertices"]
+        contour_level = frame["contour_level"]
 
-    axis.pcolormesh(
-        x_axis,
-        y_axis,
-        center_mask,
-        shading="nearest",
-        cmap="Greys",
-        vmin=0.0,
-        vmax=1.0,
-    )
-
-    if bounds is not None:
-        x_min, x_max, y_min, y_max = bounds
-        x_mid = 0.5 * (x_min + x_max)
-        y_mid = 0.5 * (y_min + y_max)
-
-        # Horizontal x-length measurement.
-        axis.annotate(
-            "",
-            xy=(x_max, y_mid),
-            xytext=(x_min, y_mid),
-            arrowprops={
-                "arrowstyle": "<->",
-                "color": "tab:red",
-                "linewidth": 2.0,
-            },
-        )
-        axis.text(
-            x_mid,
-            y_mid,
-            f"  x = {x_max - x_min:.5g}",
-            color="tab:red",
-            fontsize=9,
-            ha="center",
-            va="bottom",
-            bbox={
-                "facecolor": "white",
-                "edgecolor": "none",
-                "alpha": 0.75,
-            },
+        image = axis.pcolormesh(
+            geometry_x_axis,
+            geometry_y_axis,
+            ratio_grid,
+            shading="nearest",
+            cmap="viridis",
+            vmin=0.0,
+            vmax=1.0,
+            rasterized=True,
         )
 
-        # Vertical y-length measurement.
-        axis.annotate(
-            "",
-            xy=(x_mid, y_max),
-            xytext=(x_mid, y_min),
-            arrowprops={
-                "arrowstyle": "<->",
-                "color": "tab:blue",
-                "linewidth": 2.0,
-            },
-        )
-        axis.text(
-            x_mid,
-            y_mid,
-            f"  y = {y_max - y_min:.5g}",
-            color="tab:blue",
-            fontsize=9,
-            ha="left",
-            va="center",
-            rotation=90,
-            bbox={
-                "facecolor": "white",
-                "edgecolor": "none",
-                "alpha": 0.75,
-            },
+        if contour_vertices is not None:
+            axis.plot(
+                contour_vertices[:, 0],
+                contour_vertices[:, 1],
+                color="white",
+                linewidth=3.0,
+                label=(
+                    r"$\eta_0^2/(\eta_0^2+\eta_1^2)"
+                    f"={contour_level:g}$"
+                ),
+                zorder=4,
+            )
+            axis.plot(
+                contour_vertices[:, 0],
+                contour_vertices[:, 1],
+                color="black",
+                linewidth=1.0,
+                zorder=5,
+            )
+
+        axis.figure.colorbar(
+            image,
+            ax=axis,
+            fraction=0.046,
+            pad=0.04,
+            label=r"$\eta_0^2/(\eta_0^2+\eta_1^2)$",
         )
 
-        # Show the bounding box itself as an additional consistency check.
-        rectangle = plt.Rectangle(
-            (x_min, y_min),
-            x_max - x_min,
-            y_max - y_min,
-            fill=False,
-            edgecolor="tab:green",
-            linestyle="--",
-            linewidth=1.2,
-            label="Measured bounding box",
+        x_limits = (
+            float(np.min(geometry_x_axis)),
+            float(np.max(geometry_x_axis)),
         )
-        axis.add_patch(rectangle)
+        y_limits = (
+            float(np.min(geometry_y_axis)),
+            float(np.max(geometry_y_axis)),
+        )
+        source_title = "Order-parameter contour"
 
-    axis.set_title(
-        f"Grain dimensions: step {frame['step']}, "
-        f"time={frame['time']:.5g}"
-    )
-    axis.set_xlabel("x")
-    axis.set_ylabel("y")
-    axis.set_aspect("equal")
-    axis.set_xlim(float(np.min(x_axis)), float(np.max(x_axis)))
-    axis.set_ylim(float(np.min(y_axis)), float(np.max(y_axis)))
+    else:
+        grain_grid = frame["grain_grid"]
+        x_axis = frame["x_axis"]
+        y_axis = frame["y_axis"]
+    axis.set_ylim(*y_limits)
 
 
 def draw_quiver_overlay(
@@ -1152,21 +1462,49 @@ def save_debugging_plot(
     figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
 
-
 def analyze_file(
     exodus_path: Path,
     args: argparse.Namespace,
     log: logging.Logger,
 ) -> None:
-    """Analyze one Exodus file and write its measurement products."""
+    """
+    Analyze one bicrystal Exodus file and write its output products.
+
+    Geometry measurements can be calculated from either:
+
+    1. ``unique_grains`` element membership, or
+    2. the interpolated order-parameter contour
+
+           eta0^2 / (eta0^2 + eta1^2) = contour_level.
+
+    Inclination analysis always uses the smoothed ``unique_grains`` field,
+    regardless of the selected geometry source.
+
+    Parameters
+    ----------
+    exodus_path
+        Path to the ExodusII file.
+    args
+        Parsed command-line arguments.
+    log
+        Configured logger.
+    """
 
     stem = exodus_stem(exodus_path)
-    metrics_path = args.output_dir / f"{stem}_bicrystal_metrics.csv"
+    geometry_suffix = args.geometry_source.replace("-", "_")
+
+    metrics_path = (
+        args.output_dir
+        / f"{stem}_bicrystal_metrics_{geometry_suffix}.csv"
+    )
     inclination_path = args.output_dir / f"{stem}_inclination.csv"
 
     log.warning(f"Processing {exodus_path}")
 
     with ExodusBasics(str(exodus_path)) as exo:
+        # ------------------------------------------------------------------
+        # Read general mesh and time information.
+        # ------------------------------------------------------------------
         times = np.asarray(exo.time(), dtype=float)
 
         if times.size == 0:
@@ -1179,6 +1517,7 @@ def analyze_file(
             ),
             dtype=np.int64,
         )
+
         x_nodes, y_nodes = exo.coords_xy()
         x_nodes = np.asarray(x_nodes, dtype=float)
         y_nodes = np.asarray(y_nodes, dtype=float)
@@ -1195,6 +1534,7 @@ def analyze_file(
             element_type,
             connectivity.shape[1],
         )
+
         element_areas = calculate_element_areas(
             x_nodes,
             y_nodes,
@@ -1202,6 +1542,12 @@ def analyze_file(
             corners,
         )
 
+        # ------------------------------------------------------------------
+        # Read initial unique_grains and identify the center-grain ID.
+        #
+        # This is always required because inclination uses unique_grains even
+        # when area and aspect ratio use the order-parameter contour.
+        # ------------------------------------------------------------------
         initial_ids = read_element_grain_ids(
             exo,
             args.variable,
@@ -1211,32 +1557,50 @@ def analyze_file(
         )
 
         initial_unique_ids = np.unique(initial_ids)
+
         if initial_unique_ids.size != 2:
             raise ValueError(
-                f"Expected two grain IDs at timestep zero, but found "
+                "Expected exactly two grain IDs at timestep zero, but found "
                 f"{initial_unique_ids.tolist()}."
             )
 
         target_id = (
             int(args.grain_id)
             if args.grain_id is not None
-            else choose_center_grain(initial_ids, x_centers, y_centers)
+            else choose_center_grain(
+                initial_ids,
+                x_centers,
+                y_centers,
+            )
         )
 
         if target_id not in initial_unique_ids:
             raise ValueError(
-                f"Requested center-grain ID {target_id} is absent at timestep "
-                f"zero. Available IDs: {initial_unique_ids.tolist()}."
+                f"Requested center-grain ID {target_id} is absent at "
+                f"timestep zero. Available IDs are "
+                f"{initial_unique_ids.tolist()}."
             )
 
         log.info(f"Element type: {element_type}")
+        log.info(f"unique_grains variable: {args.variable}")
         log.info(f"Variable kind: {exo.var_kind(args.variable)}")
         log.info(f"Center-grain ID: {target_id}")
+        log.info(f"Geometry source: {args.geometry_source}")
         log.info(f"Timesteps: {times.size}")
 
-        row_indices = column_indices = None
-        x_axis = y_axis = None
-        dx = dy = None
+        # ------------------------------------------------------------------
+        # Prepare the structured-grid mapping used for unique_grains
+        # smoothing and inclination.
+        #
+        # It is also required by the debugging quiver plots.
+        # ------------------------------------------------------------------
+        row_indices = None
+        column_indices = None
+        x_axis = None
+        y_axis = None
+        dx = None
+        dy = None
+        grain_grid_shape = None
 
         if not args.skip_inclination:
             (
@@ -1249,17 +1613,134 @@ def analyze_file(
                 y_centers,
                 args.grid_tol,
             )
+
+            grain_grid_shape = (
+                len(y_axis),
+                len(x_axis),
+            )
+
             dx = representative_spacing(x_axis, "x")
             dy = representative_spacing(y_axis, "y")
 
             log.info(
-                f"Structured grid: {len(y_axis)} rows x {len(x_axis)} columns"
+                f"unique_grains structured grid: "
+                f"{grain_grid_shape[0]} rows x "
+                f"{grain_grid_shape[1]} columns"
             )
-            log.info(f"Physical spacing: dx={dx:g}, dy={dy:g}")
+            log.info(f"Physical grid spacing: dx={dx:g}, dy={dy:g}")
 
-        plot_step = normalize_step(args.plot_step, len(times))
+        # ------------------------------------------------------------------
+        # Prepare the optional order-parameter structured-grid mapping.
+        #
+        # The order parameters may be nodal or elemental. This mapping is
+        # separate from the element-centered unique_grains mapping.
+        # ------------------------------------------------------------------
+        eta_row_indices = None
+        eta_column_indices = None
+        eta_x_axis = None
+        eta_y_axis = None
+        eta_shape = None
+
+        initial_eta0_values = None
+        initial_eta1_values = None
+
+        if args.geometry_source == "order-parameter":
+            (
+                eta0_x,
+                eta0_y,
+                initial_eta0_values,
+            ) = read_scalar_variable(
+                exo,
+                args.eta0_variable,
+                step=0,
+                element_block=args.element_block,
+            )
+
+            (
+                eta1_x,
+                eta1_y,
+                initial_eta1_values,
+            ) = read_scalar_variable(
+                exo,
+                args.eta1_variable,
+                step=0,
+                element_block=args.element_block,
+            )
+
+            if initial_eta0_values.shape != initial_eta1_values.shape:
+                raise ValueError(
+                    f"{args.eta0_variable!r} and "
+                    f"{args.eta1_variable!r} contain different numbers "
+                    "of values."
+                )
+
+            if eta0_x.shape != eta1_x.shape or eta0_y.shape != eta1_y.shape:
+                raise ValueError(
+                    f"{args.eta0_variable!r} and "
+                    f"{args.eta1_variable!r} are defined on grids with "
+                    "different shapes."
+                )
+
+            if not (
+                np.allclose(eta0_x, eta1_x)
+                and np.allclose(eta0_y, eta1_y)
+            ):
+                raise ValueError(
+                    f"{args.eta0_variable!r} and "
+                    f"{args.eta1_variable!r} are not defined at the same "
+                    "physical coordinates."
+                )
+
+            (
+                eta_row_indices,
+                eta_column_indices,
+                eta_x_axis,
+                eta_y_axis,
+            ) = make_structured_grid_mapping(
+                eta0_x,
+                eta0_y,
+                args.grid_tol,
+            )
+
+            eta_shape = (
+                len(eta_y_axis),
+                len(eta_x_axis),
+            )
+
+            log.info(
+                "Order-parameter geometry enabled using "
+                f"{args.eta0_variable!r} and "
+                f"{args.eta1_variable!r}."
+            )
+            log.info(
+                f"Order-parameter grid: "
+                f"{eta_shape[0]} rows x {eta_shape[1]} columns"
+            )
+            log.info(
+                "Geometry contour: "
+                f"{args.eta0_variable}^2 / "
+                f"({args.eta0_variable}^2 + "
+                f"{args.eta1_variable}^2) = "
+                f"{args.contour_level:g}"
+            )
+
+        # ------------------------------------------------------------------
+        # Select the timestep used for the standalone polar plot.
+        # ------------------------------------------------------------------
+        plot_step = None
+
+        if not args.skip_inclination:
+            plot_step = normalize_step(
+                args.plot_step,
+                len(times),
+            )
+
+        # ------------------------------------------------------------------
+        # Prepare output storage.
+        # ------------------------------------------------------------------
         metrics_rows = []
         inclination_rows = []
+
         plot_angles = None
         plot_density = None
 
@@ -1267,6 +1748,7 @@ def analyze_file(
         debug_steps = {0, len(times) - 1}
 
         frame_indices = range(len(times))
+
         if not args.verbose:
             frame_indices = tqdm(
                 frame_indices,
@@ -1275,7 +1757,16 @@ def analyze_file(
                 unit="step",
             )
 
+        # ------------------------------------------------------------------
+        # Process every timestep.
+        # ------------------------------------------------------------------
         for step in frame_indices:
+            # --------------------------------------------------------------
+            # Read unique_grains.
+            #
+            # This is required at every timestep for inclination, even when
+            # contour geometry is selected.
+            # --------------------------------------------------------------
             element_ids = (
                 initial_ids
                 if step == 0
@@ -1289,20 +1780,115 @@ def analyze_file(
             )
 
             unique_ids = np.unique(element_ids)
+
             if unique_ids.size > 2:
                 raise ValueError(
                     f"Timestep {step} contains more than two grain IDs: "
                     f"{unique_ids.tolist()}."
                 )
 
-            area, x_length, y_length, aspect_ratio = measure_center_grain(
-                element_ids,
-                target_id,
-                element_areas,
-                x_nodes,
-                y_nodes,
-                connectivity,
-            )
+            # These remain None when unique_grains geometry is selected.
+            ratio_grid = None
+            contour_vertices = None
+
+            # --------------------------------------------------------------
+            # Measure geometry using the selected method.
+            # --------------------------------------------------------------
+            if args.geometry_source == "order-parameter":
+                if step == 0:
+                    eta0_values = initial_eta0_values
+                    eta1_values = initial_eta1_values
+                else:
+                    _, _, eta0_values = read_scalar_variable(
+                        exo,
+                        args.eta0_variable,
+                        step=step,
+                        element_block=args.element_block,
+                    )
+                    _, _, eta1_values = read_scalar_variable(
+                        exo,
+                        args.eta1_variable,
+                        step=step,
+                        element_block=args.element_block,
+                    )
+
+                if eta0_values.shape != initial_eta0_values.shape:
+                    raise ValueError(
+                        f"{args.eta0_variable!r} changes size at "
+                        f"timestep {step}."
+                    )
+
+                if eta1_values.shape != initial_eta1_values.shape:
+                    raise ValueError(
+                        f"{args.eta1_variable!r} changes size at "
+                        f"timestep {step}."
+                    )
+
+                eta0_grid = scalar_values_to_grid(
+                    eta0_values,
+                    eta_row_indices,
+                    eta_column_indices,
+                    eta_shape,
+                )
+
+                eta1_grid = scalar_values_to_grid(
+                    eta1_values,
+                    eta_row_indices,
+                    eta_column_indices,
+                    eta_shape,
+                )
+
+                ratio_grid = calculate_order_parameter_ratio(
+                    eta0_grid,
+                    eta1_grid,
+                    args.order_parameter_epsilon,
+                )
+
+                contour_vertices = extract_center_contour(
+                    ratio_grid,
+                    eta_x_axis,
+                    eta_y_axis,
+                    args.contour_level,
+                )
+
+                (
+                    area,
+                    x_length,
+                    y_length,
+                    aspect_ratio,
+                    bounds,
+                ) = measure_contour_geometry(contour_vertices)
+
+                if contour_vertices is None:
+                    log.warning(
+                        f"Step {step}: no closed center contour was found "
+                        f"at level {args.contour_level:g}. Geometry values "
+                        "were written as zero or NaN."
+                    )
+
+            else:
+                (
+                    area,
+                    x_length,
+                    y_length,
+                    aspect_ratio,
+                ) = measure_center_grain(
+                    element_ids,
+                    target_id,
+                    element_areas,
+                    x_nodes,
+                    y_nodes,
+                    connectivity,
+                )
+
+                bounds = center_grain_bounds(
+                    element_ids,
+                    target_id,
+                    x_nodes,
+                    y_nodes,
+                    connectivity,
+                )
+
             metrics_rows.append(
                 (
                     step,
@@ -1315,27 +1901,27 @@ def analyze_file(
             )
 
             log.info(
-                f"Step {step}: time={times[step]:g}, area={area:g}, "
-                f"x_length={x_length:g}, y_length={y_length:g}, "
+                f"Step {step}: time={times[step]:g}, "
+                f"geometry={args.geometry_source}, "
+                f"area={area:g}, "
+                f"x_length={x_length:g}, "
+                f"y_length={y_length:g}, "
                 f"aspect_ratio={aspect_ratio:g}"
             )
 
+            # Geometry calculations are complete, so inclination may now be
+            # skipped without affecting the metrics CSV.
             if args.skip_inclination:
                 continue
 
+            # --------------------------------------------------------------
+            # Map unique_grains to the structured grid and smooth it.
+            # --------------------------------------------------------------
             grain_grid = element_ids_to_grid(
                 element_ids,
                 row_indices,
                 column_indices,
-                (len(y_axis), len(x_axis)),
-            )
-
-            bounds = center_grain_bounds(
-                element_ids,
-                target_id,
-                x_nodes,
-                y_nodes,
-                connectivity,
+                grain_grid_shape,
             )
 
             smoothed_field, sites = run_smoothing(
@@ -1345,20 +1931,9 @@ def analyze_file(
                 args.loop_times,
             )
 
-            if args.debug and step in debug_steps:
-                debug_frames[step] = {
-                    "step": step,
-                    "time": float(times[step]),
-                    "grain_grid": grain_grid.copy(),
-                    "smoothed_field": smoothed_field.copy(),
-                    "sites": sites.copy(),
-                    "bounds": bounds,
-                    "x_axis": x_axis.copy(),
-                    "y_axis": y_axis.copy(),
-                    "dx": float(dx),
-                    "dy": float(dy),
-                }
-
+            # --------------------------------------------------------------
+            # Extract and histogram outward interface-normal angles.
+            # --------------------------------------------------------------
             angles = extract_outward_angles(
                 smoothed_field,
                 sites,
@@ -1367,6 +1942,7 @@ def analyze_file(
                 dx,
                 dy,
             )
+
             angle_centers, counts, density = inclination_histogram(
                 angles,
                 args.bins,
@@ -1387,28 +1963,92 @@ def analyze_file(
                 )
             )
 
+            # Retain the selected distribution for the standalone polar plot.
             if step == plot_step:
                 plot_angles = angle_centers.copy()
                 plot_density = density.copy()
 
-    write_metrics_csv(metrics_path, metrics_rows)
+            # --------------------------------------------------------------
+            # Retain complete first/final debugging frames.
+            #
+            # Quiver information always comes from unique_grains smoothing.
+            # Geometry overlays come from the selected geometry source.
+            # --------------------------------------------------------------
+            if args.debug and step in debug_steps:
+                debug_frames[step] = {
+                    "step": step,
+                    "time": float(times[step]),
+
+                    # unique_grains data for the quiver panel
+                    "grain_grid": grain_grid.copy(),
+                    "smoothed_field": smoothed_field.copy(),
+                    "sites": sites.copy(),
+                    "x_axis": x_axis.copy(),
+                    "y_axis": y_axis.copy(),
+                    "dx": float(dx),
+                    "dy": float(dy),
+
+                    # Selected geometry measurement
+                    "geometry_source": args.geometry_source,
+                    "bounds": bounds,
+
+                    # Order-parameter data for contour-based geometry panels
+                    "ratio_grid": (
+                        None
+                        if ratio_grid is None
+                        else ratio_grid.copy()
+                    ),
+                    "contour_vertices": (
+                        None
+                        if contour_vertices is None
+                        else contour_vertices.copy()
+                    ),
+                    "geometry_x_axis": (
+                        None
+                        if eta_x_axis is None
+                        else eta_x_axis.copy()
+                    ),
+                    "geometry_y_axis": (
+                        None
+                        if eta_y_axis is None
+                        else eta_y_axis.copy()
+                    ),
+                    "contour_level": float(args.contour_level),
+                }
+
+    # ----------------------------------------------------------------------
+    # The Exodus file is now closed. Write geometry measurements.
+    # ----------------------------------------------------------------------
+    write_metrics_csv(
+        metrics_path,
+        metrics_rows,
+        args.geometry_source,
+    )
     log.warning(f"Wrote {metrics_path}")
 
+    # ----------------------------------------------------------------------
+    # Write inclination output and the standalone polar plot.
+    # ----------------------------------------------------------------------
     if not args.skip_inclination:
-        write_inclination_csv(inclination_path, inclination_rows)
+        write_inclination_csv(
+            inclination_path,
+            inclination_rows,
+        )
         log.warning(f"Wrote {inclination_path}")
 
         if plot_angles is None or plot_density is None:
             raise RuntimeError(
-                f"No inclination distribution was retained for step {plot_step}."
+                f"No inclination distribution was retained for "
+                f"timestep {plot_step}."
             )
 
-        plot_path = (
+        polar_plot_path = (
             args.output_dir
             / f"{stem}_inclination_step{plot_step:06d}.png"
         )
+
         save_polar_plot(
-            plot_path,
+            polar_plot_path,
             plot_angles,
             plot_density,
             title=(
@@ -1418,33 +2058,39 @@ def analyze_file(
             ),
             dpi=args.plot_dpi,
         )
-        log.warning(f"Wrote {plot_path}")
+        log.warning(f"Wrote {polar_plot_path}")
 
-        if args.debug:
-            first_step = 0
-            final_step = len(times) - 1
+    # ----------------------------------------------------------------------
+    # Save the combined first/final debugging figure.
+    # ----------------------------------------------------------------------
+    if args.debug:
+        first_step = 0
+        final_step = len(times) - 1
 
-            if first_step not in debug_frames:
-                raise RuntimeError(
-                    "The initial debugging frame was not retained."
-                )
-
-            if final_step not in debug_frames:
-                raise RuntimeError(
-                    "The final debugging frame was not retained."
-                )
-
-            debug_path = args.output_dir / f"{stem}_debug_summary.png"
-
-            save_debugging_plot(
-                debug_path,
-                debug_frames[first_step],
-                debug_frames[final_step],
-                metrics_rows,
-                target_id,
-                dpi=args.plot_dpi,
+        if first_step not in debug_frames:
+            raise RuntimeError(
+                "The initial debugging frame was not retained."
             )
-            log.warning(f"Wrote {debug_path}")
+
+        if final_step not in debug_frames:
+            raise RuntimeError(
+                "The final debugging frame was not retained."
+            )
+
+        debug_path = (
+            args.output_dir
+            / f"{stem}_debug_summary_{geometry_suffix}.png"
+        )
+
+        save_debugging_plot(
+            debug_path,
+            debug_frames[first_step],
+            debug_frames[final_step],
+            metrics_rows,
+            target_id,
+            dpi=args.plot_dpi,
+        )
+        log.warning(f"Wrote {debug_path}")
 
 
 def main() -> int:
