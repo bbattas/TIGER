@@ -85,9 +85,11 @@ def parse_args():
                       help="Remove title with time value from plot images.")
     plot.add_argument("--eb", type=int, default=2,
                       help="Element block index to plot.")
-    plot.add_argument("--xscale", type=float, default=1.0,
+    plot.add_argument("--xscale", type=float, default=10.0,
                       help="Multiply x coordinates by this factor for display only (does not affect data).")
-
+    plot.add_argument("--whitespace", action="store_true",
+                      help=("Fix plot limits using timestep 0, with 10% padding on each "
+                            "side of the initial x and y ranges."))
     # ---- Debug ----
     dbg = p.add_argument_group("Debug")
     dbg.add_argument("--debug-blocks", action="store_true",
@@ -422,6 +424,7 @@ def plot_exodus_var(
     dpi: int = 300,
     show_title: bool = True,
     open_plot: bool = False,
+    plot_limits=None,
 ):
     """
     Plot Exodus variable with multiple plotting styles.
@@ -521,8 +524,15 @@ def plot_exodus_var(
             labelbottom=False, labelleft=False,
         )
 
-    ax.set_xlim(np.min(x_plot), np.max(x_plot))
-    ax.set_ylim(np.min(y),      np.max(y))
+    # ax.set_xlim(np.min(x_plot), np.max(x_plot))
+    # ax.set_ylim(np.min(y),      np.max(y))
+    if plot_limits is None:
+        ax.set_xlim(np.min(x_plot), np.max(x_plot))
+        ax.set_ylim(np.min(y),      np.max(y))
+    else:
+        xmin, xmax, ymin, ymax = plot_limits
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
     ax.margins(0)
 
     # Use 'auto' aspect since xscale intentionally distorts the domain
@@ -596,6 +606,33 @@ def main():
 
                 times = exo.time()
                 minimal_tag = "_minimal" if args.minimal else ""
+
+                # Optional fixed view: bounds come from the first Exodus timestep
+                # and include 10% padding on each side.
+                plot_limits = None
+                if args.whitespace:
+                    x0, y0, z0, c0 = exo.xyzc_at_step(
+                        args.var,
+                        step=0,
+                        eb=args.eb,
+                    )
+                    x0_plot = x0 * args.xscale
+
+                    xmin, xmax = float(np.nanmin(x0_plot)), float(np.nanmax(x0_plot))
+                    ymin, ymax = float(np.nanmin(y0)),      float(np.nanmax(y0))
+                    xpad = 0.10 * (xmax - xmin)
+                    ypad = 0.10 * (ymax - ymin)
+
+                    plot_limits = (
+                        xmin - xpad, xmax + xpad,
+                        ymin - ypad, ymax + ypad,
+                    )
+                    log.info(
+                        "Using fixed timestep-0 plot limits with 10%% padding: "
+                        "x=[%.6g, %.6g], y=[%.6g, %.6g]",
+                        *plot_limits,
+                    )
+
                 use_tqdm = (args.verbose == 0 and len(steps) > 1)
                 frame_iter = tqdm(
                     steps,
@@ -639,6 +676,7 @@ def main():
                         show_title=not args.no_title,
                         open_plot=args.view,
                         dpi=args.dpi,
+                        plot_limits=plot_limits,
                     )
 
                 vtf(ti, log, "Finished plotting selected frame(s) ")
