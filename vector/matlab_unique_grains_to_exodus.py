@@ -1036,6 +1036,7 @@ def main() -> int:
             output_path=output_path,
             frames=frames,
             timestep_size=arguments.dt,
+            mesh_spacing=arguments.dx,
             matlab_variable=arguments.variable,
             exodus_variable=arguments.exodus_variable,
         )
