@@ -14,13 +14,13 @@ Each matrix entry becomes one QUAD4 element, with:
 
     Exodus elemental variable: unique_grains
     Exodus time:               step * dt
-    Element dimensions:        dx = dy = 1
+    Element dimensions:        dx = dy = --dx (default: 1)
 
 Element numbering follows NumPy/MATLAB matrix layout after loading:
 rows correspond to increasing y and columns correspond to increasing x.
 
 Example:
-    python mat_series_to_exodus.py ./results output.e --dt 0.0025
+    python mat_series_to_exodus.py ./results output.e --dt 0.0025 --dx 0.5
 
 Dependencies:
     pip install numpy scipy netCDF4 h5py
@@ -65,6 +65,12 @@ def parse_arguments() -> argparse.Namespace:
         type=float,
         required=True,
         help="Simulation timestep size. Exodus time is dt * nn{step}.",
+    )
+    parser.add_argument(
+        "--dx",
+        type=float,
+        default=1.0,
+        help="Mesh spacing in both x and y directions (default: 1).",
     )
     parser.add_argument(
         "--variable",
@@ -689,20 +695,22 @@ def load_matlab_variable(path: Path, variable_name: str) -> np.ndarray:
 def make_mesh(
     number_of_rows: int,
     number_of_columns: int,
+    cell_size: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Construct a unit-spaced structured QUAD4 mesh.
+    Construct a uniformly spaced structured QUAD4 mesh.
 
     Each microstructure matrix entry is one element:
       rows    -> y direction
       columns -> x direction
+      cell_size -> spacing in both directions
     """
     node_columns = number_of_columns + 1
     node_rows = number_of_rows + 1
 
     x_grid, y_grid = np.meshgrid(
-        np.arange(node_columns, dtype=np.float64),
-        np.arange(node_rows, dtype=np.float64),
+        np.arange(node_columns, dtype=np.float64) * cell_size,
+        np.arange(node_rows, dtype=np.float64) * cell_size,
         indexing="xy",
     )
 
@@ -754,6 +762,7 @@ def create_exodus_file(
     output_path: Path,
     frames: list[tuple[int, Path]],
     timestep_size: float,
+    mesh_spacing: float,
     matlab_variable: str,
     exodus_variable: str,
 ) -> None:
@@ -784,6 +793,7 @@ def create_exodus_file(
     coord_x, coord_y, connectivity = make_mesh(
         number_of_rows,
         number_of_columns,
+        mesh_spacing,
     )
 
     # NETCDF3_64BIT_OFFSET is broadly compatible with Exodus readers.
