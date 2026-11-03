@@ -88,7 +88,7 @@ def parse_args():
     plot.add_argument("--xscale", type=float, default=10.0,
                       help="Multiply x coordinates by this factor for display only (does not affect data).")
     plot.add_argument("--whitespace", action="store_true",
-                      help=("Fix plot limits using timestep 0, with 10% padding on each "
+                      help=("Fix plot limits using timestep 0, with 10%% padding on each "
                             "side of the initial x and y ranges."))
     # ---- Debug ----
     dbg = p.add_argument_group("Debug")
