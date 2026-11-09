@@ -19,7 +19,7 @@ from MultiExodusReader_V2 import MultiExodusReader_V2
 
 # Replace these examples with your desired times, in Exodus time units.
 # TARGET_TIMES = np.array([0.0, 10368000], dtype=float)
-TARGET_TIMES = np.linspace(0.0, 10368000, 11)
+# TARGET_TIMES = np.linspace(0.0, 10368000, 11)
 
 VARIABLE = "porosity"
 CONNECT_NUM = 2
@@ -28,7 +28,8 @@ LOG = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot porosity and export horizontal-line samples from .e files."
+        description="Plot porosity and export horizontal-line samples from .e files.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     inputs = parser.add_argument_group("Input selection")
@@ -42,19 +43,31 @@ def parse_args():
         action="store_true",
         help="Also search directories exactly one level below the current directory.",
     )
+    inputs.add_argument(
+        "--tmax",
+        type=float,
+        default=10368000,
+        help="Max time (3%% is 10368000 and 12%% is 58950720).",
+    )
+    inputs.add_argument(
+            "--tsteps",
+            type=float,
+            default=11,
+            help="Number of linspace steps from 0-tmax including 0.",
+        )
 
     measurements = parser.add_argument_group("Measurements")
     measurements.add_argument(
         "--line-y",
         type=float,
         default=0.0225,
-        help="Y coordinate of the horizontal sampling line (default: 0.0225).",
+        help="Y coordinate of the horizontal sampling line.",
     )
     measurements.add_argument(
         "--samples",
         type=int,
         default=20,
-        help="Number of line samples, including both endpoints (default: 20).",
+        help="Number of line samples, including both endpoints.",
     )
 
     outputs = parser.add_argument_group("Plots and output")
@@ -62,14 +75,13 @@ def parse_args():
         "--color-max",
         type=float,
         default=1.0,
-        help="Upper end of the fixed porosity color scale, whose lower end is 0 "
-             "(default: 1).",
+        help="Upper end of the fixed porosity color scale, whose lower end is 0 ",
     )
     outputs.add_argument(
         "--output-dir",
         type=Path,
         default=Path("porosity_output"),
-        help="Directory for CSVs and PNGs (default: porosity_output).",
+        help="Directory for CSVs and PNGs.",
     )
     outputs.add_argument(
         "-v", "--verbose",
@@ -84,7 +96,9 @@ def parse_args():
         parser.error("--line-y must be finite")
     if not np.isfinite(args.color_max) or args.color_max <= 0:
         parser.error("--color-max must be finite and positive")
-    if TARGET_TIMES.ndim != 1 or not np.all(np.isfinite(TARGET_TIMES)):
+    # Create times here:
+    args.TARGET_TIMES = np.linspace(0,args.tmax,args.tsteps)
+    if args.TARGET_TIMES.ndim != 1 or not np.all(np.isfinite(args.TARGET_TIMES)):
         parser.error("TARGET_TIMES must be a one-dimensional array of finite numbers")
     return args
 
@@ -285,7 +299,7 @@ def process_file(path, base, args, show_frame_progress):
         if len(reader.exodus_readers) != 1:
             raise ValueError(f"Expected one Exodus file; found {len(reader.exodus_readers)}")
 
-        frames = select_frames(reader.global_times, TARGET_TIMES)
+        frames = select_frames(reader.global_times, args.TARGET_TIMES)
         if not frames:
             LOG.warning("%s: no frames selected", path)
             return
