@@ -297,7 +297,9 @@ def process_file(path, base, args, show_frame_progress):
 
     try:
         if len(reader.exodus_readers) != 1:
-            raise ValueError(f"Expected one Exodus file; found {len(reader.exodus_readers)}")
+            raise ValueError(
+                f"Expected one Exodus file; found {len(reader.exodus_readers)}"
+            )
 
         frames = select_frames(reader.global_times, args.TARGET_TIMES)
         if not frames:
@@ -309,9 +311,15 @@ def process_file(path, base, args, show_frame_progress):
         LOG.info("%s: fixed plot limits = %s", path, limits)
 
         csv_path = args.output_dir / f"{base}_line.csv"
-        with csv_path.open("w", newline="") as output:
+        bounds_path = args.output_dir / f"{base}_bounds.csv"
+
+        with csv_path.open("w", newline="") as output, \
+                bounds_path.open("w", newline="") as bounds_output:
             writer = csv.writer(output)
             writer.writerow(["x", VARIABLE, "time"])
+
+            bounds_writer = csv.writer(bounds_output)
+            bounds_writer.writerow(["time", "min_x", "max_x", "min_y", "max_y"])
 
             iterator = enumerate(frames)
             if show_frame_progress:
@@ -319,6 +327,14 @@ def process_file(path, base, args, show_frame_progress):
 
             for frame_id, (target, actual) in iterator:
                 x, y, values = read_deformed_frame(reader, actual, nodal_names)
+
+                bounds_writer.writerow([
+                    actual,
+                    float(x.min()),
+                    float(x.max()),
+                    float(y.min()),
+                    float(y.max()),
+                ])
 
                 png_path = args.output_dir / f"{base}_{frame_id:04d}.png"
                 save_plot(x, y, values, actual, args.color_max, png_path, limits)
@@ -342,7 +358,7 @@ def process_file(path, base, args, show_frame_progress):
                     path, target, actual, png_path.name,
                 )
 
-        LOG.info("%s: CSV=%s", path, csv_path)
+        LOG.info("%s: CSV=%s; bounds CSV=%s", path, csv_path, bounds_path)
     finally:
         for exodus_reader in reader.exodus_readers:
             exodus_reader.mesh.close()
