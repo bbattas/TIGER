@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot porosity and sample a horizontal line in Exodus block 2."""
+"""Plot porosity and X_Zr and sample a horizontal line in Exodus block 2."""
 
 import argparse
 import csv
@@ -17,18 +17,14 @@ from tqdm import tqdm
 from MultiExodusReader_V2 import MultiExodusReader_V2
 
 
-# Replace these examples with your desired times, in Exodus time units.
-# TARGET_TIMES = np.array([0.0, 10368000], dtype=float)
-# TARGET_TIMES = np.linspace(0.0, 10368000, 11)
-
-VARIABLE = "porosity"
+VARIABLES = ("porosity", "X_Zr")
 CONNECT_NUM = 2
 LOG = logging.getLogger(__name__)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot porosity and export horizontal-line samples from .e files.",
+        description="Plot variables and export horizontal-line samples from .e files.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -47,14 +43,19 @@ def parse_args():
         "--tmax",
         type=float,
         default=10368000,
-        help="Max time (3%% is 10368000 and 12%% is 58950720).",
+        help="Maximum target time, in Exodus time units.",
     )
     inputs.add_argument(
-            "--tsteps",
-            type=float,
-            default=11,
-            help="Number of linspace steps from 0-tmax including 0.",
-        )
+        "--tsteps",
+        type=int,
+        default=11,
+        help="Number of target times from 0 to --tmax, including endpoints.",
+    )
+    inputs.add_argument(
+        "--skip0",
+        action="store_true",
+        help="Never select the time=0 frame; use the earliest later frame for target 0.",
+    )
 
     measurements = parser.add_argument_group("Measurements")
     measurements.add_argument(
@@ -75,13 +76,18 @@ def parse_args():
         "--color-max",
         type=float,
         default=1.0,
-        help="Upper end of the fixed porosity color scale, whose lower end is 0 ",
+        help="Upper end of the porosity color scale; its lower end is 0.",
+    )
+    outputs.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="Write CSVs without creating porosity or X_Zr PNGs.",
     )
     outputs.add_argument(
         "--output-dir",
         type=Path,
         default=Path("porosity_output"),
-        help="Directory for CSVs and PNGs.",
+        help="Directory for CSVs and, unless skipped, PNGs.",
     )
     outputs.add_argument(
         "-v", "--verbose",
@@ -96,10 +102,12 @@ def parse_args():
         parser.error("--line-y must be finite")
     if not np.isfinite(args.color_max) or args.color_max <= 0:
         parser.error("--color-max must be finite and positive")
-    # Create times here:
-    args.TARGET_TIMES = np.linspace(0,args.tmax,args.tsteps)
-    if args.TARGET_TIMES.ndim != 1 or not np.all(np.isfinite(args.TARGET_TIMES)):
-        parser.error("TARGET_TIMES must be a one-dimensional array of finite numbers")
+    if not np.isfinite(args.tmax):
+        parser.error("--tmax must be finite")
+    if args.tsteps < 1:
+        parser.error("--tsteps must be at least 1")
+
+    args.target_times = np.linspace(0, args.tmax, args.tsteps)
     return args
 
 
@@ -109,8 +117,7 @@ def find_files(contains, subdirs):
     if subdirs:
         files.extend(root.glob("*/*.e"))
     return sorted(
-        (path for path in files if path.is_file()
-         and contains in path.name),
+        (path for path in files if path.is_file() and contains in path.name),
         key=lambda path: str(path.relative_to(root)),
     )
 
@@ -123,6 +130,7 @@ def unique_base(path, used):
     if base in used:
         parent = "_".join(path.relative_to(root).parts[:-1]) or "current"
         base = f"{stem}_{parent}"
+
     candidate = base
     suffix = 2
     while candidate in used:
@@ -132,7 +140,7 @@ def unique_base(path, used):
     return candidate
 
 
-def select_frames(recorded_times, targets):
+def select_frames(recorded_times, targets, skip_zero=False):
     """Return (target_time, actual_time) pairs in target order."""
     times = np.asarray(recorded_times, dtype=float)
     if times.size == 0 or not np.all(np.isfinite(times)):
@@ -145,7 +153,20 @@ def select_frames(recorded_times, targets):
             LOG.info("Skipping target %g: outside recorded time range", target)
             continue
 
-        index = int(np.argmin(np.abs(times - target)))
+        if skip_zero and target == 0 and np.any(times == 0):
+            # Target zero moves forward, never backward to a negative time.
+            candidates = np.flatnonzero(times > 0)
+            if candidates.size == 0:
+                LOG.warning("Skipping target 0: no recorded time greater than 0")
+                continue
+            index = int(candidates[0])
+        else:
+            candidates = np.flatnonzero(times != 0) if skip_zero else np.arange(times.size)
+            if candidates.size == 0:
+                LOG.warning("Skipping target %g: no eligible recorded times", target)
+                continue
+            index = int(candidates[np.argmin(np.abs(times[candidates] - target))])
+
         if index in used_indices:
             LOG.info(
                 "Skipping target %g: closest frame at %g already selected",
@@ -157,35 +178,52 @@ def select_frames(recorded_times, targets):
         selected.append((float(target), float(times[index])))
     return selected
 
+
 def read_deformed_frame(reader, time, nodal_names):
-    """Return porosity and quad coordinates at one recorded time."""
-    x, y, _z, values = reader.get_data_at_time(VARIABLE, time)
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    values = np.asarray(values, dtype=float).reshape(-1)
+    """Return deformed quad coordinates and element values for both variables."""
+    x = y = None
+    values_by_name = {}
 
-    if (x.ndim != 2 or x.shape[1] != 4
-            or y.shape != x.shape or values.size != x.shape[0]):
-        raise ValueError(
-            f"Unexpected data shapes at t={time:g}: "
-            f"x={x.shape}, y={y.shape}, values={values.shape}"
-        )
+    for name in VARIABLES:
+        variable_x, variable_y, _z, values = reader.get_data_at_time(name, time)
+        variable_x = np.asarray(variable_x, dtype=float)
+        variable_y = np.asarray(variable_y, dtype=float)
+        values = np.asarray(values, dtype=float).reshape(-1)
 
-    # Make copies: avoid changing coordinates held by the reader.
-    x = x.copy()
-    y = y.copy()
+        if (
+            variable_x.ndim != 2
+            or variable_x.shape[1] != 4
+            or variable_y.shape != variable_x.shape
+            or values.size != variable_x.shape[0]
+        ):
+            raise ValueError(
+                f"Unexpected {name} data shapes at t={time:g}: "
+                f"x={variable_x.shape}, y={variable_y.shape}, "
+                f"values={values.shape}"
+            )
 
-    for variable, coordinate in (("disp_x", x), ("disp_y", y)):
-        if variable not in nodal_names:
+        if x is None:
+            x, y = variable_x.copy(), variable_y.copy()
+        elif (
+            variable_x.shape != x.shape
+            or not np.array_equal(variable_x, x)
+            or not np.array_equal(variable_y, y)
+        ):
+            raise ValueError(f"{name} uses different quad coordinates at t={time:g}")
+
+        values_by_name[name] = values
+
+    for name, coordinate in (("disp_x", x), ("disp_y", y)):
+        if name not in nodal_names:
             continue
 
         _nx, _ny, _nz, displacement = reader.get_data_at_time(
-            variable, time, full_nodal=True
+            name, time, full_nodal=True
         )
         displacement = np.asarray(displacement, dtype=float)
         if displacement.shape != coordinate.shape:
             raise ValueError(
-                f"{variable} shape {displacement.shape} does not match "
+                f"{name} shape {displacement.shape} does not match "
                 f"coordinate shape {coordinate.shape} at t={time:g}"
             )
         coordinate += displacement
@@ -193,19 +231,20 @@ def read_deformed_frame(reader, time, nodal_names):
     if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
         raise ValueError(f"Non-finite deformed coordinates at t={time:g}")
 
-    return x, y, values
+    return x, y, values_by_name
 
 
-def quad_line_intervals(x, y, values, line_y):
+def quad_line_intervals(x, y, values_by_name, line_y):
     """
     Find positive-length intersections of a horizontal line with convex quads.
 
-    Returns (left_x, right_x, element_value) tuples. Exodus quad nodes are
-    assumed to be ordered around each element's perimeter.
+    Returns (left_x, right_x, values) tuples. Quad nodes are assumed to be
+    ordered around each element's perimeter.
     """
     intervals = []
+    value_columns = [values_by_name[name] for name in VARIABLES]
 
-    for xs, ys, value in zip(x, y, values):
+    for element_index, (xs, ys) in enumerate(zip(x, y)):
         crossings = []
         for i in range(4):
             j = (i + 1) % 4
@@ -221,39 +260,45 @@ def quad_line_intervals(x, y, values, line_y):
 
         if crossings:
             left, right = min(crossings), max(crossings)
-            if right > left:  # Exclude a line that only touches one vertex.
-                intervals.append((left, right, float(value)))
+            if right > left:
+                element_values = tuple(
+                    float(column[element_index]) for column in value_columns
+                )
+                intervals.append((left, right, element_values))
 
     return intervals
 
 
-def sample_line(x, y, values, line_y, count):
-    intervals = quad_line_intervals(x, y, values, line_y)
+def sample_line(x, y, values_by_name, line_y, count):
+    intervals = quad_line_intervals(x, y, values_by_name, line_y)
     if not intervals:
         raise ValueError(f"Block does not cross y={line_y:g}")
 
     left = min(item[0] for item in intervals)
     right = max(item[1] for item in intervals)
     sample_x = np.linspace(left, right, count)
-    sample_values = np.full(count, np.nan)
+    sample_values = np.full((count, len(VARIABLES)), np.nan)
 
     # Permit tiny roundoff at shared quad edges, without extending the domain.
     tolerance = 1e-12 * max(1.0, right - left)
     for i, position in enumerate(sample_x):
-        for start, end, value in intervals:
+        for start, end, element_values in intervals:
             if start - tolerance <= position <= end + tolerance:
-                sample_values[i] = value
+                sample_values[i] = element_values
                 break
 
     return sample_x, sample_values
 
+
 def fixed_plot_limits(reader, frames, nodal_names, buffer_fraction=0.02):
-    """Find buffered bounds from the first and last selected frames."""
-    endpoint_times = (min(actual for _target, actual in frames),
-                      max(actual for _target, actual in frames))
+    """Find buffered spatial bounds from the first and last selected frames."""
+    endpoint_times = (
+        min(actual for _target, actual in frames),
+        max(actual for _target, actual in frames),
+    )
 
     bounds = []
-    for time in dict.fromkeys(endpoint_times):  # Read once if both are equal.
+    for time in dict.fromkeys(endpoint_times):
         x, y, _values = read_deformed_frame(reader, time, nodal_names)
         bounds.append((x.min(), x.max(), y.min(), y.max()))
 
@@ -264,18 +309,32 @@ def fixed_plot_limits(reader, frames, nodal_names, buffer_fraction=0.02):
 
     xpad = buffer_fraction * (xmax - xmin or 1.0)
     ypad = buffer_fraction * (ymax - ymin or 1.0)
-    return (xmin - xpad, xmax + xpad, ymin - ypad, ymax + ypad)
+    return xmin - xpad, xmax + xpad, ymin - ypad, ymax + ypad
 
 
-def save_plot(x, y, values, time, color_max, destination, limits):
+def save_plot(x, y, values, name, time, color_max, destination, limits):
     vertices = np.stack((x, y), axis=-1)
     fig, ax = plt.subplots(figsize=(6, 9))
+
+    # Porosity retains its configured fixed scale. X_Zr uses the range
+    # of finite values in this frame, shown by its colorbar.
+    if name == "porosity":
+        norm = Normalize(vmin=0, vmax=color_max)
+    else:
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            lower, upper = float(finite.min()), float(finite.max())
+            if lower == upper:
+                upper = lower + 1.0
+            norm = Normalize(vmin=lower, vmax=upper)
+        else:
+            norm = Normalize(vmin=0, vmax=1)
 
     collection = PolyCollection(
         vertices,
         array=np.ma.masked_invalid(values),
         cmap="viridis",
-        norm=Normalize(vmin=0, vmax=color_max),
+        norm=norm,
         edgecolors="none",
     )
     ax.add_collection(collection)
@@ -284,15 +343,14 @@ def save_plot(x, y, values, time, color_max, destination, limits):
     ax.set_box_aspect(2)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_title(f"{VARIABLE}, t={time/86400:.2f} days")
-    fig.colorbar(collection, ax=ax, label=VARIABLE)
+    ax.set_title(f"{name}, t={time / 86400:.2f} days")
+    fig.colorbar(collection, ax=ax, label=name)
     fig.savefig(destination, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
 def process_file(path, base, args, show_frame_progress):
-    # Passing one literal filename keeps this reader instance confined to
-    # one simulation, even though its constructor accepts a glob pattern.
+    # Use one literal filename so this reader handles one simulation.
     reader = MultiExodusReader_V2(str(path), connect_num=CONNECT_NUM)
 
     try:
@@ -301,22 +359,38 @@ def process_file(path, base, args, show_frame_progress):
                 f"Expected one Exodus file; found {len(reader.exodus_readers)}"
             )
 
-        frames = select_frames(reader.global_times, args.TARGET_TIMES)
+        # frames = select_frames(reader.global_times, args.target_times)
+        frames = select_frames(reader.global_times, args.target_times, skip_zero=args.skip0)
         if not frames:
             LOG.warning("%s: no frames selected", path)
             return
 
-        nodal_names = set(reader.exodus_readers[0].nodal_var_names)
-        limits = fixed_plot_limits(reader, frames, nodal_names)
-        LOG.info("%s: fixed plot limits = %s", path, limits)
+        exodus_reader = reader.exodus_readers[0]
+        available = set(exodus_reader.nodal_var_names) | set(
+            exodus_reader.elem_var_names
+        )
+        missing = [name for name in VARIABLES if name not in available]
+        if missing:
+            raise ValueError(
+                f"Missing Exodus variable(s) in block {CONNECT_NUM}: "
+                f"{', '.join(missing)}"
+            )
+
+        nodal_names = set(exodus_reader.nodal_var_names)
+        limits = None
+        if not args.skip_plots:
+            limits = fixed_plot_limits(reader, frames, nodal_names)
+            LOG.info("%s: fixed spatial plot limits = %s", path, limits)
 
         csv_path = args.output_dir / f"{base}_line.csv"
         bounds_path = args.output_dir / f"{base}_bounds.csv"
 
-        with csv_path.open("w", newline="") as output, \
-                bounds_path.open("w", newline="") as bounds_output:
+        with (
+            csv_path.open("w", newline="") as output,
+            bounds_path.open("w", newline="") as bounds_output,
+        ):
             writer = csv.writer(output)
-            writer.writerow(["x", VARIABLE, "time"])
+            writer.writerow(["x", *VARIABLES, "time"])
 
             bounds_writer = csv.writer(bounds_output)
             bounds_writer.writerow(["time", "min_x", "max_x", "min_y", "max_y"])
@@ -326,7 +400,9 @@ def process_file(path, base, args, show_frame_progress):
                 iterator = tqdm(iterator, total=len(frames), desc=path.name)
 
             for frame_id, (target, actual) in iterator:
-                x, y, values = read_deformed_frame(reader, actual, nodal_names)
+                x, y, values_by_name = read_deformed_frame(
+                    reader, actual, nodal_names
+                )
 
                 bounds_writer.writerow([
                     actual,
@@ -336,27 +412,35 @@ def process_file(path, base, args, show_frame_progress):
                     float(y.max()),
                 ])
 
-                png_path = args.output_dir / f"{base}_{frame_id:04d}.png"
-                save_plot(x, y, values, actual, args.color_max, png_path, limits)
+                if not args.skip_plots:
+                    for name in VARIABLES:
+                        png_path = (
+                            args.output_dir / f"{base}_{name}_{frame_id:04d}.png"
+                        )
+                        save_plot(
+                            x, y, values_by_name[name], name, actual,
+                            args.color_max, png_path, limits,
+                        )
 
                 try:
                     sample_x, sample_values = sample_line(
-                        x, y, values, args.line_y, args.samples
+                        x, y, values_by_name, args.line_y, args.samples
                     )
                 except ValueError as exc:
                     LOG.warning("%s at t=%g: %s", path, actual, exc)
                     continue
 
-                for position, value in zip(sample_x, sample_values):
+                for position, row_values in zip(sample_x, sample_values):
                     writer.writerow([
                         float(position),
-                        "" if np.isnan(value) else float(value),
+                        *(
+                            "" if np.isnan(value) else float(value)
+                            for value in row_values
+                        ),
                         actual,
                     ])
-                LOG.info(
-                    "%s: target=%g, actual=%g, plot=%s",
-                    path, target, actual, png_path.name,
-                )
+
+                LOG.info("%s: target=%g, actual=%g", path, target, actual)
 
         LOG.info("%s: CSV=%s; bounds CSV=%s", path, csv_path, bounds_path)
     finally:
