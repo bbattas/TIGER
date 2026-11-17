@@ -17,7 +17,7 @@ from tqdm import tqdm
 from MultiExodusReader_V2 import MultiExodusReader_V2
 
 
-VARIABLES = ("porosity", "X_Zr")
+VARIABLES = ("porosity", "X_Zr", "T")
 CONNECT_NUM = 2
 LOG = logging.getLogger(__name__)
 
@@ -50,6 +50,11 @@ def parse_args():
         type=int,
         default=11,
         help="Number of target times from 0 to --tmax, including endpoints.",
+    )
+    inputs.add_argument(
+        "--closest-tmax",
+        action="store_true",
+        help="Sample only the recorded frame closest to --tmax; ignore --tsteps.",
     )
     inputs.add_argument(
         "--skip0",
@@ -107,7 +112,12 @@ def parse_args():
     if args.tsteps < 1:
         parser.error("--tsteps must be at least 1")
 
-    args.target_times = np.linspace(0, args.tmax, args.tsteps)
+    # args.target_times = np.linspace(0, args.tmax, args.tsteps)
+    args.target_times = (
+        np.array([args.tmax])
+        if args.closest_tmax
+        else np.linspace(0, args.tmax, args.tsteps)
+    )
     return args
 
 
@@ -140,7 +150,7 @@ def unique_base(path, used):
     return candidate
 
 
-def select_frames(recorded_times, targets, skip_zero=False):
+def select_frames(recorded_times, targets, skip_zero=False, allow_outside=False):
     """Return (target_time, actual_time) pairs in target order."""
     times = np.asarray(recorded_times, dtype=float)
     if times.size == 0 or not np.all(np.isfinite(times)):
@@ -149,7 +159,7 @@ def select_frames(recorded_times, targets, skip_zero=False):
     selected = []
     used_indices = set()
     for target in targets:
-        if target < times.min() or target > times.max():
+        if not allow_outside and (target < times.min() or target > times.max()):
             LOG.info("Skipping target %g: outside recorded time range", target)
             continue
 
@@ -360,7 +370,8 @@ def process_file(path, base, args, show_frame_progress):
             )
 
         # frames = select_frames(reader.global_times, args.target_times)
-        frames = select_frames(reader.global_times, args.target_times, skip_zero=args.skip0)
+        frames = select_frames(reader.global_times, args.target_times,
+                               skip_zero=args.skip0, allow_outside=args.closest_tmax)
         if not frames:
             LOG.warning("%s: no frames selected", path)
             return
